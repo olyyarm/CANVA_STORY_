@@ -1,0 +1,703 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Canvas_Stories</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://unpkg.com/konva@8.3.2/konva.min.js"></script>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=Roboto:wght@300;400;500;700&display=swap');
+        
+        body {
+            font-family: 'Inter', 'Roboto', sans-serif;
+            background-color: #121212;
+            color: #F0F0F3;
+            overflow: hidden;
+        }
+        
+        .node {
+            transition: all 0.3s ease;
+            box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
+        }
+        
+        .node:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 6px 12px rgba(0, 0, 0, 0.15);
+        }
+        
+        .connection-line {
+            stroke: url(#connectionGradient);
+            stroke-width: 2;
+        }
+        
+        .timeline-segment {
+            transition: all 0.2s ease;
+        }
+        
+        .timeline-segment:hover {
+            transform: scaleY(1.2);
+        }
+        
+        .sidebar {
+            transition: transform 0.3s ease;
+        }
+        
+        .prompt-preview {
+            background: linear-gradient(135deg, #1E1E2E 0%, #2A2A3A 100%);
+        }
+        
+        .fade-in {
+            animation: fadeIn 0.3s ease-in-out;
+        }
+        
+        @keyframes fadeIn {
+            from { opacity: 0; transform: scale(0.95); }
+            to { opacity: 1; transform: scale(1); }
+        }
+        
+        .zoom-controls {
+            background: rgba(30, 30, 46, 0.8);
+            backdrop-filter: blur(5px);
+        }
+    </style>
+</head>
+<body class="h-screen flex flex-col">
+    <!-- Top Navigation -->
+    <header class="bg-[#1E1E2E] px-6 py-3 flex items-center justify-between border-b border-[#2A2A3A]">
+        <div class="flex items-center space-x-4">
+            <div class="text-2xl font-bold bg-gradient-to-r from-[#7B61FF] to-[#4BC1D2] bg-clip-text text-transparent">
+                Canvas_Stories
+            </div>
+            <nav class="hidden md:flex space-x-4">
+                <button class="px-3 py-1 rounded-md hover:bg-[#2A2A3A] transition">Projects</button>
+                <button class="px-3 py-1 rounded-md hover:bg-[#2A2A3A] transition">Templates</button>
+                <button class="px-3 py-1 rounded-md hover:bg-[#2A2A3A] transition">Library</button>
+            </nav>
+        </div>
+        <div class="flex items-center space-x-3">
+            <button class="px-4 py-2 rounded-md bg-[#7B61FF] hover:bg-[#6A50EE] transition">
+                <i class="fas fa-plus mr-2"></i> New Scene
+            </button>
+            <button class="w-8 h-8 rounded-full bg-[#2A2A3A] flex items-center justify-center">
+                <i class="fas fa-user"></i>
+            </button>
+        </div>
+    </header>
+
+    <!-- Main Content Area -->
+    <main class="flex-1 flex overflow-hidden relative">
+        <!-- Left Sidebar (Tools) -->
+        <div class="w-16 bg-[#1E1E2E] border-r border-[#2A2A3A] flex flex-col items-center py-4 space-y-6">
+            <button class="tool-btn" title="Select">
+                <i class="fas fa-mouse-pointer"></i>
+            </button>
+            <button class="tool-btn" title="Add Node">
+                <i class="fas fa-plus-circle"></i>
+            </button>
+            <button class="tool-btn" title="Connect">
+                <i class="fas fa-link"></i>
+            </button>
+            <button class="tool-btn" title="Text">
+                <i class="fas fa-font"></i>
+            </button>
+            <button class="tool-btn" title="Image">
+                <i class="fas fa-image"></i>
+            </button>
+            <button class="tool-btn" title="Video">
+                <i class="fas fa-video"></i>
+            </button>
+            <div class="border-t border-[#2A2A3A] w-8 my-2"></div>
+            <button class="tool-btn" title="Undo">
+                <i class="fas fa-undo"></i>
+            </button>
+            <button class="tool-btn" title="Redo">
+                <i class="fas fa-redo"></i>
+            </button>
+            <button class="tool-btn" title="Save">
+                <i class="fas fa-save"></i>
+            </button>
+        </div>
+
+        <!-- Canvas Area -->
+        <div class="flex-1 relative overflow-hidden" id="canvas-container">
+            <svg id="connections-layer" class="absolute top-0 left-0 w-full h-full pointer-events-none">
+                <defs>
+                    <linearGradient id="connectionGradient" x1="0%" y1="0%" x2="100%" y2="0%">
+                        <stop offset="0%" stop-color="#7B61FF" />
+                        <stop offset="100%" stop-color="#4BC1D2" />
+                    </linearGradient>
+                </defs>
+            </svg>
+            
+            <!-- Nodes will be added here dynamically -->
+            <div id="nodes-container" class="absolute top-0 left-0 w-full h-full"></div>
+            
+            <!-- Main Input Node (Center) -->
+            <div class="node absolute top-1/2 left-1/2 transform -translate-x-1/2 -translate-y-1/2 w-64 bg-[#1E1E2E] rounded-lg p-4 border border-[#7B61FF] fade-in">
+                <div class="flex justify-between items-center mb-3">
+                    <div class="text-sm font-medium text-[#7B61FF]">MAIN INPUT</div>
+                    <div class="flex space-x-2">
+                        <button class="text-xs p-1 rounded bg-[#2A2A3A] hover:bg-[#3A3A4A]">
+                            <i class="fas fa-cog"></i>
+                        </button>
+                    </div>
+                </div>
+                <textarea 
+                    class="w-full bg-[#2A2A3A] rounded-md px-3 py-2 text-sm focus:outline-none focus:ring-1 focus:ring-[#7B61FF] resize-none" 
+                    rows="4" 
+                    placeholder="Enter your story prompt here..."></textarea>
+                <button class="mt-3 w-full py-2 bg-gradient-to-r from-[#7B61FF] to-[#4BC1D2] rounded-md hover:opacity-90 transition">
+                    Generate Story
+                </button>
+            </div>
+            
+            <!-- Zoom Controls -->
+            <div class="zoom-controls absolute right-4 bottom-24 rounded-lg p-2 flex flex-col space-y-2">
+                <button class="w-8 h-8 rounded-md bg-[#2A2A3A] hover:bg-[#3A3A4A] flex items-center justify-center" id="zoom-in">
+                    <i class="fas fa-plus"></i>
+                </button>
+                <button class="w-8 h-8 rounded-md bg-[#2A2A3A] hover:bg-[#3A3A4A] flex items-center justify-center" id="zoom-out">
+                    <i class="fas fa-minus"></i>
+                </button>
+                <button class="w-8 h-8 rounded-md bg-[#2A2A3A] hover:bg-[#3A3A4A] flex items-center justify-center" id="zoom-reset">
+                    <i class="fas fa-expand"></i>
+                </button>
+            </div>
+        </div>
+
+        <!-- Right Sidebar (Editing) -->
+        <div class="sidebar w-80 bg-[#1E1E2E] border-l border-[#2A2A3A] transform translate-x-full absolute right-0 top-0 h-full z-10 transition-transform" id="edit-sidebar">
+            <div class="p-4 h-full flex flex-col">
+                <div class="flex justify-between items-center mb-4">
+                    <h3 class="text-lg font-medium">Scene Editor</h3>
+                    <button class="text-gray-400 hover:text-white" id="close-sidebar">
+                        <i class="fas fa-times"></i>
+                    </button>
+                </div>
+                
+                <div class="flex-1 overflow-y-auto space-y-6">
+                    <div>
+                        <label class="block text-sm font-medium mb-1">Scene Title</label>
+                        <input type="text" class="w-full bg-[#2A2A3A] rounded-md px-3 py-2 text-sm focus:outline-none focus:ring-1 focus:ring-[#7B61FF]">
+                    </div>
+                    
+                    <div>
+                        <label class="block text-sm font-medium mb-1">Description</label>
+                        <textarea class="w-full bg-[#2A2A3A] rounded-md px-3 py-2 text-sm focus:outline-none focus:ring-1 focus:ring-[#7B61FF] resize-none" rows="4"></textarea>
+                    </div>
+                    
+                    <div>
+                        <label class="block text-sm font-medium mb-1">Duration</label>
+                        <div class="flex items-center space-x-2">
+                            <input type="number" value="10" class="w-16 bg-[#2A2A3A] rounded-md px-3 py-2 text-sm focus:outline-none focus:ring-1 focus:ring-[#7B61FF]">
+                            <span class="text-sm">seconds</span>
+                        </div>
+                    </div>
+                    
+                    <div>
+                        <label class="block text-sm font-medium mb-1">Scene Type</label>
+                        <div class="grid grid-cols-3 gap-2 mt-2">
+                            <button class="py-2 px-3 rounded-md bg-[#2A2A3A] hover:bg-[#3A3A4A] text-xs flex flex-col items-center">
+                                <i class="fas fa-font mb-1"></i>
+                                Text
+                            </button>
+                            <button class="py-2 px-3 rounded-md bg-[#2A2A3A] hover:bg-[#3A3A4A] text-xs flex flex-col items-center">
+                                <i class="fas fa-image mb-1"></i>
+                                Image
+                            </button>
+                            <button class="py-2 px-3 rounded-md bg-[#2A2A3A] hover:bg-[#3A3A4A] text-xs flex flex-col items-center">
+                                <i class="fas fa-video mb-1"></i>
+                                Video
+                            </button>
+                        </div>
+                    </div>
+                    
+                    <div>
+                        <label class="block text-sm font-medium mb-1">Style</label>
+                        <select class="w-full bg-[#2A2A3A] rounded-md px-3 py-2 text-sm focus:outline-none focus:ring-1 focus:ring-[#7B61FF]">
+                            <option>Realism</option>
+                            <option>Fantasy</option>
+                            <option>Sci-Fi</option>
+                            <option>Documentary</option>
+                        </select>
+                    </div>
+                    
+                    <div>
+                        <label class="block text-sm font-medium mb-1">Comments</label>
+                        <textarea class="w-full bg-[#2A2A3A] rounded-md px-3 py-2 text-sm focus:outline-none focus:ring-1 focus:ring-[#7B61FF] resize-none" rows="3" placeholder="Add your notes here..."></textarea>
+                    </div>
+                </div>
+                
+                <div class="mt-6 space-y-3">
+                    <button class="w-full py-2 bg-gradient-to-r from-[#7B61FF] to-[#4BC1D2] rounded-md hover:opacity-90 transition">
+                        Regenerate Scene
+                    </button>
+                    <button class="w-full py-2 bg-[#2A2A3A] rounded-md hover:bg-[#3A3A4A] transition">
+                        Save Changes
+                    </button>
+                    <button class="w-full py-2 bg-[#FF6161] rounded-md hover:bg-[#EE5050] transition">
+                        Delete Scene
+                    </button>
+                </div>
+            </div>
+        </div>
+        
+        <!-- Prompts Panel -->
+        <div class="sidebar w-96 bg-[#1E1E2E] border-l border-[#2A2A3A] transform translate-x-full absolute right-0 top-0 h-full z-20 transition-transform" id="prompts-sidebar">
+            <div class="p-4 h-full flex flex-col">
+                <div class="flex justify-between items-center mb-4">
+                    <h3 class="text-lg font-medium">Generated Prompts</h3>
+                    <button class="text-gray-400 hover:text-white" id="close-prompts">
+                        <i class="fas fa-times"></i>
+                    </button>
+                </div>
+                
+                <div class="flex-1 overflow-y-auto space-y-4">
+                    <div class="prompt-preview rounded-lg p-4">
+                        <div class="flex justify-between items-start mb-2">
+                            <h4 class="font-medium">Opening Scene</h4>
+                            <button class="text-xs p-1 rounded bg-[#2A2A3A] hover:bg-[#3A3A4A]">
+                                <i class="fas fa-copy"></i>
+                            </button>
+                        </div>
+                        <p class="text-sm text-gray-300 mb-3">A mysterious figure emerges from the fog, holding an ancient artifact that glows with an eerie blue light...</p>
+                        <div class="flex justify-between items-center text-xs">
+                            <span class="text-[#7B61FF]">Text Scene</span>
+                            <span>12s</span>
+                        </div>
+                    </div>
+                    
+                    <div class="prompt-preview rounded-lg p-4">
+                        <div class="flex justify-between items-start mb-2">
+                            <h4 class="font-medium">Artifact Reveal</h4>
+                            <button class="text-xs p-1 rounded bg-[#2A2A3A] hover:bg-[#3A3A4A]">
+                                <i class="fas fa-copy"></i>
+                            </button>
+                        </div>
+                        <p class="text-sm text-gray-300 mb-3">Close-up of the artifact showing intricate carvings that resemble constellations. The camera slowly zooms in as the glow intensifies...</p>
+                        <div class="flex justify-between items-center text-xs">
+                            <span class="text-[#4BC1D2]">Image Scene</span>
+                            <span>8s</span>
+                        </div>
+                    </div>
+                    
+                    <div class="prompt-preview rounded-lg p-4">
+                        <div class="flex justify-between items-start mb-2">
+                            <h4 class="font-medium">Ancient Library</h4>
+                            <button class="text-xs p-1 rounded bg-[#2A2A3A] hover:bg-[#3A3A4A]">
+                                <i class="fas fa-copy"></i>
+                            </button>
+                        </div>
+                        <p class="text-sm text-gray-300 mb-3">The protagonist enters a vast library with floating books and glowing runes. The camera follows as they approach a central pedestal...</p>
+                        <div class="flex justify-between items-center text-xs">
+                            <span class="text-[#7B61FF]">Video Scene</span>
+                            <span>15s</span>
+                        </div>
+                    </div>
+                </div>
+                
+                <div class="mt-6 space-y-3">
+                    <button class="w-full py-2 bg-gradient-to-r from-[#7B61FF] to-[#4BC1D2] rounded-md hover:opacity-90 transition">
+                        Generate More
+                    </button>
+                    <div class="grid grid-cols-2 gap-2">
+                        <button class="py-2 bg-[#2A2A3A] rounded-md hover:bg-[#3A3A4A] transition">
+                            Export TXT
+                        </button>
+                        <button class="py-2 bg-[#2A2A3A] rounded-md hover:bg-[#3A3A4A] transition">
+                            Export JSON
+                        </button>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </main>
+
+    <!-- Timeline -->
+    <footer class="bg-[#1E1E2E] border-t border-[#2A2A3A] h-24 px-4 py-2">
+        <div class="relative h-full">
+            <div class="absolute inset-0 overflow-x-auto overflow-y-hidden">
+                <div class="h-full flex items-end" id="timeline">
+                    <!-- Timeline segments will be added here -->
+                    <div class="timeline-segment h-12 bg-[#7B61FF] rounded-sm mx-px" style="width: 120px;" data-scene-id="1">
+                        <div class="text-xs p-1 truncate">Opening Scene</div>
+                    </div>
+                    <div class="timeline-segment h-8 bg-[#4BC1D2] rounded-sm mx-px" style="width: 80px;" data-scene-id="2">
+                        <div class="text-xs p-1 truncate">Artifact</div>
+                    </div>
+                    <div class="timeline-segment h-16 bg-[#7B61FF] rounded-sm mx-px" style="width: 150px;" data-scene-id="3">
+                        <div class="text-xs p-1 truncate">Library</div>
+                    </div>
+                </div>
+            </div>
+            <div class="absolute bottom-0 left-0 right-0 h-4 bg-[#2A2A3A] bg-opacity-50 flex">
+                <!-- Timeline ticks -->
+                <div class="border-r border-[#3A3A4A] relative" style="width: 10%;">
+                    <div class="absolute -top-3 left-0 text-xs text-gray-400">0s</div>
+                </div>
+                <div class="border-r border-[#3A3A4A] relative" style="width: 10%;">
+                    <div class="absolute -top-3 left-0 text-xs text-gray-400">10s</div>
+                </div>
+                <div class="border-r border-[#3A3A4A] relative" style="width: 10%;">
+                    <div class="absolute -top-3 left-0 text-xs text-gray-400">20s</div>
+                </div>
+                <div class="border-r border-[#3A3A4A] relative" style="width: 10%;">
+                    <div class="absolute -top-3 left-0 text-xs text-gray-400">30s</div>
+                </div>
+                <div class="border-r border-[#3A3A4A] relative" style="width: 10%;">
+                    <div class="absolute -top-3 left-0 text-xs text-gray-400">40s</div>
+                </div>
+                <div class="border-r border-[#3A3A4A] relative" style="width: 10%;">
+                    <div class="absolute -top-3 left-0 text-xs text-gray-400">50s</div>
+                </div>
+                <div class="border-r border-[#3A3A4A] relative" style="width: 10%;">
+                    <div class="absolute -top-3 left-0 text-xs text-gray-400">60s</div>
+                </div>
+                <div class="border-r border-[#3A3A4A] relative" style="width: 10%;">
+                    <div class="absolute -top-3 left-0 text-xs text-gray-400">70s</div>
+                </div>
+                <div class="border-r border-[#3A3A4A] relative" style="width: 10%;">
+                    <div class="absolute -top-3 left-0 text-xs text-gray-400">80s</div>
+                </div>
+                <div class="border-r border-[#3A3A4A] relative" style="width: 10%;">
+                    <div class="absolute -top-3 left-0 text-xs text-gray-400">90s</div>
+                </div>
+            </div>
+            <div class="absolute top-0 right-4 flex space-x-2">
+                <button class="px-3 py-1 rounded-md bg-[#2A2A3A] hover:bg-[#3A3A4A] text-sm">
+                    <i class="fas fa-sliders-h mr-1"></i> Settings
+                </button>
+                <button class="px-3 py-1 rounded-md bg-[#2A2A3A] hover:bg-[#3A3A4A] text-sm" id="show-prompts">
+                    <i class="fas fa-scroll mr-1"></i> Prompts
+                </button>
+            </div>
+        </div>
+    </footer>
+
+    <script>
+        document.addEventListener('DOMContentLoaded', function() {
+            // Sidebar toggle
+            const closeSidebar = document.getElementById('close-sidebar');
+            const editSidebar = document.getElementById('edit-sidebar');
+            const closePrompts = document.getElementById('close-prompts');
+            const promptsSidebar = document.getElementById('prompts-sidebar');
+            const showPrompts = document.getElementById('show-prompts');
+            
+            // Sample nodes - in a real app these would be dynamic
+            const sampleNodes = [
+                {
+                    id: 1,
+                    title: "Opening Scene",
+                    type: "text",
+                    x: 300,
+                    y: 150,
+                    content: "A mysterious figure emerges from the fog..."
+                },
+                {
+                    id: 2,
+                    title: "Artifact Reveal",
+                    type: "image",
+                    x: 500,
+                    y: 300,
+                    content: "Close-up of the artifact showing intricate carvings..."
+                },
+                {
+                    id: 3,
+                    title: "Ancient Library",
+                    type: "video",
+                    x: 200,
+                    y: 350,
+                    content: "The protagonist enters a vast library with floating books..."
+                }
+            ];
+            
+            // Create nodes on the canvas
+            const nodesContainer = document.getElementById('nodes-container');
+            const connectionsLayer = document.getElementById('connections-layer');
+            
+            sampleNodes.forEach(node => {
+                createNode(node);
+            });
+            
+            // Draw connections between nodes
+            drawConnection(1, 2);
+            drawConnection(2, 3);
+            
+            // Node click handler
+            document.addEventListener('click', function(e) {
+                const nodeElement = e.target.closest('.node');
+                if (nodeElement) {
+                    const nodeId = parseInt(nodeElement.dataset.nodeId);
+                    const node = sampleNodes.find(n => n.id === nodeId);
+                    
+                    // Update sidebar with node data
+                    if (node) {
+                        editSidebar.querySelector('input[type="text"]').value = node.title;
+                        editSidebar.querySelector('textarea').value = node.content;
+                        
+                        // Set the type button active
+                        const typeButtons = editSidebar.querySelectorAll('.grid button');
+                        typeButtons.forEach(btn => {
+                            btn.classList.remove('bg-[#7B61FF]');
+                            btn.classList.add('bg-[#2A2A3A]');
+                        });
+                        
+                        const typeBtn = Array.from(typeButtons).find(btn => 
+                            btn.textContent.trim().toLowerCase() === node.type
+                        );
+                        
+                        if (typeBtn) {
+                            typeBtn.classList.remove('bg-[#2A2A3A]');
+                            typeBtn.classList.add('bg-[#7B61FF]');
+                        }
+                    }
+                    
+                    // Show sidebar
+                    editSidebar.classList.remove('translate-x-full');
+                    promptsSidebar.classList.add('translate-x-full');
+                }
+            });
+            
+            closeSidebar.addEventListener('click', function() {
+                editSidebar.classList.add('translate-x-full');
+            });
+            
+            closePrompts.addEventListener('click', function() {
+                promptsSidebar.classList.add('translate-x-full');
+            });
+            
+            showPrompts.addEventListener('click', function() {
+                promptsSidebar.classList.remove('translate-x-full');
+                editSidebar.classList.add('translate-x-full');
+            });
+            
+            // Timeline segment hover effect
+            const timelineSegments = document.querySelectorAll('.timeline-segment');
+            timelineSegments.forEach(segment => {
+                segment.addEventListener('mouseenter', function() {
+                    const nodeId = parseInt(this.dataset.sceneId);
+                    const nodeElement = document.querySelector(`.node[data-node-id="${nodeId}"]`);
+                    if (nodeElement) {
+                        nodeElement.classList.add('ring-2', 'ring-[#7B61FF]');
+                    }
+                });
+                
+                segment.addEventListener('mouseleave', function() {
+                    const nodeId = parseInt(this.dataset.sceneId);
+                    const nodeElement = document.querySelector(`.node[data-node-id="${nodeId}"]`);
+                    if (nodeElement) {
+                        nodeElement.classList.remove('ring-2', 'ring-[#7B61FF]');
+                    }
+                });
+            });
+            
+            // Zoom controls
+            const zoomInBtn = document.getElementById('zoom-in');
+            const zoomOutBtn = document.getElementById('zoom-out');
+            const zoomResetBtn = document.getElementById('zoom-reset');
+            const canvasContainer = document.getElementById('canvas-container');
+            
+            let scale = 1;
+            
+            zoomInBtn.addEventListener('click', function() {
+                scale += 0.1;
+                updateZoom();
+            });
+            
+            zoomOutBtn.addEventListener('click', function() {
+                if (scale > 0.5) {
+                    scale -= 0.1;
+                    updateZoom();
+                }
+            });
+            
+            zoomResetBtn.addEventListener('click', function() {
+                scale = 1;
+                updateZoom();
+            });
+            
+            function updateZoom() {
+                nodesContainer.style.transform = `scale(${scale})`;
+                connectionsLayer.style.transform = `scale(${scale})`;
+            }
+            
+            // Make nodes draggable
+            function makeDraggable(element) {
+                let pos1 = 0, pos2 = 0, pos3 = 0, pos4 = 0;
+                
+                element.onmousedown = dragMouseDown;
+                
+                function dragMouseDown(e) {
+                    e = e || window.event;
+                    e.preventDefault();
+                    
+                    // Get the mouse cursor position at startup
+                    pos3 = e.clientX;
+                    pos4 = e.clientY;
+                    
+                    document.onmouseup = closeDragElement;
+                    document.onmousemove = elementDrag;
+                }
+                
+                function elementDrag(e) {
+                    e = e || window.event;
+                    e.preventDefault();
+                    
+                    // Calculate the new cursor position
+                    pos1 = pos3 - e.clientX;
+                    pos2 = pos4 - e.clientY;
+                    pos3 = e.clientX;
+                    pos4 = e.clientY;
+                    
+                    // Set the element's new position
+                    element.style.top = (element.offsetTop - pos2) + "px";
+                    element.style.left = (element.offsetLeft - pos1) + "px";
+                    
+                    // Update connections
+                    updateConnections();
+                }
+                
+                function closeDragElement() {
+                    // Stop moving when mouse button is released
+                    document.onmouseup = null;
+                    document.onmousemove = null;
+                }
+            }
+            
+            // Create a node element
+            function createNode(node) {
+                const nodeElement = document.createElement('div');
+                nodeElement.className = `node absolute w-56 bg-[#1E1E2E] rounded-lg p-3 border fade-in`;
+                nodeElement.style.left = `${node.x}px`;
+                nodeElement.style.top = `${node.y}px`;
+                nodeElement.dataset.nodeId = node.id;
+                
+                // Set border color based on type
+                if (node.type === 'text') {
+                    nodeElement.classList.add('border-[#7B61FF]');
+                } else if (node.type === 'image') {
+                    nodeElement.classList.add('border-[#4BC1D2]');
+                } else {
+                    nodeElement.classList.add('border-[#9C27B0]');
+                }
+                
+                nodeElement.innerHTML = `
+                    <div class="flex justify-between items-center mb-2">
+                        <div class="text-sm font-medium truncate">${node.title}</div>
+                        <div class="flex space-x-1">
+                            <button class="text-xs p-1 rounded bg-[#2A2A3A] hover:bg-[#3A3A4A]">
+                                <i class="fas fa-ellipsis-h"></i>
+                            </button>
+                        </div>
+                    </div>
+                    <div class="text-xs text-gray-400 mb-3 line-clamp-2">${node.content}</div>
+                    <div class="flex justify-between items-center text-xs">
+                        <span class="capitalize">${node.type}</span>
+                        <span>${node.id === 1 ? '12s' : node.id === 2 ? '8s' : '15s'}</span>
+                    </div>
+                `;
+                
+                nodesContainer.appendChild(nodeElement);
+                makeDraggable(nodeElement);
+            }
+            
+            // Draw connection between nodes
+            function drawConnection(fromId, toId) {
+                const fromNode = document.querySelector(`.node[data-node-id="${fromId}"]`);
+                const toNode = document.querySelector(`.node[data-node-id="${toId}"]`);
+                
+                if (!fromNode || !toNode) return;
+                
+                const line = document.createElementNS("http://www.w3.org/2000/svg", "line");
+                line.classList.add('connection-line');
+                
+                // Function to update line position
+                const updateLine = () => {
+                    const fromRect = fromNode.getBoundingClientRect();
+                    const toRect = toNode.getBoundingClientRect();
+                    const containerRect = canvasContainer.getBoundingClientRect();
+                    
+                    const fromX = fromRect.left + fromRect.width / 2 - containerRect.left;
+                    const fromY = fromRect.top + fromRect.height / 2 - containerRect.top;
+                    const toX = toRect.left + toRect.width / 2 - containerRect.left;
+                    const toY = toRect.top + toRect.height / 2 - containerRect.top;
+                    
+                    line.setAttribute('x1', fromX);
+                    line.setAttribute('y1', fromY);
+                    line.setAttribute('x2', toX);
+                    line.setAttribute('y2', toY);
+                };
+                
+                updateLine();
+                connectionsLayer.appendChild(line);
+                
+                // Store reference to update later
+                line.dataset.fromId = fromId;
+                line.dataset.toId = toId;
+            }
+            
+            // Update all connections when nodes move
+            function updateConnections() {
+                const lines = connectionsLayer.querySelectorAll('line');
+                lines.forEach(line => {
+                    const fromId = parseInt(line.dataset.fromId);
+                    const toId = parseInt(line.dataset.toId);
+                    
+                    const fromNode = document.querySelector(`.node[data-node-id="${fromId}"]`);
+                    const toNode = document.querySelector(`.node[data-node-id="${toId}"]`);
+                    
+                    if (!fromNode || !toNode) return;
+                    
+                    const fromRect = fromNode.getBoundingClientRect();
+                    const toRect = toNode.getBoundingClientRect();
+                    const containerRect = canvasContainer.getBoundingClientRect();
+                    
+                    const fromX = fromRect.left + fromRect.width / 2 - containerRect.left;
+                    const fromY = fromRect.top + fromRect.height / 2 - containerRect.top;
+                    const toX = toRect.left + toRect.width / 2 - containerRect.left;
+                    const toY = toRect.top + toRect.height / 2 - containerRect.top;
+                    
+                    line.setAttribute('x1', fromX);
+                    line.setAttribute('y1', fromY);
+                    line.setAttribute('x2', toX);
+                    line.setAttribute('y2', toY);
+                });
+            }
+            
+            // Tool buttons
+            const toolButtons = document.querySelectorAll('.tool-btn');
+            toolButtons.forEach(btn => {
+                btn.addEventListener('click', function() {
+                    toolButtons.forEach(b => b.classList.remove('bg-[#7B61FF]'));
+                    this.classList.add('bg-[#7B61FF]');
+                    
+                    // In a real app, this would change the cursor mode
+                });
+            });
+            
+            // Keyboard shortcuts
+            document.addEventListener('keydown', function(e) {
+                // Ctrl+Z for undo
+                if (e.ctrlKey && e.key === 'z') {
+                    console.log('Undo action');
+                    e.preventDefault();
+                }
+                
+                // Ctrl+Y for redo
+                if (e.ctrlKey && e.key === 'y') {
+                    console.log('Redo action');
+                    e.preventDefault();
+                }
+                
+                // Ctrl+S for save
+                if (e.ctrlKey && e.key === 's') {
+                    console.log('Save action');
+                    e.preventDefault();
+                }
+            });
+        });
+    </script>
+</body>
+</html>

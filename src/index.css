@@ -1,0 +1,105 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  font-family: system-ui, Avenir, Helvetica, Arial, sans-serif;
+  line-height: 1.5;
+  font-weight: 400;
+
+  color-scheme: dark; /* Enforce dark scheme */
+  color: rgba(255, 255, 255, 0.87);
+  background-color: #1E1E2E; /* Match screenshot background */
+
+  font-synthesis: none;
+  text-rendering: optimizeLegibility;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+a {
+  font-weight: 500;
+  color: #646cff; /* Consider adjusting later if needed */
+  text-decoration: inherit;
+}
+a:hover {
+  color: #535bf2; /* Consider adjusting later if needed */
+}
+
+body {
+  margin: 0;
+  /* display: flex; Removed */
+  /* place-items: center; Removed */
+  min-width: 320px;
+  min-height: 100vh;
+  display: flex; /* Add flex to body */
+  flex-direction: column; /* Stack children vertically */
+}
+
+#root {
+  flex: 1; /* Allow root element to grow and fill space */
+  display: flex;
+  flex-direction: column;
+}
+
+
+h1 {
+  font-size: 3.2em;
+  line-height: 1.1;
+}
+
+/* button {
+  border-radius: 8px;
+  border: 1px solid transparent;
+  padding: 0.6em 1.2em;
+  font-size: 1em;
+  font-weight: 500;
+  font-family: inherit;
+  /* background-color: #1a1a1a; Base color removed, will be set by Tailwind classes * /
+  cursor: pointer;
+  transition: border-color 0.25s;
+} */
+/* button:hover { */
+  /* border-color: #646cff; Removed, hover effects via Tailwind * /
+/* } * /
+/* button:focus,
+button:focus-visible {
+  outline: 4px auto -webkit-focus-ring-color;
+} */
+
+/* Light theme media query removed */
+
+/* --- Базовый стиль фона для узлов --- */
+.node-background {
+  background-color: #0c0a11 !important; /* Задаем новый цвет фона */
+  border-radius: 1rem !important; /* Добавляем скругление (1rem = rounded-2xl) */
+}
+
+/* --- Стиль для заголовка узла --- */
+.node-header {
+  min-height: 80px !important; /* Задаем минимальную высоту */
+  padding-left: 25px !important; /* Добавляем левый отступ для заголовка */
+}
+
+
+/* --- Стили для всех textarea --- */
+textarea {
+  width: 300px !important;           /* Задаем ширину */
+  display: block !important;          /* Делаем блочным для margin: auto */
+  margin-left: auto !important;       /* Центрируем по горизонтали */
+  margin-right: auto !important;      /* Центрируем по горизонтали */
+  border-radius: 0.75rem !important; /* Добавляем скругление (0.75rem = rounded-lg) */
+}
+
+
+/* --- Стили для текстового блока сценария --- */
+.scenario-output-text {
+  max-width: 300px;  /* Ограничение ширины */
+  max-height: 100px; /* Уменьшаем максимальную высоту */
+  overflow: auto;    /* Скролл при переполнении */
+  margin-left: auto; /* Центрирование по горизонтали */
+  margin-right: auto;/* Центрирование по горизонтали */
+}
+
+/* Дублирующиеся стили для textarea удалены */
+/* Убираем все стили ниже, т.к. управляем ими через App.tsx или они больше не нужны */

@@ -20,10 +20,6 @@ const handleMouseDown = useCallback((e: React.MouseEvent<HTMLDivElement>, nodeId
     draggingNodeId.current = nodeId;
     const nodeElement = e.currentTarget;
     const rect = nodeElement.getBoundingClientRect();
-<<<<<<< HEAD
-=======
-    const canvasArea = document.getElementById('canvas-area'); // Получаем родительский контейнер
->>>>>>> 01a46da9f7f628b011a12d8f86fa16ed84f456e3
     // Рассчитываем смещение клика мыши относительно верхнего левого угла самого узла
     offset.current = {
         x: e.clientX - rect.left, // Correct offset calculation

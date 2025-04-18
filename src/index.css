@@ -8,8 +8,8 @@
   font-weight: 400;
 
   color-scheme: dark; /* Enforce dark scheme */
-  color: rgba(255, 255, 255, 0.87);
-  background-color: #1E1E2E; /* Match screenshot background */
+  color: #7f7d91;
+  background-color: #0a0a10; /* Match screenshot background */
 
   font-synthesis: none;
   text-rendering: optimizeLegibility;
@@ -44,21 +44,22 @@ body {
 
 
 h1 {
-  font-size: 3.2em;
+  font-size: 2.2em;
   line-height: 1.1;
 }
 
-/* button {
-  border-radius: 8px;
+button {
+  /* border-radius: 8px; */ /* Заменено на 1rem ниже */
   border: 1px solid transparent;
-  padding: 0.6em 1.2em;
+  padding: 0.6em 1.2em;  
   font-size: 1em;
   font-weight: 500;
   font-family: inherit;
-  /* background-color: #1a1a1a; Base color removed, will be set by Tailwind classes * /
+  background-color: #f88407; /* Управляется Tailwind */
   cursor: pointer;
-  transition: border-color 0.25s;
-} */
+  transition: border-color #10121b;
+  border-radius: 0.5rem !important; /* Увеличено скругление для ВСЕХ кнопок */
+}
 /* button:hover { */
   /* border-color: #646cff; Removed, hover effects via Tailwind * /
 /* } * /
@@ -71,8 +72,8 @@ button:focus-visible {
 
 /* --- Базовый стиль фона для узлов --- */
 .node-background {
-  background-color: #0c0a11 !important; /* Задаем новый цвет фона */
-  border-radius: 1rem !important; /* Добавляем скругление (1rem = rounded-2xl) */
+  background-color: #10121b !important; /* Задаем новый цвет фона */
+  border-radius: 0.85rem !important; /* Добавляем скругление (1rem = rounded-2xl) */
 }
 
 /* --- Стиль для заголовка узла --- */
@@ -88,18 +89,165 @@ textarea {
   display: block !important;          /* Делаем блочным для margin: auto */
   margin-left: auto !important;       /* Центрируем по горизонтали */
   margin-right: auto !important;      /* Центрируем по горизонтали */
-  border-radius: 0.75rem !important; /* Добавляем скругление (0.75rem = rounded-lg) */
+  border-radius: 0.5rem !important; /* Добавляем скругление (0.75rem = rounded-lg) */
+  /* Стилизация скроллбара (Firefox) */
+  scrollbar-width: thin;
+  scrollbar-color: #000000 transparent;
 }
 
 
 /* --- Стили для текстового блока сценария --- */
-.scenario-output-text {
-  max-width: 300px;  /* Ограничение ширины */
-  max-height: 100px; /* Уменьшаем максимальную высоту */
-  overflow: auto;    /* Скролл при переполнении */
+/* Общие стили для блоков вывода текста сценария */
+.scenario-output-common {
+  max-height: 130px; /* Уменьшаем максимальную высоту */
+  overflow: auto; /* Скролл при переполнении */
   margin-left: auto; /* Центрирование по горизонтали */
   margin-right: auto;/* Центрирование по горизонтали */
+  border-radius: 0.75rem !important; /* Скругление (rounded-lg) */
+  font-size: 0.65rem !important; /* Уменьшаем шрифт */
+  line-height: 1.3 !important; /* Уменьшаем межстрочный интервал */
+  position: relative; /* Добавлено для позиционирования дочерней кнопки копирования */
+/* Стилизация скроллбара (WebKit) */
+&::-webkit-scrollbar { width: 6px; }
+&::-webkit-scrollbar-track { background: transparent; margin: 2px 0; }
+&::-webkit-scrollbar-thumb { background-color: #000000; border-radius: 0.5rem; border: 1px solid #333; }
+/* Стилизация скроллбара (Firefox) */
+scrollbar-width: thin;
+scrollbar-color: #000000 transparent;
+}
+
+/* Ширина для основного блока сценария */
+.scenario-output-main {
+width: 350px !important; /* (400 - 25 - 25) */
+}
+
+/* Ширина для блока деталей сценария */
+.scenario-output-detail {
+width: 250px !important; /* (300 - 25 - 25) */
 }
 
 /* Дублирующиеся стили для textarea удалены */
 /* Убираем все стили ниже, т.к. управляем ими через App.tsx или они больше не нужны */
+
+
+/* --- Стили для метки ноды-ассоциации --- */
+.node-association-label {
+white-space: nowrap !important; /* Запрещаем перенос текста */
+overflow: hidden; /* Скрываем текст, если он все же выйдет за пределы (на всякий случай) */
+text-overflow: ellipsis; /* Добавляем многоточие, если текст обрезан */
+color: #7f7d91 !important; /* Возвращаем стандартный цвет текста */
+font-weight: 400 !important; /* Возвращаем стандартную жирность */
+font-size: 0.875rem !important; /* Размер шрифта text-sm */
+/* Можно добавить другие стили по необходимости */
+}
+
+
+/* --- Стили для элементов ноды 'script_input' --- */
+.script-input-button-wrapper {
+margin-top: 10px !important; /* Поднимаем кнопку */
+position: relative; /* Добавим, чтобы z-index работал, если нужно */
+z-index: 1; /* На случай перекрытия */
+}
+
+.script-input-model-select {
+padding-top: 0.75rem !important; /* Увеличиваем верт. отступ (как p-3/p-4 Tailwind) */
+padding-bottom: 0.75rem !important; /* Увеличиваем верт. отступ */
+border-radius: 0.75rem !important; /* Скругление (rounded-lg) */
+height: auto !important; /* Сбросим возможную фикс. высоту для автоопределения */
+}
+
+.script-input-theme-textarea {
+margin-top: 20px !important; /* Устанавливаем желаемый отступ сверху */
+/* Стилизация скроллбара (Firefox) */
+scrollbar-width: thin;
+scrollbar-color: #000000 transparent;
+}
+
+
+/* --- Стили для кнопок деталей сценария --- */
+.script-output-button-heroes {
+  background-color: #09090e; /* bg-gray-700/80 */
+  color: #d1d5db; /* text-gray-300 */
+  border: 1px solid #7f7d91; /* border-gray-600 */
+  transition: background-color 0.2s; /* Add transition for hover */
+}
+.script-output-button-heroes:hover {
+   background-color: rgba(113, 128, 150, 0.8); /* hover:bg-gray-600/80 */
+}
+
+.script-output-button-locations {
+  background-color: #09090e; /* bg-gray-700/80 */
+  color: #d1d5db; /* text-gray-300 */
+  border: 1px solid #7f7d91; /* border-gray-600 */
+  transition: background-color 0.2s; /* Add transition for hover */
+}
+ .script-output-button-locations:hover {
+   background-color: rgba(113, 128, 150, 0.8); /* hover:bg-gray-600/80 */
+
+
+/* --- Стиль для кнопки Генерации Сцен --- */
+/* Увеличиваем специфичность еще больше, добавляя родительский div */
+div.flex.justify-center button.script-output-button-generate-scenes {
+  background-color: #f88407; /* Новый цвет по запросу */
+  color: #000000; /* text-black */
+  border: 1px solid transparent;
+  transition: background-color 0.2s;
+}
+div.flex.justify-center button.script-output-button-generate-scenes:hover {
+  background-color: #e07406; /* Скорректированный цвет для hover */
+}
+
+}
+
+
+/* --- Стиль для кнопки Копирования Текста --- */
+.copy-to-clipboard-button {
+  position: absolute !important; /* Гарантируем позиционирование */
+  top: 8px !important; /* Отступ сверху (соответствует top-2) */
+  right: 33px !important; /* Отступ справа (8px + 25px для сдвига влево) */
+  width: 20px !important; /* Ширина (соответствует w-5) */
+  height: 20px !important; /* Высота (соответствует h-5) */
+  padding: 0 !important; /* Убираем отступы */
+  border: none !important; /* Убираем рамку */
+  background-color: rgba(0, 0, 0, 0.5) !important; /* Полупрозрачный черный */
+  border-radius: 0.25rem !important; /* Небольшое скругление (соответствует rounded) */
+  cursor: pointer !important; /* Курсор */
+  display: flex !important; /* Для центрирования иконки */
+  align-items: center !important; /* Центрирование по вертикали */
+  justify-content: center !important; /* Центрирование по горизонтали */
+  box-shadow: none !important; /* Убираем возможные тени */
+  transition: background-color 0.2s; /* Плавность для hover */
+}
+
+.copy-to-clipboard-button:hover {
+  background-color: rgba(0, 0, 0, 0.7) !important; /* Чуть темнее при наведении */
+}
+
+.copy-to-clipboard-button img {
+  width: 12px !important; /* Размер иконки (соответствует w-3) */
+  height: 12px !important; /* Размер иконки (соответствует h-3) */
+}
+
+
+.script-output-button-mood {
+  background-color: #09090e; /* bg-gray-700/80 */
+  color: #d1d5db; /* text-gray-300 */
+  border: 1px solid #7f7d91; /* border-gray-600 */
+  transition: background-color 0.2s; /* Add transition for hover */
+}
+ .script-output-button-mood:hover {
+   background-color: rgba(113, 128, 150, 0.8); /* hover:bg-gray-600/80 */
+}
+
+
+
+/* --- Стиль для фона холста с точками --- */
+.canvas-background-dotted {
+  /* Используем radial-gradient для создания точек */
+  background-image: radial-gradient(circle at 1px 1px, rgba(128, 128, 128, 0.25) 1px, transparent 0); /* Полупрозрачные серые точки */
+  /* Размер ячейки сетки */
+  background-size: 25px 25px;
+  /* Начальная позиция сетки */
+  background-position: 0 0;
+}
+

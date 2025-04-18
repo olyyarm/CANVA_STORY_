@@ -1,5 +1,5 @@
 // src/hooks/useDraggableNodes.ts
-import React, { useState, useRef, useEffect, useCallback, Dispatch, SetStateAction } from 'react';
+import React, { useRef, useEffect, useCallback, Dispatch, SetStateAction } from 'react';
 import { NodesState } from '../types'; // Импортируем типы
 
 interface UseDraggableNodesProps {
@@ -22,8 +22,6 @@ const handleMouseDown = useCallback((e: React.MouseEvent<HTMLDivElement>, nodeId
     const nodeElement = e.currentTarget;
     const rect = nodeElement.getBoundingClientRect();
     const canvasArea = document.getElementById('canvas-area'); // Получаем родительский контейнер
-    const canvasRect = canvasArea ? canvasArea.getBoundingClientRect() : { left: 0, top: 0 };
-
     // Рассчитываем смещение клика мыши относительно верхнего левого угла самого узла
     offset.current = {
         x: e.clientX - rect.left, // Correct offset calculation

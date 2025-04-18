@@ -1,7 +1,7 @@
 // src/App.tsx - Refactored
 import React, { useState, useRef } from 'react'; // Added useState, useRef
 // Import removed by insert_content operation above
-import { NodeData, NodesState } from './types';
+import { NodesState } from './types';
 import { MISTRAL_MODELS } from './constants'; // Changed from IONET_MODELS
 import { useNodeManagement } from './hooks/useNodeManagement';
 import { useDraggableNodes } from './hooks/useDraggableNodes';
@@ -48,7 +48,6 @@ setNodes,
 handleInputChange,
 handleThemeInputChange,
 handleModelChange,
-handleInitialAssociation,
 handleContinueAssociation,
 handleScriptVisualization,
 handleScenarioDetailClick,

@@ -30,9 +30,10 @@ jobs:
       - name: Build project
         run: npm run build # Или yarn build
         env:
-          # Если Vite нужно знать базовый путь во время сборки
-          # Убедитесь, что имя репозитория указано верно
-          BASE_URL: /CANVA_STORY_/ 
+          # Передаем секрет как переменную окружения для Vite
+          VITE_MISTRAL_API_KEY: ${{ secrets.MISTRAL_API_KEY }}
+          # Базовый URL больше не нужен здесь, т.к. он задан в vite.config.ts
+          # BASE_URL: /CANVA_STORY_/
 
       - name: Setup Pages
         uses: actions/configure-pages@v4

@@ -5,10 +5,9 @@ import { NodesState } from '../types'; // Импортируем типы
 interface UseDraggableNodesProps {
   nodes: NodesState;
   setNodes: Dispatch<SetStateAction<NodesState>>;
-  canvasOffset: { x: number; y: number }; // Added canvasOffset
 }
 
-export const useDraggableNodes = ({ nodes, setNodes, canvasOffset }: UseDraggableNodesProps) => { // Added canvasOffset
+export const useDraggableNodes = ({ nodes, setNodes }: UseDraggableNodesProps) => { // Removed canvasOffset
 const draggingNodeId = useRef<string | null>(null);
 const offset = useRef({ x: 0, y: 0 });
 
@@ -68,7 +67,7 @@ const handleMouseMove = useCallback((e: MouseEvent) => {
             [nodeId]: { ...prevNodes[nodeId], x: newX, y: newY }
         };
     });
-}, [setNodes, canvasOffset]); // Added canvasOffset to dependency array
+}, [setNodes]); // Removed canvasOffset from dependency array
 
 const handleMouseUp = useCallback(() => {
     if (draggingNodeId.current) {

@@ -58,7 +58,7 @@ handleGeneratePollinationsImage
 } = useNodeManagement(initialNodesState);
 
 // Используем хук для перетаскивания, передаем canvasOffset
-const { handleMouseDown } = useDraggableNodes({ nodes, setNodes, canvasOffset });
+const { handleMouseDown } = useDraggableNodes({ nodes, setNodes });
 
 // Функция расчета координат линии
 const getLineCoords = (parentId: string, childId: string): { x1: number; y1: number; x2: number; y2: number } | null => {

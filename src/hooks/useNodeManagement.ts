@@ -557,10 +557,10 @@ console.log('[SCENE PROMPT GEN] Calling API for ' + sceneLabel);
      return;
    }
 
-   const width = 900; // Default API width
-   const height = 600; // Default API height
+   const width = 1280; // Default API width
+   const height = 768; // Default API height
    const encodedPrompt = encodeURIComponent(prompt);
-   const apiUrl = `https://image.pollinations.ai/prompt/${encodedPrompt}?model=flux&width=${width}&height=${height}&seed=0&nologo=1&enhance=1&private=1`;
+   const apiUrl = `https://image.pollinations.ai/prompt/${encodedPrompt}?model=flux&width=${width}&height=${height}&seed=0&nologo=true&enhance=1&private=1`;
    console.log(`[POLLINATIONS GEN v2] Calling API: ${apiUrl}`);
 
    try {

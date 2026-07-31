@@ -90,7 +90,7 @@ http://localhost:8188
 В поле checkpoint укажите имя SDXL checkpoint из папки `ComfyUI/models/checkpoints`, например:
 
 ```text
-sd_xl_base_1.0.safetensors
+SDXL\sd_xl_base_1.0.safetensors
 ```
 
 Внутри сценовой ноды при выборе ComfyUI появляется выбор pipeline. Сейчас подключён первый pipeline: `SDXL`. После успешной генерации приложение запрашивает готовую картинку через ComfyUI `/view` и отправляет `/free` с `unload_models: true`, чтобы выгрузить модель из памяти, если включён переключатель «Выгружать».

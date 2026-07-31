@@ -5,7 +5,7 @@ const MISTRAL_ENDPOINT = 'https://api.mistral.ai/v1/chat/completions';
 export const LM_STUDIO_DEFAULT_ENDPOINT = 'http://localhost:1234/v1/chat/completions';
 export const LM_STUDIO_DEFAULT_MODEL = 'local-model';
 export const COMFYUI_DEFAULT_ENDPOINT = 'http://localhost:8188';
-export const COMFYUI_DEFAULT_CHECKPOINT = 'sd_xl_base_1.0.safetensors';
+export const COMFYUI_DEFAULT_CHECKPOINT = 'SDXL\\sd_xl_base_1.0.safetensors';
 
 export type GenerationMode = 'mock' | 'mistral' | 'lmstudio';
 export type ImageProvider = 'pollinations' | 'comfyui';
@@ -208,6 +208,8 @@ const getComfyCheckpointNames = async (baseUrl: string, signal?: AbortSignal) =>
   return names.filter((name): name is string => typeof name === 'string');
 };
 
+const getCheckpointFileName = (value: string) => value.split(/[\\/]/).pop()?.toLowerCase() ?? value.toLowerCase();
+
 const resolveComfyCheckpoint = async (
   baseUrl: string,
   configuredCheckpoint: string,
@@ -216,6 +218,12 @@ const resolveComfyCheckpoint = async (
   const checkpoint = configuredCheckpoint.trim() || COMFYUI_DEFAULT_CHECKPOINT;
   const names = await getComfyCheckpointNames(baseUrl, signal);
   if (!names || names.includes(checkpoint)) return checkpoint;
+
+  const exactCaseInsensitiveMatch = names.find((name) => name.toLowerCase() === checkpoint.toLowerCase());
+  if (exactCaseInsensitiveMatch) return exactCaseInsensitiveMatch;
+
+  const fileNameMatch = names.find((name) => getCheckpointFileName(name) === getCheckpointFileName(checkpoint));
+  if (fileNameMatch) return fileNameMatch;
 
   const sdxlCandidates = names.filter((name) => /sdxl|sd_xl|xl/i.test(name));
   const suggestions = (sdxlCandidates.length > 0 ? sdxlCandidates : names).slice(0, 8).join(', ');

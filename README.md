@@ -57,6 +57,24 @@ VITE_MISTRAL_API_KEY=your_local_key
 
 Важно: Vite встраивает все переменные `VITE_*` в клиентский JavaScript. Такой ключ виден пользователю сборки и не является секретом. Не добавляйте реальный ключ в публичный GitHub Pages deploy. Для безопасного production-подключения нужен серверный proxy — это отдельный следующий этап.
 
+## Локальное подключение LM Studio
+
+В верхней панели приложения есть переключатель режима генерации: «Тест», «Mistral API» и «LM Studio». При выборе LM Studio появляются поля endpoint и model.
+
+По умолчанию используется:
+
+```text
+http://localhost:1234/v1/chat/completions
+```
+
+Если LM Studio запущен на другом домашнем компьютере, укажите адрес этой машины в локальной сети, например:
+
+```text
+http://192.168.1.10:1234
+```
+
+Приложение само добавит `/v1/chat/completions`, если указан только базовый адрес. В поле model впишите имя модели, загруженной в LM Studio. Настройки сохраняются в браузере локально.
+
 ## Основной рабочий путь
 
 1. В ноде «Исходный сценарий» введите текст.
@@ -115,7 +133,7 @@ Vite использует базовый путь `/CANVA_STORY_/`. Workflow `.g
 - `src/hooks/useNodeManagement.ts` — основной сценарий и операции генерации;
 - `src/hooks/useCanvasNavigation.ts` — pan, zoom, fit и center;
 - `src/hooks/useDraggableNodes.ts` — drag, selection и resize;
-- `src/api.ts` — выбор тестового или Mistral-режима;
+- `src/api.ts` — выбор тестового, Mistral или LM Studio-режима;
 - `src/mockData.ts` — локальные тестовые ответы;
 - `src/project.ts` — схема v1, localStorage, экспортная очистка и проверка импорта;
 - `AUDIT.md` — исходный аудит;

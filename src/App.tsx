@@ -1,5 +1,11 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { getGenerationMode } from './api';
+import {
+  GenerationMode,
+  GenerationSettings,
+  getDefaultGenerationSettings,
+  LM_STUDIO_DEFAULT_ENDPOINT,
+  LM_STUDIO_DEFAULT_MODEL,
+} from './api';
 import NodeRenderer from './components/NodeRenderer';
 import { useCanvasNavigation } from './hooks/useCanvasNavigation';
 import { useDraggableNodes } from './hooks/useDraggableNodes';
@@ -15,6 +21,37 @@ import {
 } from './project';
 import { AppNotice, NodesState, ProjectDocument, ViewportState } from './types';
 import './App.css';
+
+const GENERATION_SETTINGS_STORAGE_KEY = 'canva-story.generation-settings.v1';
+
+const generationModeLabels: Record<GenerationMode, string> = {
+  mock: 'Тестовый режим',
+  mistral: 'Mistral API',
+  lmstudio: 'LM Studio',
+};
+
+const isGenerationMode = (value: unknown): value is GenerationMode =>
+  value === 'mock' || value === 'mistral' || value === 'lmstudio';
+
+const loadGenerationSettings = (): GenerationSettings => {
+  const fallback = getDefaultGenerationSettings();
+  try {
+    const saved = localStorage.getItem(GENERATION_SETTINGS_STORAGE_KEY);
+    if (!saved) return fallback;
+    const parsed = JSON.parse(saved) as Partial<GenerationSettings>;
+    return {
+      mode: isGenerationMode(parsed.mode) ? parsed.mode : fallback.mode,
+      lmStudioEndpoint: typeof parsed.lmStudioEndpoint === 'string'
+        ? parsed.lmStudioEndpoint
+        : LM_STUDIO_DEFAULT_ENDPOINT,
+      lmStudioModel: typeof parsed.lmStudioModel === 'string'
+        ? parsed.lmStudioModel
+        : LM_STUDIO_DEFAULT_MODEL,
+    };
+  } catch {
+    return fallback;
+  }
+};
 
 const collectNodeFamily = (nodes: NodesState, rootId: string) => {
   const ids = new Set([rootId]);
@@ -46,6 +83,7 @@ const App = () => {
   const [projectTitle, setProjectTitle] = useState(bootstrap.project.title);
   const [projectNotice, setProjectNotice] = useState<AppNotice | null>(null);
   const [saveStatus, setSaveStatus] = useState<'saved' | 'saving' | 'error'>('saved');
+  const [generationSettings, setGenerationSettings] = useState<GenerationSettings>(loadGenerationSettings);
   const [viewport, setViewport] = useState<ViewportState>(bootstrap.project.viewport);
   const {
     nodes,
@@ -64,7 +102,7 @@ const App = () => {
     handleCopyToClipboard,
     handleGeneratePollinationsImage,
     handleCancelGeneration,
-  } = useNodeManagement(bootstrap.project.nodes);
+  } = useNodeManagement(bootstrap.project.nodes, generationSettings);
 
   const clearSelection = useCallback(() => setSelectedNodeId(null), []);
   const {
@@ -109,6 +147,14 @@ const App = () => {
     const timer = window.setTimeout(dismissNotice, 3800);
     return () => window.clearTimeout(timer);
   }, [dismissNotice, visibleNotice]);
+
+  useEffect(() => {
+    try {
+      localStorage.setItem(GENERATION_SETTINGS_STORAGE_KEY, JSON.stringify(generationSettings));
+    } catch {
+      // Project saving has its own visible status; generation settings can fall back to defaults.
+    }
+  }, [generationSettings]);
 
   useEffect(() => {
     setSaveStatus('saving');
@@ -255,6 +301,20 @@ const App = () => {
     }
   }, [applyProject, showProjectNotice]);
 
+  const handleGenerationModeChange = useCallback((event: React.ChangeEvent<HTMLSelectElement>) => {
+    const mode = event.target.value;
+    if (!isGenerationMode(mode)) return;
+    setGenerationSettings((settings) => ({ ...settings, mode }));
+  }, []);
+
+  const handleLmStudioEndpointChange = useCallback((event: React.ChangeEvent<HTMLInputElement>) => {
+    setGenerationSettings((settings) => ({ ...settings, lmStudioEndpoint: event.target.value }));
+  }, []);
+
+  const handleLmStudioModelChange = useCallback((event: React.ChangeEvent<HTMLInputElement>) => {
+    setGenerationSettings((settings) => ({ ...settings, lmStudioModel: event.target.value }));
+  }, []);
+
   const getConnectionPath = (parentId: string, childId: string) => {
     const parentNode = nodes[parentId];
     const childNode = nodes[childId];
@@ -295,9 +355,39 @@ const App = () => {
             <span className={`save-indicator save-indicator--${saveStatus}`}>
               {saveStatus === 'saving' ? 'Сохраняем…' : saveStatus === 'error' ? 'Ошибка сохранения' : 'Сохранено локально'}
             </span>
-            <span className={`mode-badge mode-badge--${getGenerationMode()}`}>
-              {getGenerationMode() === 'mock' ? 'Тестовый режим' : 'Mistral API'}
+            <span className={`mode-badge mode-badge--${generationSettings.mode}`}>
+              {generationModeLabels[generationSettings.mode]}
             </span>
+          </div>
+          <div className="generation-controls" aria-label="Режим генерации текста">
+            <select
+              className="generation-select"
+              value={generationSettings.mode}
+              onChange={handleGenerationModeChange}
+              aria-label="Провайдер генерации текста"
+            >
+              <option value="mock">Тест</option>
+              <option value="mistral">Mistral API</option>
+              <option value="lmstudio">LM Studio</option>
+            </select>
+            {generationSettings.mode === 'lmstudio' && (
+              <>
+                <input
+                  className="generation-endpoint-input"
+                  value={generationSettings.lmStudioEndpoint}
+                  onChange={handleLmStudioEndpointChange}
+                  placeholder={LM_STUDIO_DEFAULT_ENDPOINT}
+                  aria-label="Endpoint LM Studio"
+                />
+                <input
+                  className="generation-model-input"
+                  value={generationSettings.lmStudioModel}
+                  onChange={handleLmStudioModelChange}
+                  placeholder={LM_STUDIO_DEFAULT_MODEL}
+                  aria-label="Модель LM Studio"
+                />
+              </>
+            )}
           </div>
           <div className="workflow-hint" aria-label="Текущий рабочий процесс">
             <span>1 · Текст</span>

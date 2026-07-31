@@ -6,7 +6,7 @@ import {
   useRef,
   useState,
 } from 'react';
-import { generateText, getGenerationMode } from '../api';
+import { generateText, GenerationSettings } from '../api';
 import {
   ASSOCIATE_SYSTEM_PROMPT,
   HERO_DETAIL_SYSTEM_PROMPT,
@@ -151,7 +151,10 @@ const mockImageUrl = (label: string) => {
   return `data:image/svg+xml;charset=utf-8,${encodeURIComponent(svg)}`;
 };
 
-export const useNodeManagement = (initialNodes: NodesState): UseNodeManagementReturn => {
+export const useNodeManagement = (
+  initialNodes: NodesState,
+  generationSettings: GenerationSettings,
+): UseNodeManagementReturn => {
   const [nodes, setNodesState] = useState<NodesState>(initialNodes);
   const [notice, setNotice] = useState<AppNotice | null>(null);
   const nodesRef = useRef(nodes);
@@ -200,7 +203,7 @@ export const useNodeManagement = (initialNodes: NodesState): UseNodeManagementRe
     updateNode(nodeId, { isLoading: true, error: undefined, statusMessage });
 
     try {
-      return await generateText(request, controller.signal);
+      return await generateText(request, controller.signal, generationSettings);
     } catch (error) {
       if (isAbortError(error)) {
         showNotice('info', 'Генерация отменена. Сохранён последний готовый результат.');
@@ -214,7 +217,7 @@ export const useNodeManagement = (initialNodes: NodesState): UseNodeManagementRe
       activeRequests.current.delete(nodeId);
       updateNode(nodeId, { isLoading: false, statusMessage: undefined });
     }
-  }, [showNotice, updateNode]);
+  }, [generationSettings, showNotice, updateNode]);
 
   const handleInputChange = useCallback((event: React.ChangeEvent<HTMLTextAreaElement>, nodeId: string) => {
     updateNode(nodeId, { inputValue: event.target.value, error: undefined });
@@ -471,7 +474,7 @@ export const useNodeManagement = (initialNodes: NodesState): UseNodeManagementRe
     updateNode(parentNodeId, { isLoadingImage: true, pollinationsApiError: undefined });
 
     try {
-      if (getGenerationMode() === 'mock') {
+      if (generationSettings.mode === 'mock') {
         await new Promise<void>((resolve, reject) => {
           const timer = window.setTimeout(resolve, 350);
           controller.signal.addEventListener('abort', () => {
@@ -501,7 +504,7 @@ export const useNodeManagement = (initialNodes: NodesState): UseNodeManagementRe
       activeRequests.current.delete(requestId);
       updateNode(parentNodeId, { isLoadingImage: false });
     }
-  }, [showNotice, updateNode, upsertImageNode]);
+  }, [generationSettings.mode, showNotice, updateNode, upsertImageNode]);
 
   const handleCancelGeneration = useCallback((nodeId: string) => {
     activeRequests.current.get(nodeId)?.abort();

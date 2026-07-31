@@ -132,6 +132,11 @@ const App = () => {
   const selectedNode = selectedNodeId ? nodes[selectedNodeId] : undefined;
   const deleteCandidate = deleteCandidateId ? nodes[deleteCandidateId] : undefined;
   const visibleNotice = projectNotice ?? notice;
+  const lmStudioEndpoint = generationSettings.lmStudioEndpoint.trim();
+  const hasLmStudioMixedContentRisk = generationSettings.mode === 'lmstudio'
+    && window.location.protocol === 'https:'
+    && lmStudioEndpoint.startsWith('http://')
+    && !/^http:\/\/(localhost|127\.0\.0\.1|\[::1\])(?::|\/|$)/i.test(lmStudioEndpoint);
 
   const showProjectNotice = useCallback((tone: AppNotice['tone'], message: string) => {
     setProjectNotice({ id: Date.now(), tone, message });
@@ -389,6 +394,11 @@ const App = () => {
               </>
             )}
           </div>
+          {hasLmStudioMixedContentRisk && (
+            <div className="generation-warning" role="status">
+              GitHub Pages работает по HTTPS. Для HTTP-адреса в домашней сети браузер может потребовать локальный запуск приложения или HTTPS/proxy.
+            </div>
+          )}
           <div className="workflow-hint" aria-label="Текущий рабочий процесс">
             <span>1 · Текст</span>
             <span>2 · Детали</span>

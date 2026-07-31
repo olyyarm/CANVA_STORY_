@@ -233,6 +233,17 @@
   justify-content: center;
 }
 
+.generation-warning {
+  overflow: hidden;
+  color: #e2b47f;
+  font-size: 10px;
+  font-weight: 600;
+  line-height: 1.25;
+  text-align: center;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .project-actions {
   display: flex;
   align-items: center;
@@ -995,6 +1006,10 @@
 
   .generation-model-input {
     grid-column: 2;
+  }
+
+  .generation-warning {
+    white-space: normal;
   }
 
   .workflow-hint {

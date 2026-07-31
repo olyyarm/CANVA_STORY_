@@ -1,104 +1,116 @@
-// src/hooks/useDraggableNodes.ts
-import React, { useRef, useEffect, useCallback, Dispatch, SetStateAction } from 'react';
-import { NodesState } from '../types'; // Импортируем типы
+import { Dispatch, SetStateAction, useCallback, useEffect, useRef } from 'react';
+import { NodesState } from '../types';
 
 interface UseDraggableNodesProps {
   nodes: NodesState;
   setNodes: Dispatch<SetStateAction<NodesState>>;
+  zoom: number;
+  onSelect: (nodeId: string) => void;
 }
 
-export const useDraggableNodes = ({ nodes, setNodes }: UseDraggableNodesProps) => { // Removed canvasOffset
-const draggingNodeId = useRef<string | null>(null);
-const offset = useRef({ x: 0, y: 0 });
+type Interaction = {
+  type: 'drag' | 'resize';
+  nodeId: string;
+  startClientX: number;
+  startClientY: number;
+  startX: number;
+  startY: number;
+  startWidth: number;
+  startHeight: number;
+};
 
-const handleMouseDown = useCallback((e: React.MouseEvent<HTMLDivElement>, nodeId: string) => {
-    if (e.button !== 0) return; // Только левая кнопка мыши
-    const target = e.target as HTMLElement;
-    // Игнорируем клики по элементам ввода, кнопкам и т.д., чтобы не мешать их функциональности
-    if (target.closest('textarea, button, select, input')) return;
+export const useDraggableNodes = ({ nodes, setNodes, zoom, onSelect }: UseDraggableNodesProps) => {
+  const interactionRef = useRef<Interaction | null>(null);
+  const nodesRef = useRef(nodes);
+  const zoomRef = useRef(zoom);
 
-    draggingNodeId.current = nodeId;
-    const nodeElement = e.currentTarget;
-    const rect = nodeElement.getBoundingClientRect();
-    // Рассчитываем смещение клика мыши относительно верхнего левого угла самого узла
-    offset.current = {
-        x: e.clientX - rect.left, // Correct offset calculation
-        y: e.clientY - rect.top  // Correct offset calculation
+  useEffect(() => {
+    nodesRef.current = nodes;
+  }, [nodes]);
+  useEffect(() => {
+    zoomRef.current = zoom;
+  }, [zoom]);
+
+  const beginInteraction = useCallback((
+    event: React.MouseEvent,
+    nodeId: string,
+    type: Interaction['type'],
+  ) => {
+    if (event.button !== 0) return;
+    const node = nodesRef.current[nodeId];
+    if (!node) return;
+    event.preventDefault();
+    event.stopPropagation();
+    onSelect(nodeId);
+    interactionRef.current = {
+      type,
+      nodeId,
+      startClientX: event.clientX,
+      startClientY: event.clientY,
+      startX: node.x,
+      startY: node.y,
+      startWidth: node.width ?? 300,
+      startHeight: node.height ?? 220,
     };
+  }, [onSelect]);
 
-    e.preventDefault(); // Предотвращаем стандартное поведение (например, выделение текста)
-
-    // Поднимаем перетаскиваемый узел наверх
-    const currentLevel = nodes[nodeId]?.level ?? 1;
-    nodeElement.style.zIndex = `${currentLevel + 10}`; // Делаем его выше других узлов
-
-    // Опционально: можно сбросить zIndex других узлов на их уровень, если нужно
-    // Object.keys(nodes).forEach(id => {
-    //     if (id !== nodeId) {
-    //         const el = document.getElementById(`node-${id}`);
-    //         if (el) el.style.zIndex = `${nodes[id]?.level ?? 1}`;
-    //     }
-    // });
-}, [nodes]); // Зависимость от nodes нужна для currentLevel
-
-const handleMouseMove = useCallback((e: MouseEvent) => {
-    if (!draggingNodeId.current) return;
-    const nodeId = draggingNodeId.current;
-
-    const canvasArea = document.getElementById('canvas-area');
-    if (!canvasArea) return; // Выходим, если нет canvas
-    const canvasRect = canvasArea.getBoundingClientRect();
-
-    // Рассчитываем новые координаты внутри untransformed #canvas-area
-    let newX = e.clientX - canvasRect.left - offset.current.x; // Removed subtraction of canvasOffset.x
-    let newY = e.clientY - canvasRect.top - offset.current.y; // Removed subtraction of canvasOffset.y
-
-    // Ограничиваем перемещение внутри видимой области canvasArea (опционально)
-    // newX = Math.max(0, Math.min(newX, canvasRect.width - (nodes[nodeId]?.width ?? 0)));
-    // newY = Math.max(0, Math.min(newY, canvasRect.height - (nodes[nodeId]?.height ?? 0)));
-
-    setNodes(prevNodes => {
-        // Проверяем, существует ли еще узел (на случай асинхронного удаления)
-        if (!prevNodes[nodeId]) {
-            return prevNodes;
-        }
-        return {
-            ...prevNodes,
-            [nodeId]: { ...prevNodes[nodeId], x: newX, y: newY }
-        };
-    });
-}, [setNodes]); // Removed canvasOffset from dependency array
-
-const handleMouseUp = useCallback(() => {
-    if (draggingNodeId.current) {
-        const nodeId = draggingNodeId.current;
-        const nodeElement = document.getElementById(`node-${nodeId}`);
-        // Возвращаем zIndex к нормальному уровню
-        if (nodeElement && nodes[nodeId]) {
-             nodeElement.style.zIndex = `${nodes[nodeId]?.level ?? 1}`;
-        }
-        draggingNodeId.current = null; // Сбрасываем ID перетаскиваемого узла
+  const handleMouseDown = useCallback((event: React.MouseEvent<HTMLDivElement>, nodeId: string) => {
+    const target = event.target as HTMLElement;
+    if (target.closest('textarea, button, select, input, a, [contenteditable="true"]')) {
+      onSelect(nodeId);
+      return;
     }
-}, [nodes]); // Зависимость от nodes нужна для level
+    beginInteraction(event, nodeId, 'drag');
+  }, [beginInteraction, onSelect]);
 
-// Глобальные слушатели для mousemove и mouseup
-useEffect(() => {
-    const handleGlobalMouseMove = (e: MouseEvent) => handleMouseMove(e);
-    const handleGlobalMouseUp = () => handleMouseUp();
+  const handleResizeMouseDown = useCallback((event: React.MouseEvent<HTMLButtonElement>, nodeId: string) => {
+    beginInteraction(event, nodeId, 'resize');
+  }, [beginInteraction]);
 
-    // Добавляем слушателей, только если началось перетаскивание (оптимизация)
-    // Но проще добавить их сразу и проверять draggingNodeId.current внутри обработчиков
-    window.addEventListener('mousemove', handleGlobalMouseMove);
-    window.addEventListener('mouseup', handleGlobalMouseUp, true); // true для фазы захвата, чтобы поймать mouseup даже вне узла
+  useEffect(() => {
+    const handleMouseMove = (event: MouseEvent) => {
+      const interaction = interactionRef.current;
+      if (!interaction) return;
+      const scale = zoomRef.current || 1;
+      const deltaX = (event.clientX - interaction.startClientX) / scale;
+      const deltaY = (event.clientY - interaction.startClientY) / scale;
 
-    return () => {
-        // Очищаем слушателей при размонтировании компонента или изменении обработчиков
-        window.removeEventListener('mousemove', handleGlobalMouseMove);
-        window.removeEventListener('mouseup', handleGlobalMouseUp, true);
+      setNodes((previousNodes) => {
+        const node = previousNodes[interaction.nodeId];
+        if (!node) return previousNodes;
+        if (interaction.type === 'drag') {
+          return {
+            ...previousNodes,
+            [interaction.nodeId]: {
+              ...node,
+              x: Math.round(interaction.startX + deltaX),
+              y: Math.round(interaction.startY + deltaY),
+            },
+          };
+        }
+        const minWidth = node.nodeType === 'pollinations_image' ? 220 : 260;
+        const minHeight = node.nodeType === 'pollinations_image' ? 160 : 180;
+        return {
+          ...previousNodes,
+          [interaction.nodeId]: {
+            ...node,
+            width: Math.round(Math.min(920, Math.max(minWidth, interaction.startWidth + deltaX))),
+            height: Math.round(Math.min(760, Math.max(minHeight, interaction.startHeight + deltaY))),
+          },
+        };
+      });
     };
-}, [handleMouseMove, handleMouseUp]); // Пересоздаем слушателей, если обработчики изменились
+    const handleMouseUp = () => {
+      interactionRef.current = null;
+    };
 
-return { handleMouseDown }; // Возвращаем только handleMouseDown, т.к. остальные глобальные
+    window.addEventListener('mousemove', handleMouseMove);
+    window.addEventListener('mouseup', handleMouseUp, true);
+    return () => {
+      window.removeEventListener('mousemove', handleMouseMove);
+      window.removeEventListener('mouseup', handleMouseUp, true);
+    };
+  }, [setNodes]);
 
-
+  return { handleMouseDown, handleResizeMouseDown };
 };

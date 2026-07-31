@@ -1,46 +1,76 @@
-// src/utils.ts
+import { MAX_SCENE_COUNT, MIN_SCENE_COUNT } from './constants';
 
-export const generateNodeId = (): string => `node-${Date.now()}-${Math.random().toString(36).substring(2, 7)}`;
+export const generateNodeId = () => {
+  if (typeof crypto !== 'undefined' && 'randomUUID' in crypto) return `node-${crypto.randomUUID()}`;
+  return `node-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+};
 
-export const getNodeIcon = (nodeType?: string, label?: string): string => {
-  // Получаем базовый URL из Vite (будет '/' при разработке и '/CANVA_STORY_/' при сборке)
+export const assetPath = (fileName: string) => {
   const baseUrl = import.meta.env.BASE_URL || '/';
-  // Формируем путь к иконке, убирая лишний слэш, если baseUrl заканчивается на него
-  const iconPath = (iconName: string) => `${baseUrl.endsWith('/') ? baseUrl.slice(0, -1) : baseUrl}/${iconName}`;
+  return `${baseUrl.endsWith('/') ? baseUrl : `${baseUrl}/`}${fileName}`;
+};
 
-  // Используем функцию iconPath для формирования полного пути
+export const getNodeIcon = (nodeType?: string, label?: string) => {
   switch (nodeType) {
-    case 'text': return iconPath('text.png');
-    case 'scene': return iconPath('location.png');
-    case 'script_input': return iconPath('scenariy_vvod.png');
-    case 'script_output': return iconPath('scenariy_vvod.png'); // Изменено по референсу
-    case 'association': return iconPath('generated_associacii_.png');
+    case 'text':
+      return assetPath('text.png');
+    case 'scene':
+      return assetPath('location.png');
+    case 'script_input':
+      return assetPath('scenariy_vvod.png');
+    case 'script_output':
+      return assetPath('scenariy_generated.png');
+    case 'association':
+      return assetPath('generated_associacii_.png');
     case 'script_detail':
-      if (label === 'Герои') return iconPath('character.png');
-      if (label === 'Локации') return iconPath('location.png');
-      if (label === 'Настроение') return iconPath('emotion.png');
-      return iconPath('metaprompt.png'); // Иконка по умолчанию для деталей
-    default: return iconPath('metaprompt.png'); // Иконка по умолчанию
+      if (label === 'Герои') return assetPath('character.png');
+      if (label === 'Локации') return assetPath('location.png');
+      if (label === 'Настроение') return assetPath('emotion.png');
+      return assetPath('metaprompt.png');
+    default:
+      return assetPath('metaprompt.png');
   }
 };
 
-// Helper function to calculate text width
-export const calculateTextWidth = (text: string, fontStyle: string = 'normal 700 20px Arial'): number => {
-// Default font style approximated from Tailwind text-xl bold. Adjust if needed.
-// TODO: Verify this font style matches the actual rendered style.
-try {
-const canvas = document.createElement('canvas');
-const context = canvas.getContext('2d');
-if (!context) {
-console.warn('Canvas context not available for width calculation, using estimate.');
-return text.length * 10 + 24; // Rough estimate + padding
-}
-context.font = fontStyle;
-const metrics = context.measureText(text);
-const horizontalPadding = 24; // Approx padding (e.g., p-3 on each side) - TODO: Verify padding
-return Math.ceil(metrics.width) + horizontalPadding;
-} catch (e) {
-console.error("Error calculating text width:", e);
-return text.length * 10 + 24; // Fallback estimate
-}
+export const calculateTextWidth = (text: string, font = '400 14px Arial') => {
+  try {
+    const canvas = document.createElement('canvas');
+    const context = canvas.getContext('2d');
+    if (!context) return text.length * 8 + 40;
+    context.font = font;
+    return Math.ceil(context.measureText(text).width) + 40;
+  } catch {
+    return text.length * 8 + 40;
+  }
 };
+
+export const clampSceneCount = (value: number) =>
+  Math.min(MAX_SCENE_COUNT, Math.max(MIN_SCENE_COUNT, Math.round(value)));
+
+export interface ParsedScene {
+  label: string;
+  text: string;
+}
+
+export const parseSceneBlocks = (text: string, fallbackCount: number): ParsedScene[] => {
+  const matches = [...text.matchAll(/(?:^|\n)(Сцена\s+\d+\s*:[^\n]*)([\s\S]*?)(?=\nСцена\s+\d+\s*:|$)/giu)];
+  if (matches.length > 0) {
+    return matches.map((match, index) => ({
+      label: `СЦЕНА ${index + 1}`,
+      text: `${match[1]}${match[2]}`.trim(),
+    }));
+  }
+
+  const paragraphs = text.split(/\n{2,}/).map((part) => part.trim()).filter(Boolean);
+  const count = clampSceneCount(fallbackCount);
+  return Array.from({ length: count }, (_, index) => ({
+    label: `СЦЕНА ${index + 1}`,
+    text: paragraphs[index] ?? paragraphs[paragraphs.length - 1] ?? text.trim(),
+  }));
+};
+
+export const isAbortError = (error: unknown) =>
+  error instanceof DOMException && error.name === 'AbortError';
+
+export const errorMessage = (error: unknown) =>
+  error instanceof Error ? error.message : 'Произошла неизвестная ошибка.';

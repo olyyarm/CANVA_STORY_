@@ -1,270 +1,312 @@
-// src/components/NodeRenderer.tsx
 import React from 'react';
-import { NodeData } from '../types';
-import { getNodeIcon } from '../utils';
-import { MISTRAL_MODELS } from '../constants'; // Changed from IONET_MODELS
+import { MISTRAL_MODELS } from '../constants';
+import { DetailType, NodeData } from '../types';
+import { assetPath, getNodeIcon } from '../utils';
 
 interface NodeRendererProps {
-id: string;
-node: NodeData;
-onMouseDown: (e: React.MouseEvent<HTMLDivElement>, nodeId: string) => void;
-onInputChange: (e: React.ChangeEvent<HTMLTextAreaElement>, nodeId: string) => void;
-onThemeInputChange: (e: React.ChangeEvent<HTMLTextAreaElement>, nodeId: string) => void;
-onModelChange: (e: React.ChangeEvent<HTMLSelectElement>, nodeId: string) => void;
-onContinueAssociation: (nodeId: string) => void;
-onScriptVisualize: (nodeId: string) => void;
-onScenarioDetailClick: (nodeId: string, detailType: 'герои' | 'локации' | 'настроение') => void;
-onCreateSceneNodes: (nodeId: string) => void;
-onGenerateScenePrompt: (nodeId: string) => void;
-onCopyToClipboard: (text: string) => void;
-onGeneratePollinationsImage: (nodeId: string) => Promise<void>;
+  id: string;
+  node: NodeData;
+  selected?: boolean;
+  onMouseDown: (event: React.MouseEvent<HTMLDivElement>, nodeId: string) => void;
+  onInputChange: (event: React.ChangeEvent<HTMLTextAreaElement>, nodeId: string) => void;
+  onThemeInputChange: (event: React.ChangeEvent<HTMLTextAreaElement>, nodeId: string) => void;
+  onModelChange: (event: React.ChangeEvent<HTMLSelectElement>, nodeId: string) => void;
+  onSceneCountChange: (event: React.ChangeEvent<HTMLInputElement>, nodeId: string) => void;
+  onContinueAssociation: (nodeId: string) => void;
+  onScriptVisualize: (nodeId: string) => void;
+  onScenarioDetailClick: (nodeId: string, detailType: DetailType) => void;
+  onCreateSceneNodes: (nodeId: string) => void;
+  onGenerateScenePrompt: (nodeId: string) => void;
+  onCopyToClipboard: (text: string) => void;
+  onGeneratePollinationsImage: (nodeId: string) => Promise<void>;
+  onCancelGeneration: (nodeId: string) => void;
+  onDelete?: (nodeId: string) => void;
+  onResizeMouseDown?: (event: React.MouseEvent<HTMLButtonElement>, nodeId: string) => void;
 }
+
+const detailButtons: Array<{ type: DetailType; label: string }> = [
+  { type: 'герои', label: 'Герои' },
+  { type: 'локации', label: 'Локации' },
+  { type: 'настроение', label: 'Настроение' },
+];
 
 const NodeRenderer: React.FC<NodeRendererProps> = ({
-id,
-node,
-onMouseDown,
-onInputChange,
-onThemeInputChange,
-onModelChange,
-onContinueAssociation,
-onScriptVisualize,
-onScenarioDetailClick,
-onCreateSceneNodes,
-onGenerateScenePrompt,
-onCopyToClipboard,
-onGeneratePollinationsImage
+  id,
+  node,
+  selected = false,
+  onMouseDown,
+  onInputChange,
+  onThemeInputChange,
+  onModelChange,
+  onSceneCountChange,
+  onContinueAssociation,
+  onScriptVisualize,
+  onScenarioDetailClick,
+  onCreateSceneNodes,
+  onGenerateScenePrompt,
+  onCopyToClipboard,
+  onGeneratePollinationsImage,
+  onCancelGeneration,
+  onDelete,
+  onResizeMouseDown,
 }) => {
+  const stopMouseDown = (event: React.MouseEvent) => event.stopPropagation();
+  const runWithoutDrag = (event: React.MouseEvent, action: () => void) => {
+    event.stopPropagation();
+    action();
+  };
+  const isTextOutput = node.nodeType === 'script_output' || node.nodeType === 'script_detail';
 
-const stopPropagation = (e: React.MouseEvent) => e.stopPropagation();
-
-// Determine border color based on node type
-let borderColor = 'border-[#3d3c4e]'; // Default border
-if (node.nodeType === 'script_output') {
-    borderColor = 'border-[#f88407]';
-} else if (node.nodeType === 'pollinations_image') {
-    borderColor = 'border-blue-400'; // Blue border for image nodes
-}
-
-// Base classes
-const baseClasses = "node-background absolute rounded-2xl cursor-grab active:cursor-grabbing select-none flex flex-col text-white shadow-xl shadow-black/40 pointer-events-auto"; // Added pointer-events-auto
-
-return (
-    // Root element handles dragging via onMouseDown
-    <div
-        key={id} id={`node-${id}`}
-        className={`${baseClasses} ${borderColor}`}
-        style={{
-            left: `${node.x}px`, top: `${node.y}px`,
-            width: `${node.width}px`, height: `${node.height}px`,
-            zIndex: node.level ?? 1, minHeight: '50px',
-        }}
-        onMouseDown={(e) => onMouseDown(e, id)}
+  const renderCopyButton = (text: string) => (
+    <button
+      type="button"
+      className="node-icon-button node-copy-button"
+      onMouseDown={stopMouseDown}
+      onClick={(event) => runWithoutDrag(event, () => onCopyToClipboard(text))}
+      aria-label="Копировать текст"
+      title="Копировать текст"
     >
-        {/* --- Top-right indicators/buttons --- */}
-        {node.nodeType === 'association' && node.isGenerated && node.canContinue && !node.isLoading && (
-            <button onClick={(e) => { stopPropagation(e); onContinueAssociation(id); }} className="absolute top-0 right-0 w-5 h-5 bg-teal-500 hover:bg-teal-400 rounded-2xl text-xs font-bold flex items-center justify-center z-20" title="Продолжить" onMouseDown={stopPropagation}> C </button>
+      <img src={assetPath('copy.svg')} alt="" />
+    </button>
+  );
+
+  return (
+    <div
+      id={`node-${id}`}
+      className={`story-node story-node--${node.nodeType}${selected ? ' story-node--selected' : ''}`}
+      style={{
+        left: node.x,
+        top: node.y,
+        width: node.width ?? 300,
+        height: node.height ?? 220,
+        zIndex: selected ? 1000 : (node.level ?? 1),
+      }}
+      onMouseDown={(event) => onMouseDown(event, id)}
+      data-node-id={id}
+    >
+      <header className="story-node__header">
+        <span className="story-node__icon" aria-hidden="true">
+          <img src={getNodeIcon(node.nodeType, node.label)} alt="" />
+        </span>
+        <span className="story-node__title" title={node.label}>{node.label}</span>
+        <span className="story-node__header-actions">
+          {node.nodeType === 'association' && node.canContinue && !node.isLoading && (
+            <button
+              type="button"
+              className="node-icon-button"
+              onMouseDown={stopMouseDown}
+              onClick={(event) => runWithoutDrag(event, () => onContinueAssociation(id))}
+              aria-label="Показать ещё ассоциации"
+              title="Показать ещё ассоциации"
+            >
+              +
+            </button>
+          )}
+          {onDelete && (
+            <button
+              type="button"
+              className="node-icon-button node-delete-button"
+              onMouseDown={stopMouseDown}
+              onClick={(event) => runWithoutDrag(event, () => onDelete(id))}
+              aria-label={`Удалить «${node.label}»`}
+              title="Удалить узел"
+            >
+              ×
+            </button>
+          )}
+        </span>
+      </header>
+
+      <div className="story-node__body">
+        {node.error && <div className="node-message node-message--error" role="alert">{node.error}</div>}
+
+        {node.nodeType === 'text' && node.hasInput && (
+          <>
+            <textarea
+              value={node.inputValue ?? ''}
+              onChange={(event) => onInputChange(event, id)}
+              onMouseDown={stopMouseDown}
+              placeholder="Введите слово или образ…"
+              aria-label="Слово для ассоциаций"
+              disabled={node.isLoading}
+            />
+            <button
+              type="button"
+              className={`node-primary-button${node.isLoading ? ' node-primary-button--cancel' : ''}`}
+              onMouseDown={stopMouseDown}
+              onClick={(event) => runWithoutDrag(event, () => node.isLoading
+                ? onCancelGeneration(id)
+                : onContinueAssociation(id))}
+            >
+              {node.isLoading ? 'Отменить' : (node.buttonLabel ?? 'Ассоциации')}
+            </button>
+          </>
         )}
-        {node.nodeType !== 'scene' && node.nodeType !== 'pollinations_image' && node.isLoading && ( // General loading indicator
-            <div className="absolute top-0 right-0 w-5 h-5 bg-gray-500 rounded-bl text-xs flex items-center justify-center z-20 animate-pulse" title="Загрузка...">...</div>
-        )}
 
-        {/* --- Main Node Content Area (Handles padding differently for image node) --- */}
-        <div className={`flex-grow flex flex-col overflow-hidden ${node.nodeType !== 'pollinations_image' ? 'p-2' : ''}`}>
-            {/* Header (Common for most types, excluding image node) */}
-            {node.label && node.nodeType !== 'pollinations_image' && (
-                 <div className="node-header flex items-center p-1 mb-1 border-gray-700 flex-shrink-0">
-                    <div className="w-6 h-6 mr-2 flex-shrink-0 flex items-center justify-center">
-                        <img src={getNodeIcon(node.nodeType, node.label)} alt="icon" className="w-6 h-6 object-contain" />
-                    </div>
-                    <span className={`${node.nodeType === 'association' ? 'node-association-label' : 'text-[#f88507] font-bold text-lg'}`}>{node.label}</span>
-                </div>
-            )}
-
-            {/* Inner Content Container */}
-            <div className={`flex-grow flex flex-col min-h-0 ${node.nodeType === 'pollinations_image' ? 'h-full' : ''}`}>
-
-                {/* --- Input Fields (Text, Script Input) --- */}
-                {node.nodeType === 'text' && node.hasInput && (
-                    <textarea value={node.inputValue} onChange={(e) => onInputChange(e, id)}
-                        className={`w-full bg-[#0a090f] border border-gray-700 text-gray-300 rounded-lg p-2 text-sm resize-none focus:outline-none focus:ring-1 focus:ring-orange-500 placeholder-gray-500 mb-2 h-16 flex-shrink-0`}
-                        placeholder={"Введите слово..."}
-                        rows={3}
-                        onMouseDown={stopPropagation} disabled={node.isLoading}
-                    />
-                )}
-                 {node.nodeType === 'script_input' && node.hasInput && (
-                     <>
-                        <textarea value={node.inputValue} onChange={(e) => onInputChange(e, id)}
-                            className={`w-full bg-[#0a090f] border border-gray-700 text-gray-300 rounded-lg p-2 text-sm resize-none focus:outline-none focus:ring-1 focus:ring-orange-500 placeholder-gray-500 mb-2 min-h-[100px]`}
-                            placeholder={"Введите текст сценария..."}
-                            rows={4}
-                            onMouseDown={stopPropagation} disabled={node.isLoading}
-                        />
-                        <textarea value={node.themeInputValue} onChange={(e) => onThemeInputChange(e, id)}
-                            className="bg-[#0a090f] border border-gray-700 text-gray-300 rounded-lg p-2 text-sm resize-none focus:outline-none focus:ring-1 focus:ring-orange-500 placeholder-gray-500 flex-shrink-0 mb-2 script-input-theme-textarea"
-                            placeholder="Стилизационный промпт (опционально)..."
-                            rows={2}
-                            onMouseDown={stopPropagation} disabled={node.isLoading}
-                        />
-                        <label htmlFor={`model-select-${id}`} className="text-orange-500 font-semibold text-xs block mb-1 pl-2">Модель</label>
-                        <select
-                            id={`model-select-${id}`}
-                            value={node.selectedModel}
-                            onChange={(e) => onModelChange(e, id)}
-                            className="w-full mx-auto bg-gray-900/70 border border-gray-700/80 text-gray-200 p-1 text-xs focus:outline-none focus:ring-1 focus:ring-orange-500 flex-shrink-0 mb-2 appearance-none script-input-model-select"
-                            onMouseDown={stopPropagation} disabled={node.isLoading}
-                        >
-                            {MISTRAL_MODELS.map(modelName => ( // Changed from IONET_MODELS
-                                <option key={modelName} value={modelName}>{modelName}</option>
-                            ))}
-                        </select>
-                    </>
-                 )}
-
-                 {/* --- Generated Text Output (Script Output, Script Detail) --- */}
-                 {node.isGenerated && node.inputValue && (node.nodeType === 'script_output' || node.nodeType === 'script_detail') && (
-                     <div className="relative mt-1 flex-grow min-h-0">
-                        <div className={`scenario-output-common text-left text-xs p-2 bg-[#0a090f] border border-gray-700 rounded-lg break-words whitespace-pre-wrap h-full overflow-y-auto ${node.nodeType === 'script_output' ? 'scenario-output-main' : 'scenario-output-detail'}`}>
-                            {node.inputValue}
-                        </div>
-                        {node.inputValue && (
-                            <button
-                                onClick={(e) => { stopPropagation(e); onCopyToClipboard(node.inputValue || ''); }}
-                                className="copy-to-clipboard-button absolute top-1 right-1 w-5 h-5 p-0 border-none bg-black bg-opacity-50 rounded cursor-pointer flex items-center justify-center"
-                                title="Копировать текст"
-                                onMouseDown={stopPropagation}
-                            >
-                                <img src="/copy.svg" alt="Copy" className="w-3 h-3" />
-                            </button>
-                        )}
-                    </div>
-                 )}
-                 {/* Association label (if no header) */}
-                 {node.nodeType === 'association' && !node.label && node.inputValue && (
-                      <div className="flex items-center justify-start text-left flex-grow text-sm p-1 break-words">
-                          {node.inputValue}
-                      </div>
-                 )}
-
-                {/* --- Buttons Area --- */}
-                <div className="mt-auto flex-shrink-0 pt-1">
-                    {/* Generate Button (Text, Script Input) */}
-                    {node.hasButton && (node.nodeType === 'text' || node.nodeType === 'script_input') && (
-                        <div className="flex justify-center mt-2.5"> {/* Added mt-2.5 here */}
-                            <button onClick={(e) => {
-                                    stopPropagation(e);
-                                    if (node.nodeType === 'text') { onContinueAssociation(id); }
-                                    else if (node.nodeType === 'script_input') { onScriptVisualize(id); }
-                                }}
-                                className={`w-[90%] h-8 rounded-full py-1 text-sm font-bold text-center mb-1 ${node.isLoading ? 'bg-gray-600 text-gray-400 cursor-not-allowed' : 'bg-[#f88507] hover:bg-orange-500 text-[#0a090f] shadow-md'}`}
-                                disabled={node.isLoading}>
-                                {node.isLoading ? 'Генерация...' : (node.buttonLabel ?? 'Сгенерировать')}
-                            </button>
-                        </div>
-                    )}
-
-                    {/* Scenario Detail Buttons (Script Output) */}
-                    {node.nodeType === 'script_output' && !node.isLoading && (
-                         <div className="flex flex-col items-center mt-2.5"> {/* Added mt-2.5 here */}
-                            <div className="flex gap-x-1 mb-2 w-full px-1">
-                                <button onClick={(e) => { stopPropagation(e); onScenarioDetailClick(id, 'герои'); }} className="flex-1 text-xs py-1 px-1 rounded-2xl shadow script-output-button-heroes" onMouseDown={stopPropagation}>Герои</button>
-                                <button onClick={(e) => { stopPropagation(e); onScenarioDetailClick(id, 'локации'); }} className="flex-1 text-xs py-1 px-1 rounded-2xl shadow script-output-button-locations" onMouseDown={stopPropagation}>Локации</button>
-                                <button onClick={(e) => { stopPropagation(e); onScenarioDetailClick(id, 'настроение'); }} className="flex-1 text-xs py-1 px-1 rounded-2xl shadow script-output-button-mood" onMouseDown={stopPropagation}>Настроение</button>
-                            </div>
-                            <div className="flex justify-center w-full px-1">
-                                <button onClick={(e) => { stopPropagation(e); onCreateSceneNodes(id); }} className="w-full text-sm font-semibold py-1 px-2 rounded-full shadow script-output-button-generate-scenes mb-1" onMouseDown={stopPropagation}>СЦЕНЫ (ГЕНЕРАЦИЯ)</button>
-                            </div>
-                        </div>
-                    )}
-
-                     {/* Scene Node Content */}
-                     {node.nodeType === 'scene' && (
-                        <div className="flex flex-col items-center flex-grow justify-end">
-                            {/* Master Prompt Display */}
-                            {node.masterPrompt && !node.isLoading && (
-                                <div className="relative w-full flex-grow mt-1 mb-2 overflow-y-auto min-h-[50px]">
-                                    <div
-                                        className="scenario-output-common scenario-output-detail text-left text-xs p-2 bg-[#0a090f] border border-gray-700 rounded-lg break-words whitespace-pre-wrap h-full"
-                                        onMouseDown={stopPropagation} >
-                                        {node.masterPrompt}
-                                    </div>
-                                    <button
-                                        onClick={(e) => { stopPropagation(e); onCopyToClipboard(node.masterPrompt || ''); }}
-                                        className="copy-to-clipboard-button absolute top-1 right-1 w-5 h-5 p-0 border-none bg-black bg-opacity-50 rounded cursor-pointer flex items-center justify-center"
-                                        title="Копировать текст"
-                                        onMouseDown={stopPropagation} >
-                                        <img src="/copy.svg" alt="Copy" className="w-3 h-3" />
-                                    </button>
-                                </div>
-                            )}
-
-                            {/* Generate Prompt Button OR Loading Indicator */}
-                            {node.hasGenerationButton && !node.masterPrompt && !node.isLoading && (
-                                <button
-                                    onClick={(e) => { stopPropagation(e); onGenerateScenePrompt(id); }}
-                                    className="flex-shrink-0 w-[90%] rounded-2xl p-1 text-xs font-semibold bg-orange-500 hover:bg-orange-600 text-black mb-2 mt-2.5" // Added mt-2.5
-                                    onMouseDown={stopPropagation} >
-                                    Сгенерировать Prompt
-                                </button>
-                            )}
-                            {node.isLoading && ( // Loading for Prompt Generation
-                                 <div className="text-center text-xs animate-pulse p-1 mb-2 mt-2.5">Генерация Prompt...</div> // Added mt-2.5
-                            )}
-
-                            {/* Pollinations Button and Indicators (remain on Scene node) */}
-                            {node.masterPrompt && !node.isLoading && (
-                                 <div className="flex-shrink-0 flex items-center justify-center gap-2 mt-2.5 mb-1"> {/* Added mt-2.5 */}
-                                    <button
-                                        onClick={(e) => { stopPropagation(e); onGeneratePollinationsImage(id); }}
-                                        className={`w-7 h-7 rounded-full text-xs font-bold flex items-center justify-center ${!node.masterPrompt || node.isLoadingImage ? 'bg-gray-600 text-gray-400 cursor-not-allowed' : 'bg-orange-500 hover:bg-orange-600 text-black'}`}
-                                        title="Сгенерировать изображение (Требуется Master Prompt на английском языке)"
-                                        disabled={!node.masterPrompt || node.isLoadingImage}
-                                        onMouseDown={stopPropagation}
-                                    >
-                                        ГИ
-                                    </button>
-                                    {node.isLoadingImage && ( // Loading for Image Generation
-                                        <div className="w-4 h-4 border-2 border-t-orange-500 border-gray-600 rounded-full animate-spin"></div>
-                                    )}
-                                    {node.pollinationsApiError && !node.isLoadingImage && (
-                                         <div className="w-5 h-5 text-red-500 flex items-center justify-center" title={node.pollinationsApiError}>⚠️</div>
-                                    )}
-                                </div>
-                            )}
-                        </div>
-                     )}
-                 </div>
-
-                 {/* --- Image Node Content --- */}
-                 {node.nodeType === 'pollinations_image' && (
-                    <>
-                        {/* Header/Grab Handle for Image Node */}
-                        <div className="h-5 bg-gray-700/50 flex-shrink-0 rounded-t-lg flex items-center px-2 cursor-grab">
-                            {/* Let mousedown events pass through header to root div for dragging */}
-                            <span className="text-xs text-gray-400 truncate">{node.label || 'Generated Image'}</span>
-                        </div>
-                        {/* Image Display Area */}
-                        {node.imageUrl ? (
-                            <div className="flex-grow p-1 w-full h-full overflow-hidden">
-                                <img
-                                    src={node.imageUrl}
-                                    alt="Generated Pollination"
-                                    className="w-full h-full object-contain"
-                                    onMouseDown={stopPropagation} // KEEP stopPropagation here for the image itself
-                                />
-                            </div>
-                         ) : (
-                             <div className="flex-grow flex items-center justify-center text-xs text-gray-500 p-1">Image loading...</div>
-                         )}
-                    </>
-                 )}
+        {node.nodeType === 'script_input' && node.hasInput && (
+          <>
+            <label className="node-field node-field--grow">
+              <span>Исходный сценарий</span>
+              <textarea
+                value={node.inputValue ?? ''}
+                onChange={(event) => onInputChange(event, id)}
+                onMouseDown={stopMouseDown}
+                placeholder="Опишите историю, действие или закадровый текст…"
+                disabled={node.isLoading}
+              />
+            </label>
+            <label className="node-field">
+              <span>Стилистика <small>необязательно</small></span>
+              <textarea
+                className="node-textarea--compact"
+                value={node.themeInputValue ?? ''}
+                onChange={(event) => onThemeInputChange(event, id)}
+                onMouseDown={stopMouseDown}
+                placeholder="Например: графический роман, дождливый неон…"
+                disabled={node.isLoading}
+              />
+            </label>
+            <div className="node-field-grid">
+              <label className="node-field">
+                <span>Сцен</span>
+                <input
+                  type="number"
+                  min="1"
+                  max="20"
+                  value={node.sceneCount ?? 4}
+                  onChange={(event) => onSceneCountChange(event, id)}
+                  onMouseDown={stopMouseDown}
+                  disabled={node.isLoading}
+                />
+              </label>
+              <label className="node-field">
+                <span>Модель</span>
+                <select
+                  value={node.selectedModel ?? MISTRAL_MODELS[0]}
+                  onChange={(event) => onModelChange(event, id)}
+                  onMouseDown={stopMouseDown}
+                  disabled={node.isLoading}
+                >
+                  {MISTRAL_MODELS.map((modelName) => (
+                    <option key={modelName} value={modelName}>{modelName}</option>
+                  ))}
+                </select>
+              </label>
             </div>
-        </div>
+            {node.statusMessage && <div className="node-message">{node.statusMessage}</div>}
+            <button
+              type="button"
+              className={`node-primary-button${node.isLoading ? ' node-primary-button--cancel' : ''}`}
+              onMouseDown={stopMouseDown}
+              onClick={(event) => runWithoutDrag(event, () => node.isLoading
+                ? onCancelGeneration(id)
+                : onScriptVisualize(id))}
+            >
+              {node.isLoading ? 'Отменить генерацию' : (node.buttonLabel ?? 'Создать сцены')}
+            </button>
+          </>
+        )}
+
+        {isTextOutput && node.inputValue && (
+          <div className="node-output">
+            <div className="node-output__text">{node.inputValue}</div>
+            {renderCopyButton(node.inputValue)}
+          </div>
+        )}
+
+        {node.nodeType === 'script_output' && (
+          <div className="node-action-stack">
+            <div className="node-segmented-actions">
+              {detailButtons.map((button) => (
+                <button
+                  key={button.type}
+                  type="button"
+                  onMouseDown={stopMouseDown}
+                  onClick={(event) => runWithoutDrag(event, () => onScenarioDetailClick(id, button.type))}
+                  disabled={node.isLoading}
+                >
+                  {button.label}
+                </button>
+              ))}
+            </div>
+            <button
+              type="button"
+              className={`node-secondary-button${node.isLoading ? ' node-secondary-button--cancel' : ''}`}
+              onMouseDown={stopMouseDown}
+              onClick={(event) => runWithoutDrag(event, () => node.isLoading
+                ? onCancelGeneration(id)
+                : onCreateSceneNodes(id))}
+            >
+              {node.isLoading ? 'Отменить генерацию' : 'Синхронизировать сцены'}
+            </button>
+          </div>
+        )}
+
+        {node.nodeType === 'association' && (
+          <div className="association-content">{node.label}</div>
+        )}
+
+        {node.nodeType === 'scene' && (
+          <>
+            <div className="node-output scene-output">
+              <div className="node-output__text">
+                {node.masterPrompt || node.sceneText || 'Описание сцены пока пусто.'}
+              </div>
+              {node.masterPrompt && renderCopyButton(node.masterPrompt)}
+            </div>
+            {node.pollinationsApiError && (
+              <div className="node-message node-message--error" role="alert">{node.pollinationsApiError}</div>
+            )}
+            {!node.masterPrompt ? (
+              <button
+                type="button"
+                className={`node-primary-button${node.isLoading ? ' node-primary-button--cancel' : ''}`}
+                onMouseDown={stopMouseDown}
+                onClick={(event) => runWithoutDrag(event, () => node.isLoading
+                  ? onCancelGeneration(id)
+                  : onGenerateScenePrompt(id))}
+              >
+                {node.isLoading ? 'Отменить генерацию' : 'Собрать визуальный промпт'}
+              </button>
+            ) : (
+              <button
+                type="button"
+                className={`node-secondary-button${node.isLoadingImage ? ' node-secondary-button--cancel' : ''}`}
+                onMouseDown={stopMouseDown}
+                onClick={(event) => runWithoutDrag(event, () => node.isLoadingImage
+                  ? onCancelGeneration(id)
+                  : void onGeneratePollinationsImage(id))}
+              >
+                {node.isLoadingImage ? 'Отменить создание кадра' : 'Создать тестовый кадр'}
+              </button>
+            )}
+          </>
+        )}
+
+        {node.nodeType === 'pollinations_image' && (
+          <div className="generated-image">
+            {node.imageUrl
+              ? <img src={node.imageUrl} alt={`Сгенерированный кадр для ${node.label}`} draggable={false} />
+              : <span>Кадр недоступен после перезагрузки. Создайте его снова из сцены.</span>}
+          </div>
+        )}
+
+        {node.statusMessage && node.nodeType !== 'script_input' && (
+          <div className="node-message node-message--info">{node.statusMessage}</div>
+        )}
+      </div>
+
+      {onResizeMouseDown && node.nodeType !== 'association' && (
+        <button
+          type="button"
+          className="node-resize-handle"
+          onMouseDown={(event) => onResizeMouseDown(event, id)}
+          aria-label={`Изменить размер «${node.label}»`}
+          title="Изменить размер"
+        />
+      )}
     </div>
-);
-
-
+  );
 };
 
 export default NodeRenderer;

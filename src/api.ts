@@ -1,73 +1,82 @@
-// src/api.ts
-import { ChatApiResponse } from './types'; // Changed from IoNetResponse (will rename type later)
+import { createMockCompletion } from './mockData';
+import { ChatApiResponse, GenerationRequest } from './types';
 
-// Renamed function to callMistralAPI
-export async function callMistralAPI(prompt: string, model: string, systemPrompt: string = "You are a helpful assistant."): Promise<string> {
-  // Use Mistral API key from .env
-  const apiKey = import.meta.env.VITE_MISTRAL_API_KEY;
+const MISTRAL_ENDPOINT = 'https://api.mistral.ai/v1/chat/completions';
 
-  if (!apiKey) {
-    console.error("Mistral API key is missing. Please set VITE_MISTRAL_API_KEY in your .env file.");
-    throw new Error("API ключ Mistral отсутствует.");
+export type GenerationMode = 'api' | 'mock';
+
+export const getGenerationMode = (): GenerationMode => {
+  const apiKey = import.meta.env.VITE_MISTRAL_API_KEY?.trim();
+  const forceMock = String(import.meta.env.VITE_MOCK_MODE).toLowerCase() === 'true';
+  return apiKey && !forceMock ? 'api' : 'mock';
+};
+
+const getErrorMessage = (value: unknown) => {
+  if (!value || typeof value !== 'object') return '';
+  const data = value as Record<string, unknown>;
+  const detail = data.detail;
+  const error = data.error;
+
+  if (typeof data.message === 'string') return data.message;
+  if (detail && typeof detail === 'object' && typeof (detail as Record<string, unknown>).message === 'string') {
+    return (detail as Record<string, unknown>).message as string;
   }
+  if (error && typeof error === 'object' && typeof (error as Record<string, unknown>).message === 'string') {
+    return (error as Record<string, unknown>).message as string;
+  }
+  return '';
+};
 
-  // Mistral API endpoint
-  const url = "https://api.mistral.ai/v1/chat/completions";
-  const headers = {
-    "Content-Type": "application/json",
-    "Accept": "application/json", // Recommended by Mistral docs
-    "Authorization": `Bearer ${apiKey}`
-  };
-  const body = JSON.stringify({
-    model: model,
-    messages: [
-      { role: "system", content: systemPrompt },
-      { role: "user", content: prompt }
-    ]
+const normalizeContent = (content: ChatApiResponse['choices'][number]['message']['content']) => {
+  if (typeof content === 'string') return content.trim();
+  return content.map((chunk) => chunk.text ?? '').join('').trim();
+};
+
+const callMistralAPI = async (request: GenerationRequest, signal?: AbortSignal): Promise<string> => {
+  const apiKey = import.meta.env.VITE_MISTRAL_API_KEY?.trim();
+  if (!apiKey) throw new Error('Ключ Mistral не настроен. Включён тестовый режим.');
+
+  const response = await fetch(MISTRAL_ENDPOINT, {
+    method: 'POST',
+    signal,
+    headers: {
+      Accept: 'application/json',
+      Authorization: `Bearer ${apiKey}`,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({
+      model: request.model,
+      messages: [
+        { role: 'system', content: request.systemPrompt },
+        { role: 'user', content: request.prompt },
+      ],
+    }),
   });
 
-  try {
-    const response = await fetch(url, {
-      method: 'POST',
-      headers: headers,
-      body: body
-    });
-
-    if (!response.ok) {
-      // Попытка получить детали ошибки из тела ответа
-      let errorDetails = response.statusText;
-      try {
-        const errorData = await response.json();
-        // Mistral error structure might differ, trying common fields
-        errorDetails = errorData?.detail?.message || errorData?.message || errorData?.error?.message || JSON.stringify(errorData);
-      } catch (jsonError) {
-         // Если тело не JSON или пустое, используем statusText
-      }
-      console.error("Mistral API Error:", response.status, errorDetails);
-      throw new Error(`Ошибка API Mistral: ${response.status} - ${errorDetails}`);
+  if (!response.ok) {
+    let details = response.statusText;
+    try {
+      const payload: unknown = await response.json();
+      details = getErrorMessage(payload) || details;
+    } catch {
+      // A non-JSON response still has a useful HTTP status.
     }
-
-    // Use the renamed type ChatApiResponse
-    const data: ChatApiResponse = await response.json();
-
-    // Check response structure (Mistral format should be compatible)
-    if (!data.choices || data.choices.length === 0 || !data.choices[0].message || !data.choices[0].message.content) {
-         console.error("Invalid response structure from Mistral API:", data);
-         throw new Error("Некорректная структура ответа от API Mistral.");
-    }
-
-    // Опциональная обработка блока <think> (закомментировано, как в плане)
-    let modified_text = data.choices[0].message.content;
-    // if (modified_text.includes("</think>\n\n")) {
-    //     modified_text = modified_text.split('</think>\n\n')[1];
-    // }
-
-    return modified_text;
-
-  } catch (error) {
-    // Update error context
-    console.error("Error calling Mistral API:", error);
-    // Пробрасываем ошибку для обработки в UI
-    throw error instanceof Error ? error : new Error("Неизвестная ошибка при вызове API Mistral.");
+    throw new Error(`Mistral вернул ошибку ${response.status}${details ? `: ${details}` : ''}`);
   }
-}
+
+  const data: ChatApiResponse = await response.json();
+  const content = data.choices?.[0]?.message?.content;
+  if (!content) throw new Error('Mistral вернул пустой ответ. Попробуйте ещё раз.');
+
+  const normalized = normalizeContent(content);
+  if (!normalized) throw new Error('Mistral вернул ответ без текста.');
+  return normalized;
+};
+
+export const generateText = (
+  request: GenerationRequest,
+  signal?: AbortSignal,
+): Promise<string> => {
+  if (getGenerationMode() === 'mock') return createMockCompletion(request, signal);
+  return callMistralAPI(request, signal);
+};

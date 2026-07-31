@@ -1,193 +1,452 @@
-// src/App.tsx - Refactored
-import React, { useState, useRef } from 'react'; // Added useState, useRef
-// Import removed by insert_content operation above
-import { NodesState } from './types';
-import { MISTRAL_MODELS } from './constants'; // Changed from IONET_MODELS
-import { useNodeManagement } from './hooks/useNodeManagement';
-import { useDraggableNodes } from './hooks/useDraggableNodes';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { getGenerationMode } from './api';
 import NodeRenderer from './components/NodeRenderer';
+import { useCanvasNavigation } from './hooks/useCanvasNavigation';
+import { useDraggableNodes } from './hooks/useDraggableNodes';
+import { useNodeManagement } from './hooks/useNodeManagement';
+import {
+  clearSavedProject,
+  createProjectDocument,
+  loadSavedProject,
+  parseProjectJson,
+  projectSnapshot,
+  projectToJson,
+  saveProject,
+} from './project';
+import { AppNotice, NodesState, ProjectDocument, ViewportState } from './types';
 import './App.css';
 
-// Начальное состояние узлов
-const initialNodesState: NodesState = {
-node1: {
-nodeType: 'text', x: 50, y: 50, label: 'ТЕКСТ',
-hasInput: true, hasButton: true, buttonLabel: 'Ассоциации', inputValue: '',
-width: 350, height: 200,
-isLoading: false, level: 0,
-},
-node2: { // Example scene node
-nodeType: 'scene', x: 450, y: 50, label: 'СЦЕНА 1',
-width: 300, height: 300, level: 0,
-hasGenerationButton: true,
-masterPrompt: '', // Initialize as empty
-isLoading: false, // For prompt generation
-isLoadingImage: false, // For Pollinations image generation
-pollinationsApiError: undefined, // For Pollinations API errors
-},
-scriptInputNode: {
-nodeType: 'script_input', x: 50, y: 300, label: 'Сценарий (ввод)',
-hasInput: true, isLongInput: true, hasButton: true, buttonLabel: 'Визуализировать', inputValue: '', themeInputValue: '',
-width: 350, height: 400,
-isLoading: false, level: 0, outputNodeLabel: 'СЦЕНАРИЙ ВИЗУАЛИЗАЦИЯ',
-selectedModel: MISTRAL_MODELS[0] || '', // Changed from IONET_MODELS
-}
+const collectNodeFamily = (nodes: NodesState, rootId: string) => {
+  const ids = new Set([rootId]);
+  let changed = true;
+  while (changed) {
+    changed = false;
+    Object.entries(nodes).forEach(([nodeId, node]) => {
+      if (node.parentId && ids.has(node.parentId) && !ids.has(nodeId)) {
+        ids.add(nodeId);
+        changed = true;
+      }
+    });
+  }
+  return ids;
 };
 
-function App() {
-  // Состояния и ref для панорамирования холста
-  const [canvasOffset, setCanvasOffset] = useState({ x: 0, y: 0 });
-  const [isPanning, setIsPanning] = useState(false);
-  const panStartRef = useRef({ startX: 0, startY: 0, initialOffsetX: 0, initialOffsetY: 0 });
+const App = () => {
+  const [bootstrap] = useState(() => {
+    const savedProject = loadSavedProject();
+    return { project: savedProject ?? createProjectDocument(), restored: Boolean(savedProject) };
+  });
+  const canvasRef = useRef<HTMLDivElement>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
+  const projectRef = useRef<ProjectDocument>(bootstrap.project);
+  const previousNodeCount = useRef(0);
+  const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null);
+  const [deleteCandidateId, setDeleteCandidateId] = useState<string | null>(null);
+  const [pendingProjectAction, setPendingProjectAction] = useState<'new' | 'reset' | null>(null);
+  const [projectTitle, setProjectTitle] = useState(bootstrap.project.title);
+  const [projectNotice, setProjectNotice] = useState<AppNotice | null>(null);
+  const [saveStatus, setSaveStatus] = useState<'saved' | 'saving' | 'error'>('saved');
+  const [viewport, setViewport] = useState<ViewportState>(bootstrap.project.viewport);
+  const {
+    nodes,
+    setNodes,
+    notice,
+    clearNotice,
+    handleInputChange,
+    handleThemeInputChange,
+    handleModelChange,
+    handleSceneCountChange,
+    handleContinueAssociation,
+    handleScriptVisualization,
+    handleScenarioDetailClick,
+    handleCreateSceneNodes,
+    handleGenerateScenePrompt,
+    handleCopyToClipboard,
+    handleGeneratePollinationsImage,
+    handleCancelGeneration,
+  } = useNodeManagement(bootstrap.project.nodes);
 
+  const clearSelection = useCallback(() => setSelectedNodeId(null), []);
+  const {
+    isPanning,
+    handleCanvasMouseDown,
+    handleWheel,
+    fitView,
+    centerView,
+    zoomIn,
+    zoomOut,
+    resetZoom,
+  } = useCanvasNavigation({
+    canvasRef,
+    nodes,
+    viewport,
+    setViewport,
+    onBackgroundClick: clearSelection,
+  });
+  const { handleMouseDown, handleResizeMouseDown } = useDraggableNodes({
+    nodes,
+    setNodes,
+    zoom: viewport.zoom,
+    onSelect: setSelectedNodeId,
+  });
 
-// Используем хук для управления узлами
-const {
-nodes,
-setNodes,
-handleInputChange,
-handleThemeInputChange,
-handleModelChange,
-handleContinueAssociation,
-handleScriptVisualization,
-handleScenarioDetailClick,
-handleCreateSceneNodes,
-handleGenerateScenePrompt,
-handleCopyToClipboard,
-handleGeneratePollinationsImage
-} = useNodeManagement(initialNodesState);
+  const nodeEntries = useMemo(() => Object.entries(nodes), [nodes]);
+  const selectedNode = selectedNodeId ? nodes[selectedNodeId] : undefined;
+  const deleteCandidate = deleteCandidateId ? nodes[deleteCandidateId] : undefined;
+  const visibleNotice = projectNotice ?? notice;
 
-// Используем хук для перетаскивания, передаем canvasOffset
-const { handleMouseDown } = useDraggableNodes({ nodes, setNodes });
+  const showProjectNotice = useCallback((tone: AppNotice['tone'], message: string) => {
+    setProjectNotice({ id: Date.now(), tone, message });
+  }, []);
 
-// Функция расчета координат линии
-const getLineCoords = (parentId: string, childId: string): { x1: number; y1: number; x2: number; y2: number } | null => {
-const parentNode = nodes[parentId];
-const childNode = nodes[childId];
-if (!parentNode || !childNode) return null;
-const x1 = parentNode.x + (parentNode.width ?? 150);
-const y1 = parentNode.y + (parentNode.height ?? 50) / 2;
-const x2 = childNode.x;
-const y2 = childNode.y + (childNode.height ?? 50) / 2;
-return { x1, y1, x2, y2 };
-}
+  const dismissNotice = useCallback(() => {
+    setProjectNotice(null);
+    clearNotice();
+  }, [clearNotice]);
 
- // --- Обработчики панорамирования ---
- const handlePanMouseDown = (event: React.MouseEvent<HTMLDivElement>) => {
-   console.log("handlePanMouseDown triggered"); // DEBUG
-   // Панорамирование только при клике на сам фон, а не на дочерние элементы (узлы)
-   if (event.target === event.currentTarget) {
-     console.log("Panning started on background"); // DEBUG
-     event.preventDefault();
-     event.stopPropagation();
-     setIsPanning(true);
-     panStartRef.current = {
-       startX: event.clientX,
-       startY: event.clientY,
-       initialOffsetX: canvasOffset.x,
-       initialOffsetY: canvasOffset.y,
-     };
-     // Можно добавить класс для изменения курсора во время панорамирования, если нужно
-     // document.body.style.cursor = 'grabbing';
-   }
- };
+  useEffect(() => {
+    if (!visibleNotice) return;
+    const timer = window.setTimeout(dismissNotice, 3800);
+    return () => window.clearTimeout(timer);
+  }, [dismissNotice, visibleNotice]);
 
- const handlePanMouseMove = (event: MouseEvent) => {
-   // console.log("handlePanMouseMove triggered, isPanning:", isPanning); // DEBUG (can be noisy)
-   if (!isPanning) return;
-   console.log("Panning detected, calculating offset..."); // DEBUG
-   event.preventDefault();
-   const dx = event.clientX - panStartRef.current.startX;
-   const dy = event.clientY - panStartRef.current.startY;
-   setCanvasOffset({
-     x: panStartRef.current.initialOffsetX + dx,
-     y: panStartRef.current.initialOffsetY + dy,
-   });
- };
+  useEffect(() => {
+    setSaveStatus('saving');
+    const timer = window.setTimeout(() => {
+      try {
+        const snapshot = projectSnapshot(projectRef.current, nodes, viewport, projectTitle);
+        saveProject(snapshot);
+        projectRef.current = snapshot;
+        setSaveStatus('saved');
+      } catch {
+        setSaveStatus('error');
+      }
+    }, 550);
+    return () => window.clearTimeout(timer);
+  }, [nodes, projectTitle, viewport]);
 
- const handlePanMouseUp = (event: MouseEvent) => {
-   // console.log("handlePanMouseUp triggered, isPanning:", isPanning); // DEBUG
-   if (isPanning) {
-     console.log("Panning stopped"); // DEBUG
-     event.preventDefault();
-     setIsPanning(false);
-     // Возвращаем стандартный курсор
-     // document.body.style.cursor = 'default';
-   }
- };
+  useEffect(() => {
+    const saveBeforeUnload = () => {
+      try {
+        saveProject(projectSnapshot(projectRef.current, nodes, viewport, projectTitle));
+      } catch {
+        // The visible save indicator reports quota or storage failures during normal work.
+      }
+    };
+    window.addEventListener('beforeunload', saveBeforeUnload);
+    return () => window.removeEventListener('beforeunload', saveBeforeUnload);
+  }, [nodes, projectTitle, viewport]);
 
- // --- Эффект для глобальных слушателей панорамирования ---
- React.useEffect(() => {
-   // Добавляем слушатели только если isPanning === true, чтобы не слушать без дела?
-   // Нет, mouseup нужно слушать всегда, чтобы завершить панорамирование, если оно началось
-   window.addEventListener('mousemove', handlePanMouseMove);
-   window.addEventListener('mouseup', handlePanMouseUp);
+  useEffect(() => {
+    const nodeCount = nodeEntries.length;
+    if (bootstrap.restored && previousNodeCount.current === 0) {
+      previousNodeCount.current = nodeCount;
+      return;
+    }
+    if (nodeCount > previousNodeCount.current) {
+      const timer = window.setTimeout(() => {
+        fitView();
+        previousNodeCount.current = nodeCount;
+      }, 60);
+      return () => window.clearTimeout(timer);
+    }
+    previousNodeCount.current = nodeCount;
+  }, [bootstrap.restored, fitView, nodeEntries.length]);
 
-   // Очистка слушателей при размонтировании компонента
-   return () => {
-     window.removeEventListener('mousemove', handlePanMouseMove);
-     window.removeEventListener('mouseup', handlePanMouseUp);
-   };
- }, [isPanning]); // Перезапускаем эффект при изменении isPanning (для handlePanMouseMove), но mouseup должен быть всегда
- // ^^^^ ПРОВЕРКА: Зависимость от isPanning нужна, чтобы handlePanMouseMove получал актуальное значение isPanning.
- // handlePanMouseUp тоже будет использовать актуальное isPanning благодаря замыканию.
+  useEffect(() => {
+    const handleKeyDown = (event: KeyboardEvent) => {
+      const element = event.target as HTMLElement | null;
+      const isEditing = element?.matches('input, textarea, select, [contenteditable="true"]');
+      if ((event.key === 'Delete' || event.key === 'Backspace') && selectedNodeId && !isEditing) {
+        event.preventDefault();
+        setDeleteCandidateId(selectedNodeId);
+      }
+      if (event.key === 'Escape') {
+        setDeleteCandidateId(null);
+        setSelectedNodeId(null);
+      }
+    };
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [selectedNodeId]);
 
-return (
-// Removed overflow-hidden, Added onMouseDown for panning, Added dotted background class
-<div className="w-screen h-screen bg-gray-800 relative canvas-background-dotted" onMouseDown={handlePanMouseDown}>
-{/* SVG слой для линий - Applying transform */}
-<svg
-  className="absolute top-0 left-0 w-full h-full pointer-events-none z-0"
-  style={{ transform: `translate(${canvasOffset.x}px, ${canvasOffset.y}px)` }}
->
-{Object.entries(nodes).map(([childId, childNode]) => {
-if (!childNode.parentId) return null;
-const coords = getLineCoords(childNode.parentId, childId);
-if (!coords) return null;
-return (
-// Using string concatenation for the key as a workaround
-<line
-key={childNode.parentId + '-' + childId} // Simplified key syntax
-x1={coords.x1}
-y1={coords.y1}
-x2={coords.x2}
-y2={coords.y2}
-stroke="#9ca3af"
-strokeWidth="2"
-/>
-);
-})}
-</svg>
+  const confirmDelete = useCallback(() => {
+    if (!deleteCandidateId) return;
+    setNodes((previousNodes) => {
+      const idsToDelete = collectNodeFamily(previousNodes, deleteCandidateId);
+      const nextNodes = { ...previousNodes };
+      idsToDelete.forEach((nodeId) => {
+        const imageUrl = nextNodes[nodeId]?.imageUrl;
+        if (imageUrl?.startsWith('blob:')) URL.revokeObjectURL(imageUrl);
+        delete nextNodes[nodeId];
+      });
+      return nextNodes;
+    });
+    setSelectedNodeId(null);
+    setDeleteCandidateId(null);
+  }, [deleteCandidateId, setNodes]);
 
-{/* Контейнер для нод - Applying transform */}
-  <div
-    className="absolute top-0 left-0 w-full h-full pointer-events-none" // Added pointer-events-none
-    id="canvas-area"
-    style={{ transform: `translate(${canvasOffset.x}px, ${canvasOffset.y}px)` }}
-  >
-    {Object.entries(nodes).map(([id, node]) => (
-      <NodeRenderer // NodeRenderer should re-enable pointer events
-        key={id}
-        id={id}
-        node={node}
-        onMouseDown={handleMouseDown}
-        onInputChange={handleInputChange}
-        onThemeInputChange={handleThemeInputChange}
-        onModelChange={handleModelChange}
-        onContinueAssociation={handleContinueAssociation}
-        onScriptVisualize={handleScriptVisualization}
-        onScenarioDetailClick={handleScenarioDetailClick}
-        onCreateSceneNodes={handleCreateSceneNodes}
-        onGenerateScenePrompt={handleGenerateScenePrompt}
-        onCopyToClipboard={handleCopyToClipboard}
-        onGeneratePollinationsImage={handleGeneratePollinationsImage}
-      />
-    ))}
-  </div>
-</div>
+  const applyProject = useCallback((project: ProjectDocument) => {
+    Object.values(nodes).forEach((node) => {
+      if (node.imageUrl?.startsWith('blob:')) URL.revokeObjectURL(node.imageUrl);
+    });
+    projectRef.current = project;
+    previousNodeCount.current = Object.keys(project.nodes).length;
+    setNodes(project.nodes);
+    setViewport(project.viewport);
+    setProjectTitle(project.title);
+    setSelectedNodeId(null);
+    setDeleteCandidateId(null);
+    setPendingProjectAction(null);
+    setSaveStatus('saved');
+  }, [nodes, setNodes]);
 
+  const confirmProjectAction = useCallback(() => {
+    if (!pendingProjectAction) return;
+    const project = createProjectDocument(
+      pendingProjectAction === 'new' ? 'Новый проект' : 'Проект после сброса',
+    );
 
-);
-}
+    try {
+      if (pendingProjectAction === 'reset') clearSavedProject();
+      saveProject(project);
+    } catch {
+      setSaveStatus('error');
+      showProjectNotice('error', 'Браузер не разрешил сохранить проект локально. Проверьте настройки хранилища.');
+      return;
+    }
+
+    applyProject(project);
+    showProjectNotice(
+      'success',
+      pendingProjectAction === 'new'
+        ? 'Создан новый локальный проект.'
+        : 'Локальные данные очищены, восстановлен стартовый проект.',
+    );
+  }, [applyProject, pendingProjectAction, showProjectNotice]);
+
+  const handleExport = useCallback(() => {
+    const snapshot = projectSnapshot(projectRef.current, nodes, viewport, projectTitle);
+    const blob = new Blob([projectToJson(snapshot)], { type: 'application/json;charset=utf-8' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    const safeTitle = snapshot.title.replace(/[\\/:*?"<>|]+/g, '-').trim() || 'canva-story-project';
+    link.href = url;
+    link.download = `${safeTitle}.canva-story.json`;
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    window.setTimeout(() => URL.revokeObjectURL(url), 0);
+    showProjectNotice('success', 'Проект экспортирован в JSON без тяжёлых изображений.');
+  }, [nodes, projectTitle, showProjectNotice, viewport]);
+
+  const handleImport = useCallback(async (event: React.ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0];
+    event.target.value = '';
+    if (!file) return;
+    try {
+      const importedProject = parseProjectJson(await file.text());
+      saveProject(importedProject);
+      applyProject(importedProject);
+      showProjectNotice('success', `Проект «${importedProject.title}» импортирован.`);
+    } catch (error) {
+      setSaveStatus('error');
+      showProjectNotice('error', error instanceof Error ? error.message : 'Не удалось импортировать проект.');
+    }
+  }, [applyProject, showProjectNotice]);
+
+  const getConnectionPath = (parentId: string, childId: string) => {
+    const parentNode = nodes[parentId];
+    const childNode = nodes[childId];
+    if (!parentNode || !childNode) return '';
+    const x1 = parentNode.x + (parentNode.width ?? 300);
+    const y1 = parentNode.y + (parentNode.height ?? 220) / 2;
+    const x2 = childNode.x;
+    const y2 = childNode.y + (childNode.height ?? 220) / 2;
+    const bend = Math.max(44, Math.abs(x2 - x1) * 0.45);
+    return `M ${x1} ${y1} C ${x1 + bend} ${y1}, ${x2 - bend} ${y2}, ${x2} ${y2}`;
+  };
+
+  const gridStyle = {
+    backgroundSize: `${24 * viewport.zoom}px ${24 * viewport.zoom}px`,
+    backgroundPosition: `${viewport.x}px ${viewport.y}px`,
+  };
+  const worldTransform = `translate(${viewport.x}px, ${viewport.y}px) scale(${viewport.zoom})`;
+
+  return (
+    <div className="app-shell">
+      <header className="app-toolbar">
+        <div className="app-brand">
+          <span className="app-brand__mark" aria-hidden="true">CS</span>
+          <div>
+            <strong>CANVA STORY</strong>
+            <span>визуальная мастерская сценария</span>
+          </div>
+        </div>
+        <div className="project-toolbar">
+          <div className="project-toolbar__row">
+            <input
+              className="project-title-input"
+              value={projectTitle}
+              onChange={(event) => setProjectTitle(event.target.value)}
+              maxLength={120}
+              aria-label="Название проекта"
+            />
+            <span className={`save-indicator save-indicator--${saveStatus}`}>
+              {saveStatus === 'saving' ? 'Сохраняем…' : saveStatus === 'error' ? 'Ошибка сохранения' : 'Сохранено локально'}
+            </span>
+            <span className={`mode-badge mode-badge--${getGenerationMode()}`}>
+              {getGenerationMode() === 'mock' ? 'Тестовый режим' : 'Mistral API'}
+            </span>
+          </div>
+          <div className="workflow-hint" aria-label="Текущий рабочий процесс">
+            <span>1 · Текст</span>
+            <span>2 · Детали</span>
+            <span>3 · Сцены</span>
+            <span>4 · Промпты</span>
+          </div>
+        </div>
+        <div className="project-actions" aria-label="Действия с проектом">
+          <span className="node-count">{nodeEntries.length} нод</span>
+          <button type="button" onClick={() => setPendingProjectAction('new')}>Новый</button>
+          <button type="button" onClick={handleExport}>Экспорт</button>
+          <button type="button" onClick={() => fileInputRef.current?.click()}>Импорт</button>
+          <button type="button" className="toolbar-danger-button" onClick={() => setPendingProjectAction('reset')}>Сброс</button>
+          <input
+            ref={fileInputRef}
+            type="file"
+            accept="application/json,.json"
+            onChange={handleImport}
+            className="visually-hidden"
+            hidden
+            tabIndex={-1}
+            aria-hidden="true"
+          />
+        </div>
+      </header>
+
+      <main
+        ref={canvasRef}
+        className={`canvas-viewport${isPanning ? ' canvas-viewport--panning' : ''}`}
+        style={gridStyle}
+        onMouseDown={handleCanvasMouseDown}
+        onWheel={handleWheel}
+        aria-label="Канва проекта"
+      >
+        <svg className="connection-layer" aria-hidden="true">
+          <g transform={worldTransform}>
+            {nodeEntries.map(([childId, childNode]) => childNode.parentId && (
+              <path
+                key={`${childNode.parentId}-${childId}`}
+                d={getConnectionPath(childNode.parentId, childId)}
+                vectorEffect="non-scaling-stroke"
+              />
+            ))}
+          </g>
+        </svg>
+
+        <div className="canvas-world" style={{ transform: worldTransform }}>
+          {nodeEntries.map(([id, node]) => (
+            <NodeRenderer
+              key={id}
+              id={id}
+              node={node}
+              selected={selectedNodeId === id}
+              onMouseDown={handleMouseDown}
+              onResizeMouseDown={handleResizeMouseDown}
+              onDelete={setDeleteCandidateId}
+              onInputChange={handleInputChange}
+              onThemeInputChange={handleThemeInputChange}
+              onModelChange={handleModelChange}
+              onSceneCountChange={handleSceneCountChange}
+              onContinueAssociation={handleContinueAssociation}
+              onScriptVisualize={handleScriptVisualization}
+              onScenarioDetailClick={handleScenarioDetailClick}
+              onCreateSceneNodes={handleCreateSceneNodes}
+              onGenerateScenePrompt={handleGenerateScenePrompt}
+              onCopyToClipboard={handleCopyToClipboard}
+              onGeneratePollinationsImage={handleGeneratePollinationsImage}
+              onCancelGeneration={handleCancelGeneration}
+            />
+          ))}
+        </div>
+
+        <div className="canvas-help">
+          Перетаскивайте ноды · тяните фон для панорамы · колесо мыши меняет масштаб
+        </div>
+        <div className="canvas-controls" aria-label="Управление канвой">
+          <button type="button" onClick={zoomOut} aria-label="Уменьшить масштаб">−</button>
+          <button type="button" onClick={resetZoom} className="canvas-controls__value" aria-label="Масштаб 100%">
+            {Math.round(viewport.zoom * 100)}%
+          </button>
+          <button type="button" onClick={zoomIn} aria-label="Увеличить масштаб">+</button>
+          <span className="canvas-controls__divider" />
+          <button type="button" onClick={centerView}>Центр</button>
+          <button type="button" onClick={() => fitView()}>Показать всё</button>
+        </div>
+        {selectedNode && (
+          <div className="selection-status">
+            Выбрано: <strong>{selectedNode.label}</strong> · Delete — удалить · Esc — снять выбор
+          </div>
+        )}
+      </main>
+
+      {visibleNotice && (
+        <div className={`app-toast app-toast--${visibleNotice.tone}`} role="status" aria-live="polite">
+          <span>{visibleNotice.message}</span>
+          <button type="button" onClick={dismissNotice} aria-label="Закрыть сообщение">×</button>
+        </div>
+      )}
+
+      {deleteCandidate && (
+        <div className="dialog-backdrop" role="presentation" onMouseDown={() => setDeleteCandidateId(null)}>
+          <section
+            className="confirm-dialog"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="delete-dialog-title"
+            onMouseDown={(event) => event.stopPropagation()}
+          >
+            <span className="confirm-dialog__eyebrow">Подтвердите действие</span>
+            <h2 id="delete-dialog-title">Удалить «{deleteCandidate.label}»?</h2>
+            <p>Связанные дочерние ноды тоже будут удалены. Это действие нельзя отменить.</p>
+            <div className="confirm-dialog__actions">
+              <button type="button" onClick={() => setDeleteCandidateId(null)}>Отмена</button>
+              <button type="button" className="danger-button" onClick={confirmDelete}>Удалить</button>
+            </div>
+          </section>
+        </div>
+      )}
+
+      {pendingProjectAction && (
+        <div className="dialog-backdrop" role="presentation" onMouseDown={() => setPendingProjectAction(null)}>
+          <section
+            className="confirm-dialog"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="project-dialog-title"
+            onMouseDown={(event) => event.stopPropagation()}
+          >
+            <span className="confirm-dialog__eyebrow">Несохранённые изменения можно экспортировать</span>
+            <h2 id="project-dialog-title">
+              {pendingProjectAction === 'new' ? 'Создать новый проект?' : 'Полностью сбросить локальный проект?'}
+            </h2>
+            <p>
+              {pendingProjectAction === 'new'
+                ? 'Текущая канва будет заменена чистым стартовым проектом.'
+                : 'Локальная копия, ноды, координаты и настройки вида будут очищены.'}
+            </p>
+            <div className="confirm-dialog__actions">
+              <button type="button" onClick={() => setPendingProjectAction(null)}>Отмена</button>
+              <button type="button" className="danger-button" onClick={confirmProjectAction}>
+                {pendingProjectAction === 'new' ? 'Создать проект' : 'Сбросить всё'}
+              </button>
+            </div>
+          </section>
+        </div>
+      )}
+    </div>
+  );
+};
 
 export default App;

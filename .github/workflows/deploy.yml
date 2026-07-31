@@ -21,19 +21,14 @@ jobs:
       - name: Set up Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: '20' # Укажите вашу версию Node.js, если она другая
-          cache: 'npm' # Или 'yarn', если используете Yarn
+          node-version: '20'
+          cache: 'npm'
 
       - name: Install dependencies
-        run: npm install # Или yarn install
+        run: npm ci
 
       - name: Build project
-        run: npm run build # Или yarn build
-        env:
-          # Передаем секрет как переменную окружения для Vite
-          VITE_MISTRAL_API_KEY: ${{ secrets.MISTRAL_API_KEY }}
-          # Базовый URL больше не нужен здесь, т.к. он задан в vite.config.ts
-          # BASE_URL: /CANVA_STORY_/
+        run: npm run build
 
       - name: Setup Pages
         uses: actions/configure-pages@v4

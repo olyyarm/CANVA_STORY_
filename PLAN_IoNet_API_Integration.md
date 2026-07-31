@@ -12,7 +12,7 @@
 
 В .env добавить строку с вашим API ключом:
 
-VITE_IONET_API_KEY=io-v2-eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCJ9.eyJvd25lciI6IjkzNzVlZmFlLWNkZjgtNDU2ZS1iZmQzLWMzOGRjNjhmOGE2MiIsImV4cCI6NDg5NzEyNjA0OH0.EMMn7wQXXPbeAXJxbuHro5lWVfLWVb8ZCA-9sEOF0Z7wvGqflJ5ss3JLmW52kIYApAdLbZnhHtcql3qr7aP9AQ
+VITE_IONET_API_KEY=your_local_key
 
 
 (Внимание: Убедитесь, что это ваш актуальный ключ. Не добавляйте .env в Git!)

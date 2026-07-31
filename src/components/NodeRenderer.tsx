@@ -1,4 +1,5 @@
 import React from 'react';
+import { ImageProvider } from '../api';
 import { MISTRAL_MODELS } from '../constants';
 import { DetailType, NodeData } from '../types';
 import { assetPath, getNodeIcon } from '../utils';
@@ -11,6 +12,7 @@ interface NodeRendererProps {
   onInputChange: (event: React.ChangeEvent<HTMLTextAreaElement>, nodeId: string) => void;
   onThemeInputChange: (event: React.ChangeEvent<HTMLTextAreaElement>, nodeId: string) => void;
   onModelChange: (event: React.ChangeEvent<HTMLSelectElement>, nodeId: string) => void;
+  onImagePipelineChange: (event: React.ChangeEvent<HTMLSelectElement>, nodeId: string) => void;
   onSceneCountChange: (event: React.ChangeEvent<HTMLInputElement>, nodeId: string) => void;
   onContinueAssociation: (nodeId: string) => void;
   onScriptVisualize: (nodeId: string) => void;
@@ -18,6 +20,7 @@ interface NodeRendererProps {
   onCreateSceneNodes: (nodeId: string) => void;
   onGenerateScenePrompt: (nodeId: string) => void;
   onCopyToClipboard: (text: string) => void;
+  imageProvider: ImageProvider;
   onGeneratePollinationsImage: (nodeId: string) => Promise<void>;
   onCancelGeneration: (nodeId: string) => void;
   onDelete?: (nodeId: string) => void;
@@ -38,6 +41,7 @@ const NodeRenderer: React.FC<NodeRendererProps> = ({
   onInputChange,
   onThemeInputChange,
   onModelChange,
+  onImagePipelineChange,
   onSceneCountChange,
   onContinueAssociation,
   onScriptVisualize,
@@ -45,6 +49,7 @@ const NodeRenderer: React.FC<NodeRendererProps> = ({
   onCreateSceneNodes,
   onGenerateScenePrompt,
   onCopyToClipboard,
+  imageProvider,
   onGeneratePollinationsImage,
   onCancelGeneration,
   onDelete,
@@ -257,6 +262,19 @@ const NodeRenderer: React.FC<NodeRendererProps> = ({
             {node.pollinationsApiError && (
               <div className="node-message node-message--error" role="alert">{node.pollinationsApiError}</div>
             )}
+            {node.masterPrompt && imageProvider === 'comfyui' && (
+              <label className="node-field node-field--inline">
+                <span>Pipeline</span>
+                <select
+                  value={node.imagePipeline ?? 'sdxl'}
+                  onChange={(event) => onImagePipelineChange(event, id)}
+                  onMouseDown={stopMouseDown}
+                  disabled={node.isLoadingImage}
+                >
+                  <option value="sdxl">SDXL</option>
+                </select>
+              </label>
+            )}
             {!node.masterPrompt ? (
               <button
                 type="button"
@@ -277,7 +295,7 @@ const NodeRenderer: React.FC<NodeRendererProps> = ({
                   ? onCancelGeneration(id)
                   : void onGeneratePollinationsImage(id))}
               >
-                {node.isLoadingImage ? 'Отменить создание кадра' : 'Создать тестовый кадр'}
+                {node.isLoadingImage ? 'Отменить создание кадра' : `Создать кадр · ${imageProvider === 'comfyui' ? 'ComfyUI' : 'Pollinations'}`}
               </button>
             )}
           </>

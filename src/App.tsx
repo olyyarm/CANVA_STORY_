@@ -2,7 +2,12 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   GenerationMode,
   GenerationSettings,
+  ImageGenerationSettings,
+  ImageProvider,
+  COMFYUI_DEFAULT_CHECKPOINT,
+  COMFYUI_DEFAULT_ENDPOINT,
   getDefaultGenerationSettings,
+  getDefaultImageGenerationSettings,
   LM_STUDIO_DEFAULT_ENDPOINT,
   LM_STUDIO_DEFAULT_MODEL,
 } from './api';
@@ -23,6 +28,7 @@ import { AppNotice, NodesState, ProjectDocument, ViewportState } from './types';
 import './App.css';
 
 const GENERATION_SETTINGS_STORAGE_KEY = 'canva-story.generation-settings.v1';
+const IMAGE_GENERATION_SETTINGS_STORAGE_KEY = 'canva-story.image-generation-settings.v1';
 
 const generationModeLabels: Record<GenerationMode, string> = {
   mock: 'Тестовый режим',
@@ -30,8 +36,16 @@ const generationModeLabels: Record<GenerationMode, string> = {
   lmstudio: 'LM Studio',
 };
 
+const imageProviderLabels: Record<ImageProvider, string> = {
+  pollinations: 'Pollinations',
+  comfyui: 'ComfyUI',
+};
+
 const isGenerationMode = (value: unknown): value is GenerationMode =>
   value === 'mock' || value === 'mistral' || value === 'lmstudio';
+
+const isImageProvider = (value: unknown): value is ImageProvider =>
+  value === 'pollinations' || value === 'comfyui';
 
 const loadGenerationSettings = (): GenerationSettings => {
   const fallback = getDefaultGenerationSettings();
@@ -47,6 +61,29 @@ const loadGenerationSettings = (): GenerationSettings => {
       lmStudioModel: typeof parsed.lmStudioModel === 'string'
         ? parsed.lmStudioModel
         : LM_STUDIO_DEFAULT_MODEL,
+    };
+  } catch {
+    return fallback;
+  }
+};
+
+const loadImageGenerationSettings = (): ImageGenerationSettings => {
+  const fallback = getDefaultImageGenerationSettings();
+  try {
+    const saved = localStorage.getItem(IMAGE_GENERATION_SETTINGS_STORAGE_KEY);
+    if (!saved) return fallback;
+    const parsed = JSON.parse(saved) as Partial<ImageGenerationSettings>;
+    return {
+      provider: isImageProvider(parsed.provider) ? parsed.provider : fallback.provider,
+      comfyEndpoint: typeof parsed.comfyEndpoint === 'string'
+        ? parsed.comfyEndpoint
+        : COMFYUI_DEFAULT_ENDPOINT,
+      comfyCheckpoint: typeof parsed.comfyCheckpoint === 'string'
+        ? parsed.comfyCheckpoint
+        : COMFYUI_DEFAULT_CHECKPOINT,
+      comfyUnloadModel: typeof parsed.comfyUnloadModel === 'boolean'
+        ? parsed.comfyUnloadModel
+        : true,
     };
   } catch {
     return fallback;
@@ -84,6 +121,7 @@ const App = () => {
   const [projectNotice, setProjectNotice] = useState<AppNotice | null>(null);
   const [saveStatus, setSaveStatus] = useState<'saved' | 'saving' | 'error'>('saved');
   const [generationSettings, setGenerationSettings] = useState<GenerationSettings>(loadGenerationSettings);
+  const [imageGenerationSettings, setImageGenerationSettings] = useState<ImageGenerationSettings>(loadImageGenerationSettings);
   const [viewport, setViewport] = useState<ViewportState>(bootstrap.project.viewport);
   const {
     nodes,
@@ -93,6 +131,7 @@ const App = () => {
     handleInputChange,
     handleThemeInputChange,
     handleModelChange,
+    handleImagePipelineChange,
     handleSceneCountChange,
     handleContinueAssociation,
     handleScriptVisualization,
@@ -102,7 +141,7 @@ const App = () => {
     handleCopyToClipboard,
     handleGeneratePollinationsImage,
     handleCancelGeneration,
-  } = useNodeManagement(bootstrap.project.nodes, generationSettings);
+  } = useNodeManagement(bootstrap.project.nodes, generationSettings, imageGenerationSettings);
 
   const clearSelection = useCallback(() => setSelectedNodeId(null), []);
   const {
@@ -133,10 +172,15 @@ const App = () => {
   const deleteCandidate = deleteCandidateId ? nodes[deleteCandidateId] : undefined;
   const visibleNotice = projectNotice ?? notice;
   const lmStudioEndpoint = generationSettings.lmStudioEndpoint.trim();
+  const comfyEndpoint = imageGenerationSettings.comfyEndpoint.trim();
   const hasLmStudioMixedContentRisk = generationSettings.mode === 'lmstudio'
     && window.location.protocol === 'https:'
     && lmStudioEndpoint.startsWith('http://')
     && !/^http:\/\/(localhost|127\.0\.0\.1|\[::1\])(?::|\/|$)/i.test(lmStudioEndpoint);
+  const hasComfyMixedContentRisk = imageGenerationSettings.provider === 'comfyui'
+    && window.location.protocol === 'https:'
+    && comfyEndpoint.startsWith('http://')
+    && !/^http:\/\/(localhost|127\.0\.0\.1|\[::1\])(?::|\/|$)/i.test(comfyEndpoint);
 
   const showProjectNotice = useCallback((tone: AppNotice['tone'], message: string) => {
     setProjectNotice({ id: Date.now(), tone, message });
@@ -160,6 +204,14 @@ const App = () => {
       // Project saving has its own visible status; generation settings can fall back to defaults.
     }
   }, [generationSettings]);
+
+  useEffect(() => {
+    try {
+      localStorage.setItem(IMAGE_GENERATION_SETTINGS_STORAGE_KEY, JSON.stringify(imageGenerationSettings));
+    } catch {
+      // Image generation settings are local convenience state and can fall back to defaults.
+    }
+  }, [imageGenerationSettings]);
 
   useEffect(() => {
     setSaveStatus('saving');
@@ -320,6 +372,24 @@ const App = () => {
     setGenerationSettings((settings) => ({ ...settings, lmStudioModel: event.target.value }));
   }, []);
 
+  const handleImageProviderChange = useCallback((event: React.ChangeEvent<HTMLSelectElement>) => {
+    const provider = event.target.value;
+    if (!isImageProvider(provider)) return;
+    setImageGenerationSettings((settings) => ({ ...settings, provider }));
+  }, []);
+
+  const handleComfyEndpointChange = useCallback((event: React.ChangeEvent<HTMLInputElement>) => {
+    setImageGenerationSettings((settings) => ({ ...settings, comfyEndpoint: event.target.value }));
+  }, []);
+
+  const handleComfyCheckpointChange = useCallback((event: React.ChangeEvent<HTMLInputElement>) => {
+    setImageGenerationSettings((settings) => ({ ...settings, comfyCheckpoint: event.target.value }));
+  }, []);
+
+  const handleComfyUnloadModelChange = useCallback((event: React.ChangeEvent<HTMLInputElement>) => {
+    setImageGenerationSettings((settings) => ({ ...settings, comfyUnloadModel: event.target.checked }));
+  }, []);
+
   const getConnectionPath = (parentId: string, childId: string) => {
     const parentNode = nodes[parentId];
     const childNode = nodes[childId];
@@ -422,6 +492,51 @@ const App = () => {
               GitHub Pages работает по HTTPS. Для HTTP-адреса в домашней сети браузер может потребовать локальный запуск приложения или HTTPS/proxy.
             </div>
           )}
+          <div className="image-generation-controls" aria-label="Генерация кадров">
+            <span className={`mode-badge mode-badge--image-${imageGenerationSettings.provider}`}>
+              {imageProviderLabels[imageGenerationSettings.provider]}
+            </span>
+            <select
+              className="generation-select"
+              value={imageGenerationSettings.provider}
+              onChange={handleImageProviderChange}
+              aria-label="Провайдер генерации кадров"
+            >
+              <option value="pollinations">Pollinations</option>
+              <option value="comfyui">ComfyUI</option>
+            </select>
+            {imageGenerationSettings.provider === 'comfyui' && (
+              <>
+                <input
+                  className="generation-endpoint-input"
+                  value={imageGenerationSettings.comfyEndpoint}
+                  onChange={handleComfyEndpointChange}
+                  placeholder={COMFYUI_DEFAULT_ENDPOINT}
+                  aria-label="Endpoint ComfyUI"
+                />
+                <input
+                  className="generation-model-input"
+                  value={imageGenerationSettings.comfyCheckpoint}
+                  onChange={handleComfyCheckpointChange}
+                  placeholder={COMFYUI_DEFAULT_CHECKPOINT}
+                  aria-label="Checkpoint SDXL для ComfyUI"
+                />
+                <label className="generation-toggle">
+                  <input
+                    type="checkbox"
+                    checked={imageGenerationSettings.comfyUnloadModel}
+                    onChange={handleComfyUnloadModelChange}
+                  />
+                  <span>Выгружать</span>
+                </label>
+              </>
+            )}
+          </div>
+          {hasComfyMixedContentRisk && (
+            <div className="generation-warning" role="status">
+              GitHub Pages по HTTPS может блокировать HTTP ComfyUI в домашней сети. Для такого режима лучше локальный запуск или HTTPS/proxy.
+            </div>
+          )}
           <div className="workflow-hint" aria-label="Текущий рабочий процесс">
             <span>1 · Текст</span>
             <span>2 · Детали</span>
@@ -481,6 +596,7 @@ const App = () => {
               onInputChange={handleInputChange}
               onThemeInputChange={handleThemeInputChange}
               onModelChange={handleModelChange}
+              onImagePipelineChange={handleImagePipelineChange}
               onSceneCountChange={handleSceneCountChange}
               onContinueAssociation={handleContinueAssociation}
               onScriptVisualize={handleScriptVisualization}
@@ -488,6 +604,7 @@ const App = () => {
               onCreateSceneNodes={handleCreateSceneNodes}
               onGenerateScenePrompt={handleGenerateScenePrompt}
               onCopyToClipboard={handleCopyToClipboard}
+              imageProvider={imageGenerationSettings.provider}
               onGeneratePollinationsImage={handleGeneratePollinationsImage}
               onCancelGeneration={handleCancelGeneration}
             />

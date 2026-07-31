@@ -6,7 +6,7 @@ import {
   useRef,
   useState,
 } from 'react';
-import { generateText, GenerationSettings } from '../api';
+import { generateImage, generateText, GenerationSettings, ImageGenerationSettings } from '../api';
 import {
   ASSOCIATE_SYSTEM_PROMPT,
   HERO_DETAIL_SYSTEM_PROMPT,
@@ -41,6 +41,7 @@ interface UseNodeManagementReturn {
   handleInputChange: (event: React.ChangeEvent<HTMLTextAreaElement>, nodeId: string) => void;
   handleThemeInputChange: (event: React.ChangeEvent<HTMLTextAreaElement>, nodeId: string) => void;
   handleModelChange: (event: React.ChangeEvent<HTMLSelectElement>, nodeId: string) => void;
+  handleImagePipelineChange: (event: React.ChangeEvent<HTMLSelectElement>, nodeId: string) => void;
   handleSceneCountChange: (event: React.ChangeEvent<HTMLInputElement>, nodeId: string) => void;
   handleContinueAssociation: (sourceNodeId: string) => Promise<void>;
   handleScriptVisualization: (sourceNodeId: string) => Promise<void>;
@@ -145,15 +146,10 @@ const upsertScenarioGraph = (
   return nextNodes;
 };
 
-const mockImageUrl = (label: string) => {
-  const safeLabel = label.replace(/[<>&"']/g, '');
-  const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="800" height="480" viewBox="0 0 800 480"><defs><linearGradient id="g" x1="0" y1="0" x2="1" y2="1"><stop stop-color="#20242b"/><stop offset="1" stop-color="#111317"/></linearGradient></defs><rect width="800" height="480" fill="url(#g)"/><circle cx="620" cy="110" r="150" fill="#d9873d" opacity=".18"/><path d="M0 365L180 220L310 330L470 190L800 400V480H0Z" fill="#303640"/><text x="48" y="70" fill="#f0f2f5" font-family="Arial" font-size="28">${safeLabel}</text><text x="48" y="108" fill="#aeb5bf" font-family="Arial" font-size="18">Тестовый кадр · изображение не сохраняется в проект</text></svg>`;
-  return `data:image/svg+xml;charset=utf-8,${encodeURIComponent(svg)}`;
-};
-
 export const useNodeManagement = (
   initialNodes: NodesState,
   generationSettings: GenerationSettings,
+  imageGenerationSettings: ImageGenerationSettings,
 ): UseNodeManagementReturn => {
   const [nodes, setNodesState] = useState<NodesState>(initialNodes);
   const [notice, setNotice] = useState<AppNotice | null>(null);
@@ -229,6 +225,10 @@ export const useNodeManagement = (
 
   const handleModelChange = useCallback((event: React.ChangeEvent<HTMLSelectElement>, nodeId: string) => {
     updateNode(nodeId, { selectedModel: event.target.value, error: undefined });
+  }, [updateNode]);
+
+  const handleImagePipelineChange = useCallback((event: React.ChangeEvent<HTMLSelectElement>, nodeId: string) => {
+    updateNode(nodeId, { imagePipeline: event.target.value === 'sdxl' ? 'sdxl' : 'sdxl', pollinationsApiError: undefined });
   }, [updateNode]);
 
   const handleSceneCountChange = useCallback((event: React.ChangeEvent<HTMLInputElement>, nodeId: string) => {
@@ -474,25 +474,13 @@ export const useNodeManagement = (
     updateNode(parentNodeId, { isLoadingImage: true, pollinationsApiError: undefined });
 
     try {
-      if (generationSettings.mode === 'mock') {
-        await new Promise<void>((resolve, reject) => {
-          const timer = window.setTimeout(resolve, 350);
-          controller.signal.addEventListener('abort', () => {
-            window.clearTimeout(timer);
-            reject(new DOMException('Запрос отменён', 'AbortError'));
-          }, { once: true });
-        });
-        upsertImageNode(parentNodeId, mockImageUrl(parentNode.label));
-      } else {
-        const width = 1280;
-        const height = 768;
-        const encodedPrompt = encodeURIComponent(parentNode.masterPrompt);
-        const url = `https://image.pollinations.ai/prompt/${encodedPrompt}?model=flux&width=${width}&height=${height}&seed=0&nologo=true&enhance=1&private=1`;
-        const response = await fetch(url, { signal: controller.signal });
-        if (!response.ok) throw new Error(`Сервис изображений вернул ошибку ${response.status}.`);
-        const blob = await response.blob();
-        upsertImageNode(parentNodeId, URL.createObjectURL(blob));
-      }
+      const imageUrl = await generateImage(
+        parentNode.masterPrompt,
+        parentNode.imagePipeline ?? 'sdxl',
+        imageGenerationSettings,
+        controller.signal,
+      );
+      upsertImageNode(parentNodeId, imageUrl);
       showNotice('success', 'Кадр создан. Он не включается в localStorage и JSON проекта.');
     } catch (error) {
       if (!isAbortError(error)) {
@@ -504,7 +492,7 @@ export const useNodeManagement = (
       activeRequests.current.delete(requestId);
       updateNode(parentNodeId, { isLoadingImage: false });
     }
-  }, [generationSettings.mode, showNotice, updateNode, upsertImageNode]);
+  }, [imageGenerationSettings, showNotice, updateNode, upsertImageNode]);
 
   const handleCancelGeneration = useCallback((nodeId: string) => {
     activeRequests.current.get(nodeId)?.abort();
@@ -519,6 +507,7 @@ export const useNodeManagement = (
     handleInputChange,
     handleThemeInputChange,
     handleModelChange,
+    handleImagePipelineChange,
     handleSceneCountChange,
     handleContinueAssociation,
     handleScriptVisualization,

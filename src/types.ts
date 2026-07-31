@@ -12,6 +12,7 @@ export type NodeType =
 export type DetailType = 'герои' | 'локации' | 'настроение';
 export type EntityType = 'character' | 'location' | 'episode' | 'scene';
 export type ProductionStatus = 'idea' | 'draft' | 'ready' | 'in_production' | 'done';
+export type ImagePipeline = 'sdxl';
 
 export interface NodeData {
   x: number;
@@ -41,6 +42,7 @@ export interface NodeData {
   masterPrompt?: string;
   isLoadingImage?: boolean;
   imageUrl?: string;
+  imagePipeline?: ImagePipeline;
   error?: string;
   statusMessage?: string;
   pollinationsApiError?: string;

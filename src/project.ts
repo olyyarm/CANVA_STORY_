@@ -1,5 +1,6 @@
 import { DEFAULT_SCENE_COUNT, MISTRAL_MODELS } from './constants';
 import {
+  ImagePipeline,
   NodeData,
   NodesState,
   NodeType,
@@ -19,6 +20,8 @@ const nodeTypes = new Set<NodeType>([
   'script_detail',
   'pollinations_image',
 ]);
+
+const imagePipelines = new Set<ImagePipeline>(['sdxl']);
 
 const newId = () => {
   if (typeof crypto !== 'undefined' && 'randomUUID' in crypto) return crypto.randomUUID();
@@ -104,6 +107,9 @@ const sanitizeNode = (value: unknown): NodeData | null => {
     statusMessage: undefined,
     pollinationsApiError: undefined,
     imageUrl: undefined,
+    imagePipeline: imagePipelines.has(value.imagePipeline as ImagePipeline)
+      ? value.imagePipeline as ImagePipeline
+      : 'sdxl',
   };
   return node;
 };

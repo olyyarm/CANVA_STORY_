@@ -61,6 +61,18 @@ const NodeRenderer: React.FC<NodeRendererProps> = ({
     action();
   };
   const isTextOutput = node.nodeType === 'script_output' || node.nodeType === 'script_detail';
+  const isBusy = Boolean(node.isLoading || node.isLoadingImage);
+  const loadingLabel = node.isLoadingImage
+    ? node.loadingProvider === 'comfyui'
+      ? 'ComfyUI загружает модель или рендерит кадр...'
+      : 'Pollinations создаёт кадр...'
+    : node.loadingProvider === 'lmstudio'
+      ? 'LM Studio загружает модель и готовит ответ...'
+      : node.loadingProvider === 'mistral'
+        ? 'Mistral API готовит ответ...'
+        : node.loadingProvider === 'mock'
+          ? 'Собираем тестовый ответ...'
+          : 'Генерация идёт...';
 
   const renderCopyButton = (text: string) => (
     <button
@@ -78,7 +90,7 @@ const NodeRenderer: React.FC<NodeRendererProps> = ({
   return (
     <div
       id={`node-${id}`}
-      className={`story-node story-node--${node.nodeType}${selected ? ' story-node--selected' : ''}`}
+      className={`story-node story-node--${node.nodeType}${selected ? ' story-node--selected' : ''}${isBusy ? ' story-node--busy' : ''}`}
       style={{
         left: node.x,
         top: node.y,
@@ -124,6 +136,12 @@ const NodeRenderer: React.FC<NodeRendererProps> = ({
 
       <div className="story-node__body">
         {node.error && <div className="node-message node-message--error" role="alert">{node.error}</div>}
+        {isBusy && (
+          <div className="node-loading-message" role="status" aria-live="polite">
+            <span className="node-loading-spinner" aria-hidden="true" />
+            <span>{loadingLabel}</span>
+          </div>
+        )}
 
         {node.nodeType === 'text' && node.hasInput && (
           <>

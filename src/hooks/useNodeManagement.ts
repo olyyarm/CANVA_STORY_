@@ -196,7 +196,12 @@ export const useNodeManagement = (
     if (activeRequests.current.has(nodeId) || nodesRef.current[nodeId]?.isLoading) return null;
     const controller = new AbortController();
     activeRequests.current.set(nodeId, controller);
-    updateNode(nodeId, { isLoading: true, error: undefined, statusMessage });
+    updateNode(nodeId, {
+      isLoading: true,
+      loadingProvider: generationSettings.mode,
+      error: undefined,
+      statusMessage,
+    });
 
     try {
       return await generateText(request, controller.signal, generationSettings);
@@ -211,7 +216,7 @@ export const useNodeManagement = (
       return null;
     } finally {
       activeRequests.current.delete(nodeId);
-      updateNode(nodeId, { isLoading: false, statusMessage: undefined });
+      updateNode(nodeId, { isLoading: false, loadingProvider: undefined, statusMessage: undefined });
     }
   }, [generationSettings, showNotice, updateNode]);
 
@@ -471,7 +476,11 @@ export const useNodeManagement = (
     if (activeRequests.current.has(requestId)) return;
     const controller = new AbortController();
     activeRequests.current.set(requestId, controller);
-    updateNode(parentNodeId, { isLoadingImage: true, pollinationsApiError: undefined });
+    updateNode(parentNodeId, {
+      isLoadingImage: true,
+      loadingProvider: imageGenerationSettings.provider,
+      pollinationsApiError: undefined,
+    });
 
     try {
       const imageUrl = await generateImage(
@@ -490,7 +499,7 @@ export const useNodeManagement = (
       }
     } finally {
       activeRequests.current.delete(requestId);
-      updateNode(parentNodeId, { isLoadingImage: false });
+      updateNode(parentNodeId, { isLoadingImage: false, loadingProvider: undefined });
     }
   }, [imageGenerationSettings, showNotice, updateNode, upsertImageNode]);
 

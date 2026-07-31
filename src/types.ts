@@ -34,6 +34,7 @@ export interface NodeData {
   sceneCount?: number;
   sceneText?: string;
   isLoading?: boolean;
+  loadingProvider?: 'mock' | 'mistral' | 'lmstudio' | 'pollinations' | 'comfyui';
   isGenerated?: boolean;
   canContinue?: boolean;
   fullAssociations?: string[];

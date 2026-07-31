@@ -324,12 +324,34 @@ const App = () => {
     const parentNode = nodes[parentId];
     const childNode = nodes[childId];
     if (!parentNode || !childNode) return '';
-    const x1 = parentNode.x + (parentNode.width ?? 300);
-    const y1 = parentNode.y + (parentNode.height ?? 220) / 2;
-    const x2 = childNode.x;
-    const y2 = childNode.y + (childNode.height ?? 220) / 2;
-    const bend = Math.max(44, Math.abs(x2 - x1) * 0.45);
-    return `M ${x1} ${y1} C ${x1 + bend} ${y1}, ${x2 - bend} ${y2}, ${x2} ${y2}`;
+    const parentWidth = parentNode.width ?? 300;
+    const parentHeight = parentNode.height ?? 220;
+    const childWidth = childNode.width ?? 300;
+    const childHeight = childNode.height ?? 220;
+    const parentCenterX = parentNode.x + parentWidth / 2;
+    const parentCenterY = parentNode.y + parentHeight / 2;
+    const childCenterX = childNode.x + childWidth / 2;
+    const childCenterY = childNode.y + childHeight / 2;
+    const horizontalGap = childCenterX - parentCenterX;
+    const verticalGap = childCenterY - parentCenterY;
+
+    if (Math.abs(horizontalGap) >= Math.abs(verticalGap)) {
+      const fromRight = horizontalGap >= 0;
+      const x1 = fromRight ? parentNode.x + parentWidth : parentNode.x;
+      const x2 = fromRight ? childNode.x : childNode.x + childWidth;
+      const y1 = parentCenterY;
+      const y2 = childCenterY;
+      const bend = Math.max(44, Math.abs(x2 - x1) * 0.45);
+      return `M ${x1} ${y1} C ${x1 + (fromRight ? bend : -bend)} ${y1}, ${x2 + (fromRight ? -bend : bend)} ${y2}, ${x2} ${y2}`;
+    }
+
+    const fromBottom = verticalGap >= 0;
+    const x1 = parentCenterX;
+    const x2 = childCenterX;
+    const y1 = fromBottom ? parentNode.y + parentHeight : parentNode.y;
+    const y2 = fromBottom ? childNode.y : childNode.y + childHeight;
+    const bend = Math.max(44, Math.abs(y2 - y1) * 0.45);
+    return `M ${x1} ${y1} C ${x1} ${y1 + (fromBottom ? bend : -bend)}, ${x2} ${y2 + (fromBottom ? -bend : bend)}, ${x2} ${y2}`;
   };
 
   const gridStyle = {
@@ -337,6 +359,7 @@ const App = () => {
     backgroundPosition: `${viewport.x}px ${viewport.y}px`,
   };
   const worldTransform = `translate(${viewport.x}px, ${viewport.y}px) scale(${viewport.zoom})`;
+  const svgWorldTransform = `translate(${viewport.x} ${viewport.y}) scale(${viewport.zoom})`;
 
   return (
     <div className="app-shell">
@@ -434,7 +457,7 @@ const App = () => {
         aria-label="Канва проекта"
       >
         <svg className="connection-layer" aria-hidden="true">
-          <g transform={worldTransform}>
+          <g transform={svgWorldTransform}>
             {nodeEntries.map(([childId, childNode]) => childNode.parentId && (
               <path
                 key={`${childNode.parentId}-${childId}`}

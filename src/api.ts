@@ -180,6 +180,50 @@ const wait = (milliseconds: number, signal?: AbortSignal) =>
 
 const getComfyBaseUrl = (value: string) => (value.trim() || COMFYUI_DEFAULT_ENDPOINT).replace(/\/+$/, '');
 
+const readResponseDetails = async (response: Response) => {
+  try {
+    const payload: unknown = await response.json();
+    const message = getErrorMessage(payload);
+    return message || JSON.stringify(payload);
+  } catch {
+    try {
+      return await response.text();
+    } catch {
+      return response.statusText;
+    }
+  }
+};
+
+const getComfyError = (action: string, response: Response, details: string) =>
+  `${action}: ${response.status}${details ? ` · ${details.slice(0, 600)}` : ''}`;
+
+const getComfyCheckpointNames = async (baseUrl: string, signal?: AbortSignal) => {
+  const response = await fetch(`${baseUrl}/object_info/CheckpointLoaderSimple`, { signal });
+  if (!response.ok) return null;
+  const data: unknown = await response.json();
+  if (!data || typeof data !== 'object') return null;
+  const info = data as Record<string, { input?: { required?: { ckpt_name?: unknown[] } } }>;
+  const ckptField = info.CheckpointLoaderSimple?.input?.required?.ckpt_name;
+  const names = Array.isArray(ckptField?.[0]) ? ckptField[0] : [];
+  return names.filter((name): name is string => typeof name === 'string');
+};
+
+const resolveComfyCheckpoint = async (
+  baseUrl: string,
+  configuredCheckpoint: string,
+  signal?: AbortSignal,
+) => {
+  const checkpoint = configuredCheckpoint.trim() || COMFYUI_DEFAULT_CHECKPOINT;
+  const names = await getComfyCheckpointNames(baseUrl, signal);
+  if (!names || names.includes(checkpoint)) return checkpoint;
+
+  const sdxlCandidates = names.filter((name) => /sdxl|sd_xl|xl/i.test(name));
+  const suggestions = (sdxlCandidates.length > 0 ? sdxlCandidates : names).slice(0, 8).join(', ');
+  throw new Error(
+    `ComfyUI не нашёл checkpoint "${checkpoint}". Укажите точное имя из ComfyUI/models/checkpoints. Доступно: ${suggestions || 'список пуст'}.`,
+  );
+};
+
 const buildComfySdxlWorkflow = (prompt: string, checkpoint: string) => {
   const seed = Math.floor(Math.random() * 1_000_000_000);
   return {
@@ -276,48 +320,63 @@ const generateComfyImage = async (
   settings: ImageGenerationSettings,
   signal?: AbortSignal,
 ) => {
-  if (pipeline !== 'sdxl') throw new Error('Пока подключён только pipeline SDXL.');
   const baseUrl = getComfyBaseUrl(settings.comfyEndpoint);
-  const workflow = buildComfySdxlWorkflow(prompt, settings.comfyCheckpoint);
-  const clientId = crypto.randomUUID?.() ?? `canva-story-${Date.now()}`;
+  try {
+    if (pipeline !== 'sdxl') throw new Error('Пока подключён только pipeline SDXL.');
+    const checkpoint = await resolveComfyCheckpoint(baseUrl, settings.comfyCheckpoint, signal);
+    const workflow = buildComfySdxlWorkflow(prompt, checkpoint);
+    const clientId = typeof crypto.randomUUID === 'function'
+      ? crypto.randomUUID()
+      : `canva-story-${Date.now()}`;
 
-  const promptResponse = await fetch(`${baseUrl}/prompt`, {
-    method: 'POST',
-    signal,
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ client_id: clientId, prompt: workflow }),
-  });
-  if (!promptResponse.ok) throw new Error(`ComfyUI не принял workflow: ${promptResponse.status}.`);
-  const promptData: ComfyPromptResponse = await promptResponse.json();
-  if (!promptData.prompt_id) throw new Error('ComfyUI не вернул prompt_id.');
-
-  let image: ComfyImageRef | null = null;
-  for (let attempt = 0; attempt < 240; attempt += 1) {
-    await wait(1000, signal);
-    const historyResponse = await fetch(`${baseUrl}/history/${promptData.prompt_id}`, { signal });
-    if (!historyResponse.ok) continue;
-    image = getImageFromComfyHistory(await historyResponse.json());
-    if (image) break;
-  }
-  if (!image) throw new Error('ComfyUI не вернул изображение за отведённое время.');
-
-  const params = new URLSearchParams({
-    filename: image.filename,
-    subfolder: image.subfolder ?? '',
-    type: image.type ?? 'output',
-  });
-  const viewResponse = await fetch(`${baseUrl}/view?${params.toString()}`, { signal });
-  if (!viewResponse.ok) throw new Error(`ComfyUI не отдал готовое изображение: ${viewResponse.status}.`);
-
-  const blob = await viewResponse.blob();
-  if (settings.comfyUnloadModel) {
-    fetch(`${baseUrl}/free`, {
+    const promptResponse = await fetch(`${baseUrl}/prompt`, {
       method: 'POST',
+      signal,
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ free_memory: true, unload_models: true }),
-    }).catch(() => undefined);
+      body: JSON.stringify({ client_id: clientId, prompt: workflow }),
+    });
+    if (!promptResponse.ok) {
+      throw new Error(getComfyError('ComfyUI не принял SDXL workflow', promptResponse, await readResponseDetails(promptResponse)));
+    }
+    const promptData: ComfyPromptResponse = await promptResponse.json();
+    if (!promptData.prompt_id) throw new Error('ComfyUI не вернул prompt_id. Проверьте workflow в консоли ComfyUI.');
+
+    let image: ComfyImageRef | null = null;
+    for (let attempt = 0; attempt < 240; attempt += 1) {
+      await wait(1000, signal);
+      const historyResponse = await fetch(`${baseUrl}/history/${promptData.prompt_id}`, { signal });
+      if (!historyResponse.ok) continue;
+      image = getImageFromComfyHistory(await historyResponse.json());
+      if (image) break;
+    }
+    if (!image) throw new Error('ComfyUI не вернул изображение за отведённое время. Проверьте, не упал ли workflow в окне ComfyUI.');
+
+    const params = new URLSearchParams({
+      filename: image.filename,
+      subfolder: image.subfolder ?? '',
+      type: image.type ?? 'output',
+    });
+    const viewResponse = await fetch(`${baseUrl}/view?${params.toString()}`, { signal });
+    if (!viewResponse.ok) {
+      throw new Error(getComfyError('ComfyUI не отдал готовое изображение', viewResponse, await readResponseDetails(viewResponse)));
+    }
+
+    const blob = await viewResponse.blob();
+    if (settings.comfyUnloadModel) {
+      fetch(`${baseUrl}/free`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ free_memory: true, unload_models: true }),
+      }).catch(() => undefined);
+    }
+    return URL.createObjectURL(blob);
+  } catch (error) {
+    if (error instanceof DOMException && error.name === 'AbortError') throw error;
+    if (error instanceof TypeError) {
+      throw new Error(`Не удалось подключиться к ComfyUI по адресу ${baseUrl}. Проверьте, что ComfyUI запущен, endpoint указан верно и разрешён CORS (--enable-cors-header).`);
+    }
+    throw error;
   }
-  return URL.createObjectURL(blob);
 };
 
 const generatePollinationsImage = async (prompt: string, signal?: AbortSignal) => {

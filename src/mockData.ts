@@ -58,7 +58,11 @@ const createAssociations = (prompt: string) => {
 const createHeroes = (prompt: string) => {
   const feminine = /девуш|женщ|героин|(?:^|\s)(?:она|лера)(?=\s|[.,!?;:]|$)/iu.test(prompt);
   const role = feminine ? 'Главная героиня' : 'Главный герой';
-  return `${role}: молодой взрослый, собранная пластика и внимательный взгляд; естественные черты лица, тёмные волосы; практичная многослойная одежда нейтральных тонов; отличительная деталь — тонкий металлический браслет.`;
+  const gender = feminine ? 'женщина' : 'мужчина';
+  const anchor = feminine
+    ? 'same young woman, dark bob hair, layered charcoal jacket, thin metal bracelet'
+    : 'same young man, dark short hair, layered charcoal jacket, thin metal bracelet';
+  return `${role} — ${gender}; молодой взрослый; собранная пластика и стройный узнаваемый силуэт; естественные черты лица и внимательный взгляд; тёмные волосы; практичная многослойная одежда нейтральных тонов; отличительная деталь — тонкий металлический браслет; visual anchor: ${anchor}; появляется во всех ключевых сценах.`;
 };
 
 const createLocations = (prompt: string) => {
@@ -85,11 +89,11 @@ const createSceneLocationPrompt = (request: GenerationRequest) => {
 
 const createSceneCharacterLayerPrompt = (request: GenerationRequest) => {
   const scene = request.sceneLabel || 'Scene';
-  return `${scene} character layer, main male protagonist first if present, all relevant scene characters as separate full-body figures, head-to-toe visible, clean light studio background for easy cutout, coherent lighting matching the scene location, readable poses and emotions for the action, consistent character design, no detailed background, no text, no watermark, source context: ${request.prompt}`;
+  return `${scene} character layer, use the hero description as a strict identity bible, main male protagonist first if present, preserve the exact same gender, age, face, hair, silhouette, outfit, and distinctive details, all relevant scene characters as separate full-body figures, full body only, head-to-toe visible, entire body in frame, no close-up, no portrait, no bust, no waist-up crop, no cropped legs, clean light studio background for easy cutout, coherent lighting matching the scene location, readable poses and emotions for the action, single coherent semi-realistic illustrated production concept art style consistent with the character sheet, not photorealistic, not a photograph, no detailed background, no text, no watermark, source context: ${request.prompt}`;
 };
 
 const createCharacterAssetPrompt = (request: GenerationRequest) =>
-  `full-body character sheet, all described characters shown head-to-toe as separate figures in one lineup, neutral light studio background for clean cutout, consistent scale, clear readable silhouettes, detailed clothing and faces, production concept art, no text, no watermark, source descriptions: ${request.prompt}`;
+  `full-body character sheet as the main visual identity reference for the story, all described characters shown head-to-toe as separate figures in one lineup, stable gender, age, face, hair, silhouette, outfit, proportions, and distinctive details for every character, include a reusable visual anchor phrase for each character, neutral light studio background for clean cutout, consistent scale, clear readable silhouettes, single coherent semi-realistic illustrated production concept art style, not photorealistic, not a photograph, no close-up, no portrait, no bust, no waist-up crop, no text, no watermark, source descriptions: ${request.prompt}`;
 
 const createLocationAssetPrompt = (request: GenerationRequest) =>
   `location sheet, all described locations shown as separate wide establishing-view panels, no foreground characters, clear architecture and props, coherent lighting and palette, production background concept art, no text, no watermark, source descriptions: ${request.prompt}`;

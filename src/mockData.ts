@@ -78,6 +78,11 @@ const createScenePrompt = (request: GenerationRequest) => {
   return `${scene}, cinematic visual storytelling, a clear subject performing the described action, grounded contemporary environment, expressive composition, medium-wide camera framing, subtle depth of field, soft directional dawn light, neutral charcoal and cool gray palette with one restrained amber accent, tactile realistic materials, coherent character and location details, quiet atmospheric tension, no text, no watermark`;
 };
 
+const createSceneLocationPrompt = (request: GenerationRequest) => {
+  const scene = request.sceneLabel || 'Scene';
+  return `${scene} background plate, empty location for a story scene, no people, no characters, medium-wide establishing view, clear spatial layout with room for characters to be composited later, cinematic natural light, coherent architecture and props from the scene description, atmospheric but readable, production background concept art, no text, no watermark, source context: ${request.prompt}`;
+};
+
 const createCharacterAssetPrompt = (request: GenerationRequest) =>
   `full-body character sheet, all described characters shown head-to-toe as separate figures in one lineup, neutral light studio background for clean cutout, consistent scale, clear readable silhouettes, detailed clothing and faces, production concept art, no text, no watermark, source descriptions: ${request.prompt}`;
 
@@ -100,6 +105,8 @@ export const createMockCompletion = async (request: GenerationRequest, signal?: 
       return createMood(request.sceneCount ?? 4);
     case 'scene_prompt':
       return createScenePrompt(request);
+    case 'scene_location_prompt':
+      return createSceneLocationPrompt(request);
     case 'character_asset_prompt':
       return createCharacterAssetPrompt(request);
     case 'location_asset_prompt':

@@ -18,11 +18,10 @@ interface NodeRendererProps {
   onScriptVisualize: (nodeId: string) => void;
   onScenarioDetailClick: (nodeId: string, detailType: DetailType) => void;
   onCreateSceneNodes: (nodeId: string) => void;
-  onGenerateScenePrompt: (nodeId: string) => void;
+  onGenerateSceneLocationAsset: (nodeId: string) => Promise<void>;
   onGenerateDetailAsset: (nodeId: string) => Promise<void>;
   onCopyToClipboard: (text: string) => void;
   imageProvider: ImageProvider;
-  onGeneratePollinationsImage: (nodeId: string) => Promise<void>;
   onCancelGeneration: (nodeId: string) => void;
   onDelete?: (nodeId: string) => void;
   onResizeMouseDown?: (event: React.MouseEvent<HTMLButtonElement>, nodeId: string) => void;
@@ -48,11 +47,10 @@ const NodeRenderer: React.FC<NodeRendererProps> = ({
   onScriptVisualize,
   onScenarioDetailClick,
   onCreateSceneNodes,
-  onGenerateScenePrompt,
+  onGenerateSceneLocationAsset,
   onGenerateDetailAsset,
   onCopyToClipboard,
   imageProvider,
-  onGeneratePollinationsImage,
   onCancelGeneration,
   onDelete,
   onResizeMouseDown,
@@ -295,14 +293,14 @@ const NodeRenderer: React.FC<NodeRendererProps> = ({
           <>
             <div className="node-output scene-output">
               <div className="node-output__text">
-                {node.masterPrompt || node.sceneText || 'Описание сцены пока пусто.'}
+                {node.sceneText || node.inputValue || 'Описание сцены пока пусто.'}
               </div>
-              {node.masterPrompt && renderCopyButton(node.masterPrompt)}
+              {(node.sceneText || node.inputValue) && renderCopyButton(node.sceneText || node.inputValue || '')}
             </div>
             {node.pollinationsApiError && (
               <div className="node-message node-message--error" role="alert">{node.pollinationsApiError}</div>
             )}
-            {node.masterPrompt && imageProvider === 'comfyui' && (
+            {imageProvider === 'comfyui' && (
               <label className="node-field node-field--inline">
                 <span>Pipeline</span>
                 <select
@@ -315,29 +313,16 @@ const NodeRenderer: React.FC<NodeRendererProps> = ({
                 </select>
               </label>
             )}
-            {!node.masterPrompt ? (
-              <button
-                type="button"
-                className={`node-primary-button${node.isLoading ? ' node-primary-button--cancel' : ''}`}
-                onMouseDown={stopMouseDown}
-                onClick={(event) => runWithoutDrag(event, () => node.isLoading
-                  ? onCancelGeneration(id)
-                  : onGenerateScenePrompt(id))}
-              >
-                {node.isLoading ? 'Отменить генерацию' : 'Собрать визуальный промпт'}
-              </button>
-            ) : (
-              <button
-                type="button"
-                className={`node-secondary-button${node.isLoadingImage ? ' node-secondary-button--cancel' : ''}`}
-                onMouseDown={stopMouseDown}
-                onClick={(event) => runWithoutDrag(event, () => node.isLoadingImage
-                  ? onCancelGeneration(id)
-                  : void onGeneratePollinationsImage(id))}
-              >
-                {node.isLoadingImage ? 'Отменить создание кадра' : `Создать кадр · ${imageProvider === 'comfyui' ? 'ComfyUI' : 'Pollinations'}`}
-              </button>
-            )}
+            <button
+              type="button"
+              className={`node-secondary-button${isBusy ? ' node-secondary-button--cancel' : ''}`}
+              onMouseDown={stopMouseDown}
+              onClick={(event) => runWithoutDrag(event, () => isBusy
+                ? onCancelGeneration(id)
+                : void onGenerateSceneLocationAsset(id))}
+            >
+              {isBusy ? 'Отменить локацию' : `Сгенерировать локацию сцены · ${imageProvider === 'comfyui' ? 'ComfyUI' : 'Pollinations'}`}
+            </button>
           </>
         )}
 

@@ -137,10 +137,9 @@ const App = () => {
     handleScriptVisualization,
     handleScenarioDetailClick,
     handleCreateSceneNodes,
-    handleGenerateScenePrompt,
+    handleGenerateSceneLocationAsset,
     handleGenerateDetailAsset,
     handleCopyToClipboard,
-    handleGeneratePollinationsImage,
     handleCancelGeneration,
   } = useNodeManagement(bootstrap.project.nodes, generationSettings, imageGenerationSettings);
 
@@ -603,11 +602,10 @@ const App = () => {
               onScriptVisualize={handleScriptVisualization}
               onScenarioDetailClick={handleScenarioDetailClick}
               onCreateSceneNodes={handleCreateSceneNodes}
-              onGenerateScenePrompt={handleGenerateScenePrompt}
+              onGenerateSceneLocationAsset={handleGenerateSceneLocationAsset}
               onGenerateDetailAsset={handleGenerateDetailAsset}
               onCopyToClipboard={handleCopyToClipboard}
               imageProvider={imageGenerationSettings.provider}
-              onGeneratePollinationsImage={handleGeneratePollinationsImage}
               onCancelGeneration={handleCancelGeneration}
             />
           ))}

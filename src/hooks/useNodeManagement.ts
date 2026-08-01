@@ -448,6 +448,8 @@ export const useNodeManagement = (
     labelPrefix = 'Кадр',
     assetKind = 'scene_frame',
     offsetIndex = 0,
+    imagePrompt = '',
+    promptContext = '',
   ) => {
     setNodes((previousNodes) => {
       const parentNode = previousNodes[parentNodeId];
@@ -477,15 +479,20 @@ export const useNodeManagement = (
           height: existing?.[1].height ?? 220,
           parentId: parentNodeId,
           imageUrl,
+          masterPrompt: imagePrompt,
           level: (parentNode.level ?? 0) + 1,
           metadata: {
             ...existing?.[1].metadata,
             assetKind,
+            promptContext,
+            promptKind: assetKind,
+            imageProvider: imageGenerationSettings.provider,
+            imagePipeline: parentNode.imagePipeline ?? 'sdxl',
           },
         },
       };
     });
-  }, [setNodes]);
+  }, [imageGenerationSettings.provider, setNodes]);
 
   const handleGenerateSceneLocationAsset = useCallback(async (sceneNodeId: string) => {
     const currentNodes = nodesRef.current;
@@ -544,7 +551,7 @@ export const useNodeManagement = (
         'scene_location',
         controller.signal,
       );
-      upsertImageNode(sceneNodeId, imageUrl, 'Локация', 'scene_location', 0);
+      upsertImageNode(sceneNodeId, imageUrl, 'Локация', 'scene_location', 0, locationPrompt, prompt);
       showNotice('success', `Локация для «${sceneNode.label}» создана.`);
     } catch (error) {
       if (isAbortError(error)) {
@@ -623,7 +630,7 @@ export const useNodeManagement = (
         'scene_characters',
         controller.signal,
       );
-      upsertImageNode(sceneNodeId, imageUrl, 'Персонажи', 'scene_characters', 1);
+      upsertImageNode(sceneNodeId, imageUrl, 'Персонажи', 'scene_characters', 1, characterPrompt, prompt);
       showNotice('success', `Персонажи для «${sceneNode.label}» созданы.`);
     } catch (error) {
       if (isAbortError(error)) {
@@ -695,7 +702,15 @@ export const useNodeManagement = (
         isCharacters ? 'character_asset' : 'location_asset',
         controller.signal,
       );
-      upsertImageNode(detailNodeId, imageUrl, 'Ассет');
+      upsertImageNode(
+        detailNodeId,
+        imageUrl,
+        'Ассет',
+        isCharacters ? 'character_asset' : 'location_asset',
+        0,
+        assetPrompt,
+        description,
+      );
       showNotice('success', isCharacters ? 'Ассет героев создан.' : 'Ассет локаций создан.');
     } catch (error) {
       if (isAbortError(error)) {
@@ -737,7 +752,7 @@ export const useNodeManagement = (
         'default',
         controller.signal,
       );
-      upsertImageNode(parentNodeId, imageUrl);
+      upsertImageNode(parentNodeId, imageUrl, 'Кадр', 'scene_frame', 0, parentNode.masterPrompt, parentNode.inputValue ?? '');
       showNotice('success', 'Кадр создан. Он не включается в localStorage и JSON проекта.');
     } catch (error) {
       if (!isAbortError(error)) {

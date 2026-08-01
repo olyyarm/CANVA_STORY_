@@ -57,6 +57,7 @@ const NodeRenderer: React.FC<NodeRendererProps> = ({
   onDelete,
   onResizeMouseDown,
 }) => {
+  const [isImagePromptOpen, setImagePromptOpen] = React.useState(false);
   const stopMouseDown = (event: React.MouseEvent) => event.stopPropagation();
   const runWithoutDrag = (event: React.MouseEvent, action: () => void) => {
     event.stopPropagation();
@@ -76,6 +77,14 @@ const NodeRenderer: React.FC<NodeRendererProps> = ({
         : node.loadingProvider === 'mock'
           ? 'Собираем тестовый ответ...'
           : 'Генерация идёт...';
+  const imagePrompt = node.nodeType === 'pollinations_image' ? node.masterPrompt?.trim() ?? '' : '';
+  const promptContext = node.nodeType === 'pollinations_image' && typeof node.metadata?.promptContext === 'string'
+    ? node.metadata.promptContext.trim()
+    : '';
+  const promptBundle = [
+    imagePrompt ? `SDXL prompt:\n${imagePrompt}` : '',
+    promptContext ? `\nРусский контекст:\n${promptContext}` : '',
+  ].filter(Boolean).join('\n');
 
   const renderCopyButton = (text: string) => (
     <button
@@ -339,11 +348,49 @@ const NodeRenderer: React.FC<NodeRendererProps> = ({
         )}
 
         {node.nodeType === 'pollinations_image' && (
-          <div className="generated-image">
-            {node.imageUrl
-              ? <img src={node.imageUrl} alt={`Сгенерированный кадр для ${node.label}`} draggable={false} />
-              : <span>Кадр недоступен после перезагрузки. Создайте его снова из сцены.</span>}
-          </div>
+          <>
+            <div className="generated-image">
+              {node.imageUrl
+                ? <img src={node.imageUrl} alt={`Сгенерированный кадр для ${node.label}`} draggable={false} />
+                : <span>Кадр недоступен после перезагрузки. Создайте его снова из сцены.</span>}
+            </div>
+            {imagePrompt && (
+              <div className="generated-prompt-tools">
+                <button
+                  type="button"
+                  className="node-secondary-button generated-prompt-toggle"
+                  onMouseDown={stopMouseDown}
+                  onClick={(event) => runWithoutDrag(event, () => setImagePromptOpen((value) => !value))}
+                >
+                  {isImagePromptOpen ? 'Скрыть промпт' : 'Промпт'}
+                </button>
+                <button
+                  type="button"
+                  className="node-icon-button"
+                  onMouseDown={stopMouseDown}
+                  onClick={(event) => runWithoutDrag(event, () => onCopyToClipboard(promptBundle))}
+                  aria-label="Копировать промпт"
+                  title="Копировать промпт"
+                >
+                  <img src={assetPath('copy.svg')} alt="" />
+                </button>
+              </div>
+            )}
+            {imagePrompt && isImagePromptOpen && (
+              <div className="generated-prompt-panel">
+                <div className="generated-prompt-section">
+                  <div className="generated-prompt-section__title">SDXL prompt</div>
+                  <div className="generated-prompt-section__text">{imagePrompt}</div>
+                </div>
+                {promptContext && (
+                  <div className="generated-prompt-section">
+                    <div className="generated-prompt-section__title">Русский контекст</div>
+                    <div className="generated-prompt-section__text">{promptContext}</div>
+                  </div>
+                )}
+              </div>
+            )}
+          </>
         )}
 
         {node.statusMessage && node.nodeType !== 'script_input' && (

@@ -809,6 +809,66 @@
   pointer-events: none;
 }
 
+.generated-prompt-tools {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 32px;
+  gap: 7px;
+  flex: 0 0 auto;
+}
+
+.generated-prompt-tools .node-icon-button {
+  border-color: var(--border);
+  background: #20252c;
+}
+
+.generated-prompt-tools img {
+  width: 14px;
+  height: 14px;
+}
+
+.generated-prompt-toggle {
+  min-height: 32px;
+  font-size: 11px;
+}
+
+.generated-prompt-panel {
+  display: flex;
+  max-height: 48%;
+  min-height: 96px;
+  flex: 0 1 auto;
+  flex-direction: column;
+  gap: 9px;
+  overflow: auto;
+  padding: 10px;
+  border: 1px solid #303740;
+  border-radius: 8px;
+  background: #12161b;
+  user-select: text;
+}
+
+.generated-prompt-section {
+  display: flex;
+  min-height: 0;
+  flex-direction: column;
+  gap: 5px;
+}
+
+.generated-prompt-section__title {
+  color: #f1b37d;
+  font-size: 10px;
+  font-weight: 760;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.generated-prompt-section__text {
+  color: #d7dce1;
+  font-size: 11px;
+  line-height: 1.45;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
 .node-resize-handle {
   position: absolute;
   right: 0;

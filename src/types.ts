@@ -41,6 +41,7 @@ export interface NodeData {
   nextAssociationIndex?: number;
   hasGenerationButton?: boolean;
   masterPrompt?: string;
+  assetPrompt?: string;
   isLoadingImage?: boolean;
   imageUrl?: string;
   imagePipeline?: ImagePipeline;
@@ -111,7 +112,9 @@ export type GenerationOperation =
   | 'heroes'
   | 'locations'
   | 'mood'
-  | 'scene_prompt';
+  | 'scene_prompt'
+  | 'character_asset_prompt'
+  | 'location_asset_prompt';
 
 export interface GenerationRequest {
   operation: GenerationOperation;

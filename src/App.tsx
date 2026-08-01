@@ -138,6 +138,7 @@ const App = () => {
     handleScenarioDetailClick,
     handleCreateSceneNodes,
     handleGenerateScenePrompt,
+    handleGenerateDetailAsset,
     handleCopyToClipboard,
     handleGeneratePollinationsImage,
     handleCancelGeneration,
@@ -603,6 +604,7 @@ const App = () => {
               onScenarioDetailClick={handleScenarioDetailClick}
               onCreateSceneNodes={handleCreateSceneNodes}
               onGenerateScenePrompt={handleGenerateScenePrompt}
+              onGenerateDetailAsset={handleGenerateDetailAsset}
               onCopyToClipboard={handleCopyToClipboard}
               imageProvider={imageGenerationSettings.provider}
               onGeneratePollinationsImage={handleGeneratePollinationsImage}

@@ -19,6 +19,7 @@ interface NodeRendererProps {
   onScenarioDetailClick: (nodeId: string, detailType: DetailType) => void;
   onCreateSceneNodes: (nodeId: string) => void;
   onGenerateScenePrompt: (nodeId: string) => void;
+  onGenerateDetailAsset: (nodeId: string) => Promise<void>;
   onCopyToClipboard: (text: string) => void;
   imageProvider: ImageProvider;
   onGeneratePollinationsImage: (nodeId: string) => Promise<void>;
@@ -48,6 +49,7 @@ const NodeRenderer: React.FC<NodeRendererProps> = ({
   onScenarioDetailClick,
   onCreateSceneNodes,
   onGenerateScenePrompt,
+  onGenerateDetailAsset,
   onCopyToClipboard,
   imageProvider,
   onGeneratePollinationsImage,
@@ -61,6 +63,7 @@ const NodeRenderer: React.FC<NodeRendererProps> = ({
     action();
   };
   const isTextOutput = node.nodeType === 'script_output' || node.nodeType === 'script_detail';
+  const canGenerateDetailAsset = node.nodeType === 'script_detail' && (node.label === 'Герои' || node.label === 'Локации');
   const isBusy = Boolean(node.isLoading || node.isLoadingImage);
   const loadingLabel = node.isLoadingImage
     ? node.loadingProvider === 'comfyui'
@@ -235,6 +238,25 @@ const NodeRenderer: React.FC<NodeRendererProps> = ({
             <div className="node-output__text">{node.inputValue}</div>
             {renderCopyButton(node.inputValue)}
           </div>
+        )}
+
+        {canGenerateDetailAsset && node.pollinationsApiError && (
+          <div className="node-message node-message--error" role="alert">{node.pollinationsApiError}</div>
+        )}
+
+        {canGenerateDetailAsset && (
+          <button
+            type="button"
+            className={`node-secondary-button${isBusy ? ' node-secondary-button--cancel' : ''}`}
+            onMouseDown={stopMouseDown}
+            onClick={(event) => runWithoutDrag(event, () => isBusy
+              ? onCancelGeneration(id)
+              : void onGenerateDetailAsset(id))}
+          >
+            {isBusy
+              ? 'Отменить ассет'
+              : `${node.label === 'Герои' ? 'Сгенерировать героев' : 'Сгенерировать локации'} · ${imageProvider === 'comfyui' ? 'ComfyUI' : 'Pollinations'}`}
+          </button>
         )}
 
         {node.nodeType === 'script_output' && (

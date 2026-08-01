@@ -9,7 +9,9 @@ import {
 import { generateImage, generateText, GenerationSettings, ImageGenerationSettings } from '../api';
 import {
   ASSOCIATE_SYSTEM_PROMPT,
+  CHARACTER_ASSET_PROMPT_SYSTEM_PROMPT,
   HERO_DETAIL_SYSTEM_PROMPT,
+  LOCATION_ASSET_PROMPT_SYSTEM_PROMPT,
   LOCATION_DETAIL_SYSTEM_PROMPT,
   MISTRAL_MODELS,
   MOOD_DETAIL_SYSTEM_PROMPT,
@@ -48,6 +50,7 @@ interface UseNodeManagementReturn {
   handleScenarioDetailClick: (sourceNodeId: string, detailType: DetailType) => Promise<void>;
   handleCreateSceneNodes: (sourceNodeId: string) => void;
   handleGenerateScenePrompt: (sceneNodeId: string) => Promise<void>;
+  handleGenerateDetailAsset: (detailNodeId: string) => Promise<void>;
   handleCopyToClipboard: (textToCopy: string) => Promise<void>;
   handleGeneratePollinationsImage: (nodeId: string) => Promise<void>;
   handleCancelGeneration: (nodeId: string) => void;
@@ -435,7 +438,7 @@ export const useNodeManagement = (
     }
   }, [showNotice]);
 
-  const upsertImageNode = useCallback((parentNodeId: string, imageUrl: string) => {
+  const upsertImageNode = useCallback((parentNodeId: string, imageUrl: string, labelPrefix = 'Кадр') => {
     setNodes((previousNodes) => {
       const parentNode = previousNodes[parentNodeId];
       if (!parentNode) return previousNodes;
@@ -456,7 +459,7 @@ export const useNodeManagement = (
         [imageNodeId]: {
           ...existing?.[1],
           nodeType: 'pollinations_image',
-          label: `Кадр · ${parentNode.label}`,
+          label: `${labelPrefix} · ${parentNode.label}`,
           x: existing?.[1].x ?? parentNode.x + ((parentNode.width ?? 320) + 28) * 2,
           y: existing?.[1].y ?? parentNode.y,
           width: existing?.[1].width ?? 320,
@@ -468,6 +471,77 @@ export const useNodeManagement = (
       };
     });
   }, [setNodes]);
+
+  const handleGenerateDetailAsset = useCallback(async (detailNodeId: string) => {
+    const detailNode = nodesRef.current[detailNodeId];
+    const description = detailNode?.inputValue?.trim();
+    if (!detailNode || detailNode.nodeType !== 'script_detail' || detailNode.isLoading || detailNode.isLoadingImage) return;
+    if (detailNode.label !== 'Герои' && detailNode.label !== 'Локации') return;
+    if (!description) {
+      updateNode(detailNodeId, { error: 'Сначала сгенерируйте или заполните описание.' });
+      return;
+    }
+
+    const requestId = `detail-asset:${detailNodeId}`;
+    if (activeRequests.current.has(requestId)) return;
+    const controller = new AbortController();
+    activeRequests.current.set(requestId, controller);
+    const isCharacters = detailNode.label === 'Герои';
+
+    try {
+      updateNode(detailNodeId, {
+        isLoading: true,
+        loadingProvider: generationSettings.mode,
+        error: undefined,
+        pollinationsApiError: undefined,
+        statusMessage: isCharacters
+          ? 'Собираем SDXL prompt для character sheet...'
+          : 'Собираем SDXL prompt для location sheet...',
+      });
+
+      const assetPrompt = await generateText({
+        operation: isCharacters ? 'character_asset_prompt' : 'location_asset_prompt',
+        prompt: description,
+        systemPrompt: isCharacters ? CHARACTER_ASSET_PROMPT_SYSTEM_PROMPT : LOCATION_ASSET_PROMPT_SYSTEM_PROMPT,
+        model: detailNode.selectedModel || MISTRAL_MODELS[0],
+      }, controller.signal, generationSettings);
+
+      updateNode(detailNodeId, {
+        isLoading: false,
+        isLoadingImage: true,
+        loadingProvider: imageGenerationSettings.provider,
+        assetPrompt,
+        statusMessage: isCharacters
+          ? 'Генерируем персонажей в полный рост...'
+          : 'Генерируем лист локаций...',
+      });
+
+      const imageUrl = await generateImage(
+        assetPrompt,
+        detailNode.imagePipeline ?? 'sdxl',
+        imageGenerationSettings,
+        controller.signal,
+      );
+      upsertImageNode(detailNodeId, imageUrl, 'Ассет');
+      showNotice('success', isCharacters ? 'Ассет героев создан.' : 'Ассет локаций создан.');
+    } catch (error) {
+      if (isAbortError(error)) {
+        showNotice('info', 'Генерация ассета отменена.');
+      } else {
+        const message = errorMessage(error);
+        updateNode(detailNodeId, { pollinationsApiError: message });
+        showNotice('error', message);
+      }
+    } finally {
+      activeRequests.current.delete(requestId);
+      updateNode(detailNodeId, {
+        isLoading: false,
+        isLoadingImage: false,
+        loadingProvider: undefined,
+        statusMessage: undefined,
+      });
+    }
+  }, [generationSettings, imageGenerationSettings, showNotice, updateNode, upsertImageNode]);
 
   const handleGeneratePollinationsImage = useCallback(async (parentNodeId: string) => {
     const parentNode = nodesRef.current[parentNodeId];
@@ -506,6 +580,7 @@ export const useNodeManagement = (
   const handleCancelGeneration = useCallback((nodeId: string) => {
     activeRequests.current.get(nodeId)?.abort();
     activeRequests.current.get(`image:${nodeId}`)?.abort();
+    activeRequests.current.get(`detail-asset:${nodeId}`)?.abort();
   }, []);
 
   return {
@@ -523,6 +598,7 @@ export const useNodeManagement = (
     handleScenarioDetailClick,
     handleCreateSceneNodes,
     handleGenerateScenePrompt,
+    handleGenerateDetailAsset,
     handleCopyToClipboard,
     handleGeneratePollinationsImage,
     handleCancelGeneration,

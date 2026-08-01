@@ -138,6 +138,7 @@ const App = () => {
     handleScenarioDetailClick,
     handleCreateSceneNodes,
     handleGenerateSceneLocationAsset,
+    handleGenerateSceneCharacterLayer,
     handleGenerateDetailAsset,
     handleCopyToClipboard,
     handleCancelGeneration,
@@ -603,6 +604,7 @@ const App = () => {
               onScenarioDetailClick={handleScenarioDetailClick}
               onCreateSceneNodes={handleCreateSceneNodes}
               onGenerateSceneLocationAsset={handleGenerateSceneLocationAsset}
+              onGenerateSceneCharacterLayer={handleGenerateSceneCharacterLayer}
               onGenerateDetailAsset={handleGenerateDetailAsset}
               onCopyToClipboard={handleCopyToClipboard}
               imageProvider={imageGenerationSettings.provider}

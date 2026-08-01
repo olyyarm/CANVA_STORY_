@@ -114,6 +114,7 @@ export type GenerationOperation =
   | 'mood'
   | 'scene_prompt'
   | 'scene_location_prompt'
+  | 'scene_character_layer_prompt'
   | 'character_asset_prompt'
   | 'location_asset_prompt';
 

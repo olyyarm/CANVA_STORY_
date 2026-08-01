@@ -83,6 +83,11 @@ const createSceneLocationPrompt = (request: GenerationRequest) => {
   return `${scene} background plate, empty location for a story scene, no people, no characters, medium-wide establishing view, clear spatial layout with room for characters to be composited later, cinematic natural light, coherent architecture and props from the scene description, atmospheric but readable, production background concept art, no text, no watermark, source context: ${request.prompt}`;
 };
 
+const createSceneCharacterLayerPrompt = (request: GenerationRequest) => {
+  const scene = request.sceneLabel || 'Scene';
+  return `${scene} character layer, main male protagonist first if present, all relevant scene characters as separate full-body figures, head-to-toe visible, clean light studio background for easy cutout, coherent lighting matching the scene location, readable poses and emotions for the action, consistent character design, no detailed background, no text, no watermark, source context: ${request.prompt}`;
+};
+
 const createCharacterAssetPrompt = (request: GenerationRequest) =>
   `full-body character sheet, all described characters shown head-to-toe as separate figures in one lineup, neutral light studio background for clean cutout, consistent scale, clear readable silhouettes, detailed clothing and faces, production concept art, no text, no watermark, source descriptions: ${request.prompt}`;
 
@@ -107,6 +112,8 @@ export const createMockCompletion = async (request: GenerationRequest, signal?: 
       return createScenePrompt(request);
     case 'scene_location_prompt':
       return createSceneLocationPrompt(request);
+    case 'scene_character_layer_prompt':
+      return createSceneCharacterLayerPrompt(request);
     case 'character_asset_prompt':
       return createCharacterAssetPrompt(request);
     case 'location_asset_prompt':

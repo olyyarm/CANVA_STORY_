@@ -16,6 +16,7 @@ import {
   MISTRAL_MODELS,
   MOOD_DETAIL_SYSTEM_PROMPT,
   SCENARIO_SYSTEM_PROMPT,
+  SCENE_CHARACTER_LAYER_PROMPT_SYSTEM_PROMPT,
   SCENE_LOCATION_PROMPT_SYSTEM_PROMPT,
   SCENE_MASTER_PROMPT_SYSTEM_PROMPT,
 } from '../constants';
@@ -52,6 +53,7 @@ interface UseNodeManagementReturn {
   handleCreateSceneNodes: (sourceNodeId: string) => void;
   handleGenerateScenePrompt: (sceneNodeId: string) => Promise<void>;
   handleGenerateSceneLocationAsset: (sceneNodeId: string) => Promise<void>;
+  handleGenerateSceneCharacterLayer: (sceneNodeId: string) => Promise<void>;
   handleGenerateDetailAsset: (detailNodeId: string) => Promise<void>;
   handleCopyToClipboard: (textToCopy: string) => Promise<void>;
   handleGeneratePollinationsImage: (nodeId: string) => Promise<void>;
@@ -440,17 +442,24 @@ export const useNodeManagement = (
     }
   }, [showNotice]);
 
-  const upsertImageNode = useCallback((parentNodeId: string, imageUrl: string, labelPrefix = 'Кадр') => {
+  const upsertImageNode = useCallback((
+    parentNodeId: string,
+    imageUrl: string,
+    labelPrefix = 'Кадр',
+    assetKind = 'scene_frame',
+    offsetIndex = 0,
+  ) => {
     setNodes((previousNodes) => {
       const parentNode = previousNodes[parentNodeId];
       if (!parentNode) return previousNodes;
       const existing = getExistingChild(
         previousNodes,
         parentNodeId,
-        (node) => node.nodeType === 'pollinations_image',
+        (node) => node.nodeType === 'pollinations_image' && node.metadata?.assetKind === assetKind,
       );
       if (existing?.[1].imageUrl?.startsWith('blob:')) URL.revokeObjectURL(existing[1].imageUrl);
       const imageNodeId = existing?.[0] ?? generateNodeId();
+      const parentWidth = parentNode.width ?? 320;
       return {
         ...previousNodes,
         [parentNodeId]: {
@@ -462,13 +471,17 @@ export const useNodeManagement = (
           ...existing?.[1],
           nodeType: 'pollinations_image',
           label: `${labelPrefix} · ${parentNode.label}`,
-          x: existing?.[1].x ?? parentNode.x + ((parentNode.width ?? 320) + 28) * 2,
-          y: existing?.[1].y ?? parentNode.y,
+          x: existing?.[1].x ?? parentNode.x + parentWidth + 36,
+          y: existing?.[1].y ?? parentNode.y + offsetIndex * 250,
           width: existing?.[1].width ?? 320,
           height: existing?.[1].height ?? 220,
           parentId: parentNodeId,
           imageUrl,
           level: (parentNode.level ?? 0) + 1,
+          metadata: {
+            ...existing?.[1].metadata,
+            assetKind,
+          },
         },
       };
     });
@@ -530,11 +543,89 @@ export const useNodeManagement = (
         imageGenerationSettings,
         controller.signal,
       );
-      upsertImageNode(sceneNodeId, imageUrl, 'Локация');
+      upsertImageNode(sceneNodeId, imageUrl, 'Локация', 'scene_location', 0);
       showNotice('success', `Локация для «${sceneNode.label}» создана.`);
     } catch (error) {
       if (isAbortError(error)) {
         showNotice('info', 'Генерация локации сцены отменена.');
+      } else {
+        const message = errorMessage(error);
+        updateNode(sceneNodeId, { pollinationsApiError: message });
+        showNotice('error', message);
+      }
+    } finally {
+      activeRequests.current.delete(requestId);
+      updateNode(sceneNodeId, {
+        isLoading: false,
+        isLoadingImage: false,
+        loadingProvider: undefined,
+        statusMessage: undefined,
+      });
+    }
+  }, [generationSettings, imageGenerationSettings, showNotice, updateNode, upsertImageNode]);
+
+  const handleGenerateSceneCharacterLayer = useCallback(async (sceneNodeId: string) => {
+    const currentNodes = nodesRef.current;
+    const sceneNode = currentNodes[sceneNodeId];
+    const outputNode = sceneNode?.parentId ? currentNodes[sceneNode.parentId] : undefined;
+    if (!sceneNode || sceneNode.nodeType !== 'scene' || !outputNode?.inputValue || sceneNode.isLoading || sceneNode.isLoadingImage) return;
+
+    const requestId = `scene-characters:${sceneNodeId}`;
+    if (activeRequests.current.has(requestId)) return;
+    const controller = new AbortController();
+    activeRequests.current.set(requestId, controller);
+
+    const details = Object.values(currentNodes).filter(
+      (node) => node.parentId === sceneNode.parentId && node.nodeType === 'script_detail',
+    );
+    const heroesNode = details.find((node) => node.label === 'Герои');
+    const findDetail = (label: string) => details.find((node) => node.label === label)?.inputValue || 'Не задано';
+    const sceneDescription = sceneNode.sceneText || sceneNode.inputValue || outputNode.inputValue;
+    const prompt = [
+      `Нужная сцена: ${sceneNode.label}`,
+      `Описание сцены:\n${sceneDescription}`,
+      `Герои проекта:\n${heroesNode?.inputValue || 'Не задано'}`,
+      `Стилевой якорь героев:\n${heroesNode?.assetPrompt || 'Character sheet ещё не сгенерирован, сохраняй стиль по текстовому описанию героев.'}`,
+      `Локация сцены:\n${sceneNode.assetPrompt || findDetail('Локации')}`,
+      `Настроение сцены:\n${findDetail('Настроение')}`,
+      'Задача: подготовь персонажей этой сцены отдельным слоем для последующего наложения на фон.',
+    ].join('\n\n');
+
+    try {
+      updateNode(sceneNodeId, {
+        isLoading: true,
+        loadingProvider: generationSettings.mode,
+        error: undefined,
+        pollinationsApiError: undefined,
+        statusMessage: 'Выбираем героев сцены и собираем SDXL prompt...',
+      });
+
+      const characterPrompt = await generateText({
+        operation: 'scene_character_layer_prompt',
+        prompt,
+        systemPrompt: SCENE_CHARACTER_LAYER_PROMPT_SYSTEM_PROMPT,
+        model: sceneNode.selectedModel || outputNode.selectedModel || MISTRAL_MODELS[0],
+        sceneLabel: sceneNode.label,
+      }, controller.signal, generationSettings);
+
+      updateNode(sceneNodeId, {
+        isLoading: false,
+        isLoadingImage: true,
+        loadingProvider: imageGenerationSettings.provider,
+        statusMessage: 'Генерируем слой персонажей на чистом фоне...',
+      });
+
+      const imageUrl = await generateImage(
+        characterPrompt,
+        sceneNode.imagePipeline ?? 'sdxl',
+        imageGenerationSettings,
+        controller.signal,
+      );
+      upsertImageNode(sceneNodeId, imageUrl, 'Персонажи', 'scene_characters', 1);
+      showNotice('success', `Персонажи для «${sceneNode.label}» созданы.`);
+    } catch (error) {
+      if (isAbortError(error)) {
+        showNotice('info', 'Генерация персонажей сцены отменена.');
       } else {
         const message = errorMessage(error);
         updateNode(sceneNodeId, { pollinationsApiError: message });
@@ -660,6 +751,7 @@ export const useNodeManagement = (
     activeRequests.current.get(nodeId)?.abort();
     activeRequests.current.get(`image:${nodeId}`)?.abort();
     activeRequests.current.get(`scene-location:${nodeId}`)?.abort();
+    activeRequests.current.get(`scene-characters:${nodeId}`)?.abort();
     activeRequests.current.get(`detail-asset:${nodeId}`)?.abort();
   }, []);
 
@@ -679,6 +771,7 @@ export const useNodeManagement = (
     handleCreateSceneNodes,
     handleGenerateScenePrompt,
     handleGenerateSceneLocationAsset,
+    handleGenerateSceneCharacterLayer,
     handleGenerateDetailAsset,
     handleCopyToClipboard,
     handleGeneratePollinationsImage,

@@ -1,5 +1,5 @@
 import { createMockCompletion } from './mockData';
-import { ChatApiResponse, GenerationRequest, ImagePipeline } from './types';
+import { ChatApiResponse, GenerationRequest, ImagePipeline, ImagePromptKind } from './types';
 
 const MISTRAL_ENDPOINT = 'https://api.mistral.ai/v1/chat/completions';
 export const LM_STUDIO_DEFAULT_ENDPOINT = 'http://localhost:1234/v1/chat/completions';
@@ -232,7 +232,99 @@ const resolveComfyCheckpoint = async (
   );
 };
 
-const buildComfySdxlWorkflow = (prompt: string, checkpoint: string) => {
+const SDXL_NEGATIVE_PROMPTS: Record<ImagePromptKind, string> = {
+  default: [
+    'text',
+    'watermark',
+    'logo',
+    'blurry',
+    'low quality',
+    'distorted anatomy',
+    'extra fingers',
+  ].join(', '),
+  scene_location: [
+    'text',
+    'watermark',
+    'logo',
+    'blurry',
+    'low quality',
+    'people',
+    'person',
+    'human',
+    'character',
+    'face',
+    'hands',
+    'body',
+    'silhouette of a person',
+    'foreground character',
+  ].join(', '),
+  scene_characters: [
+    'text',
+    'watermark',
+    'logo',
+    'blurry',
+    'low quality',
+    'distorted anatomy',
+    'extra fingers',
+    'missing fingers',
+    'bad hands',
+    'cropped head',
+    'cropped legs',
+    'out of frame',
+    'close-up',
+    'portrait',
+    'bust',
+    'waist-up crop',
+    'photorealistic',
+    'photograph',
+    'photo',
+    'cartoon',
+    'chibi',
+    'anime',
+    '3d render',
+    'gender swap',
+    'different character',
+    'detailed background',
+  ].join(', '),
+  character_asset: [
+    'text',
+    'watermark',
+    'logo',
+    'blurry',
+    'low quality',
+    'distorted anatomy',
+    'extra fingers',
+    'missing fingers',
+    'bad hands',
+    'cropped head',
+    'cropped legs',
+    'out of frame',
+    'close-up',
+    'portrait',
+    'bust',
+    'waist-up crop',
+    'photorealistic',
+    'photograph',
+    'photo',
+    'cartoon',
+    'chibi',
+    'anime',
+    '3d render',
+  ].join(', '),
+  location_asset: [
+    'text',
+    'watermark',
+    'logo',
+    'blurry',
+    'low quality',
+    'people',
+    'person',
+    'foreground character',
+    'close-up portrait',
+  ].join(', '),
+};
+
+const buildComfySdxlWorkflow = (prompt: string, checkpoint: string, promptKind: ImagePromptKind) => {
   const seed = Math.floor(Math.random() * 1_000_000_000);
   return {
     '3': {
@@ -275,7 +367,7 @@ const buildComfySdxlWorkflow = (prompt: string, checkpoint: string) => {
       class_type: 'CLIPTextEncode',
       inputs: {
         clip: ['4', 1],
-        text: 'text, watermark, logo, blurry, low quality, distorted anatomy, extra fingers',
+        text: SDXL_NEGATIVE_PROMPTS[promptKind],
       },
     },
     '8': {
@@ -326,13 +418,14 @@ const generateComfyImage = async (
   prompt: string,
   pipeline: ImagePipeline,
   settings: ImageGenerationSettings,
+  promptKind: ImagePromptKind,
   signal?: AbortSignal,
 ) => {
   const baseUrl = getComfyBaseUrl(settings.comfyEndpoint);
   try {
     if (pipeline !== 'sdxl') throw new Error('Пока подключён только pipeline SDXL.');
     const checkpoint = await resolveComfyCheckpoint(baseUrl, settings.comfyCheckpoint, signal);
-    const workflow = buildComfySdxlWorkflow(prompt, checkpoint);
+    const workflow = buildComfySdxlWorkflow(prompt, checkpoint, promptKind);
     const clientId = typeof crypto.randomUUID === 'function'
       ? crypto.randomUUID()
       : `canva-story-${Date.now()}`;
@@ -401,8 +494,9 @@ export const generateImage = (
   prompt: string,
   pipeline: ImagePipeline,
   settings: ImageGenerationSettings,
+  promptKind: ImagePromptKind = 'default',
   signal?: AbortSignal,
 ) => {
-  if (settings.provider === 'comfyui') return generateComfyImage(prompt, pipeline, settings, signal);
+  if (settings.provider === 'comfyui') return generateComfyImage(prompt, pipeline, settings, promptKind, signal);
   return generatePollinationsImage(prompt, signal);
 };

@@ -541,6 +541,7 @@ export const useNodeManagement = (
         locationPrompt,
         sceneNode.imagePipeline ?? 'sdxl',
         imageGenerationSettings,
+        'scene_location',
         controller.signal,
       );
       upsertImageNode(sceneNodeId, imageUrl, 'Локация', 'scene_location', 0);
@@ -619,6 +620,7 @@ export const useNodeManagement = (
         characterPrompt,
         sceneNode.imagePipeline ?? 'sdxl',
         imageGenerationSettings,
+        'scene_characters',
         controller.signal,
       );
       upsertImageNode(sceneNodeId, imageUrl, 'Персонажи', 'scene_characters', 1);
@@ -690,6 +692,7 @@ export const useNodeManagement = (
         assetPrompt,
         detailNode.imagePipeline ?? 'sdxl',
         imageGenerationSettings,
+        isCharacters ? 'character_asset' : 'location_asset',
         controller.signal,
       );
       upsertImageNode(detailNodeId, imageUrl, 'Ассет');
@@ -731,6 +734,7 @@ export const useNodeManagement = (
         parentNode.masterPrompt,
         parentNode.imagePipeline ?? 'sdxl',
         imageGenerationSettings,
+        'default',
         controller.signal,
       );
       upsertImageNode(parentNodeId, imageUrl);

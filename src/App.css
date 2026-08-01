@@ -849,6 +849,7 @@
 .generated-prompt-section {
   display: flex;
   min-height: 0;
+  flex: 0 0 auto;
   flex-direction: column;
   gap: 5px;
 }
@@ -862,6 +863,7 @@
 }
 
 .generated-prompt-section__text {
+  flex: 0 0 auto;
   color: #d7dce1;
   font-size: 11px;
   line-height: 1.45;

@@ -74,6 +74,52 @@ const detailConfig: Record<DetailType, {
 const getExistingChild = (nodes: NodesState, parentId: string, predicate: (node: NodeData) => boolean) =>
   Object.entries(nodes).find(([, node]) => node.parentId === parentId && predicate(node));
 
+const getSceneNumber = (label: string) => {
+  const match = label.match(/сцена\s*(\d+)/iu);
+  return match ? Number(match[1]) : null;
+};
+
+const getReferencedSceneNumbers = (text: string) => {
+  const markerIndex = text.toLocaleLowerCase('ru').lastIndexOf('сцен');
+  if (markerIndex < 0) return null;
+  const tail = text.slice(markerIndex);
+  const numbers = new Set<number>();
+  const pattern = /(\d+)\s*[–—-]\s*(\d+)|(\d+)/gu;
+  for (const match of tail.matchAll(pattern)) {
+    if (match[1] && match[2]) {
+      const start = Number(match[1]);
+      const end = Number(match[2]);
+      const step = start <= end ? 1 : -1;
+      for (let value = start; value !== end + step; value += step) numbers.add(value);
+    } else if (match[3]) {
+      numbers.add(Number(match[3]));
+    }
+  }
+  return numbers.size > 0 ? numbers : null;
+};
+
+const getSceneHeroScope = (heroesText: string, sceneLabel: string) => {
+  const sceneNumber = getSceneNumber(sceneLabel);
+  const lines = heroesText.split(/\n+/).map((line) => line.trim()).filter(Boolean);
+  if (!sceneNumber || lines.length === 0) return { allowed: heroesText || 'Не задано', excluded: '' };
+
+  const allowed: string[] = [];
+  const excluded: string[] = [];
+  lines.forEach((line) => {
+    const sceneNumbers = getReferencedSceneNumbers(line);
+    if (!sceneNumbers || sceneNumbers.has(sceneNumber)) {
+      allowed.push(line);
+    } else {
+      excluded.push(line);
+    }
+  });
+
+  return {
+    allowed: allowed.join('\n') || 'В списке героев нет персонажей, явно привязанных к этой сцене.',
+    excluded: excluded.join('\n'),
+  };
+};
+
 const upsertScenarioGraph = (
   previousNodes: NodesState,
   sourceNodeId: string,
@@ -589,15 +635,17 @@ export const useNodeManagement = (
     const heroesNode = details.find((node) => node.label === 'Герои');
     const findDetail = (label: string) => details.find((node) => node.label === label)?.inputValue || 'Не задано';
     const sceneDescription = sceneNode.sceneText || sceneNode.inputValue || outputNode.inputValue;
+    const heroScope = getSceneHeroScope(heroesNode?.inputValue || '', sceneNode.label);
     const prompt = [
       `Нужная сцена: ${sceneNode.label}`,
       `Описание сцены:\n${sceneDescription}`,
-      `Герои проекта:\n${heroesNode?.inputValue || 'Не задано'}`,
+      `Герои, разрешённые для этой сцены:\n${heroScope.allowed}`,
+      heroScope.excluded ? `Герои, которых нельзя добавлять в эту сцену:\n${heroScope.excluded}` : '',
       `Стилевой якорь героев:\n${heroesNode?.assetPrompt || 'Character sheet ещё не сгенерирован, сохраняй стиль по текстовому описанию героев.'}`,
       `Локация сцены:\n${sceneNode.assetPrompt || findDetail('Локации')}`,
       `Настроение сцены:\n${findDetail('Настроение')}`,
       'Задача: подготовь персонажей этой сцены отдельным слоем для последующего наложения на фон.',
-    ].join('\n\n');
+    ].filter(Boolean).join('\n\n');
 
     try {
       updateNode(sceneNodeId, {

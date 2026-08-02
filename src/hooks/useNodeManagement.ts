@@ -808,8 +808,8 @@ export const useNodeManagement = (
         loadingProvider: 'comfyui',
         pollinationsApiError: undefined,
         statusMessage: isTurbo
-          ? 'Flux2 Turbo собирает кадр на 8 шагах...'
-          : 'Flux2 собирает кадр из локации и референса. Это может занять 10-30 минут...',
+          ? 'Flux2 Turbo поставлен в очередь и собирает кадр на 8 шагах...'
+          : 'Flux2 поставлен в очередь и собирает кадр из локации и референса...',
       });
 
       const imageUrl = await generateComfyFlux2ComposeImage(

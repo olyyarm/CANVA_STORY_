@@ -19,7 +19,6 @@ interface NodeRendererProps {
   onScenarioDetailClick: (nodeId: string, detailType: DetailType) => void;
   onCreateSceneNodes: (nodeId: string) => void;
   onGenerateSceneLocationAsset: (nodeId: string) => Promise<void>;
-  onGenerateSceneCharacterLayer: (nodeId: string) => Promise<void>;
   onComposeSceneFlux2: (nodeId: string, pipeline?: Extract<ImagePipeline, 'flux2_compose' | 'flux2_turbo_compose'>) => Promise<void>;
   onGenerateDetailAsset: (nodeId: string) => Promise<void>;
   onCopyToClipboard: (text: string) => void;
@@ -55,7 +54,6 @@ const NodeRenderer: React.FC<NodeRendererProps> = ({
   onScenarioDetailClick,
   onCreateSceneNodes,
   onGenerateSceneLocationAsset,
-  onGenerateSceneCharacterLayer,
   onComposeSceneFlux2,
   onGenerateDetailAsset,
   onCopyToClipboard,
@@ -344,16 +342,6 @@ const NodeRenderer: React.FC<NodeRendererProps> = ({
                 : void onGenerateSceneLocationAsset(id))}
             >
               {isBusy ? 'Отменить локацию' : `Сгенерировать локацию сцены · ${imageProvider === 'comfyui' ? 'ComfyUI' : 'Pollinations'}`}
-            </button>
-            <button
-              type="button"
-              className={`node-secondary-button${isBusy ? ' node-secondary-button--cancel' : ''}`}
-              onMouseDown={stopMouseDown}
-              onClick={(event) => runWithoutDrag(event, () => isBusy
-                ? onCancelGeneration(id)
-                : void onGenerateSceneCharacterLayer(id))}
-            >
-              {isBusy ? 'Отменить персонажей' : `Сгенерировать героев сцены · ${imageProvider === 'comfyui' ? 'ComfyUI' : 'Pollinations'}`}
             </button>
             {imageProvider === 'comfyui' && (
               <>

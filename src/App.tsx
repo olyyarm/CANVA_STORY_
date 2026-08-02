@@ -138,7 +138,6 @@ const App = () => {
     handleScenarioDetailClick,
     handleCreateSceneNodes,
     handleGenerateSceneLocationAsset,
-    handleGenerateSceneCharacterLayer,
     handleComposeSceneFlux2,
     handleGenerateDetailAsset,
     handleCopyToClipboard,
@@ -607,7 +606,6 @@ const App = () => {
               onScenarioDetailClick={handleScenarioDetailClick}
               onCreateSceneNodes={handleCreateSceneNodes}
               onGenerateSceneLocationAsset={handleGenerateSceneLocationAsset}
-              onGenerateSceneCharacterLayer={handleGenerateSceneCharacterLayer}
               onComposeSceneFlux2={handleComposeSceneFlux2}
               onGenerateDetailAsset={handleGenerateDetailAsset}
               onCopyToClipboard={handleCopyToClipboard}

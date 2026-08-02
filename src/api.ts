@@ -11,7 +11,7 @@ const FLUX2_TEXT_ENCODER = 'mistral_3_small_flux2_fp8.safetensors';
 const FLUX2_VAE = 'flux2-vae.safetensors';
 const FLUX2_TURBO_LORA = 'Flux_2-Turbo-LoRA_comfyui.safetensors';
 const COMFY_SDXL_TIMEOUT_MS = 4 * 60 * 1000;
-const COMFY_FLUX2_TIMEOUT_MS = 45 * 60 * 1000;
+const COMFY_FLUX2_TIMEOUT_MS = 6 * 60 * 60 * 1000;
 
 export type GenerationMode = 'mock' | 'mistral' | 'lmstudio';
 export type ImageProvider = 'pollinations' | 'comfyui';
@@ -507,6 +507,15 @@ const waitForComfyImage = async (
   return null;
 };
 
+const freeComfyModels = async (baseUrl: string, signal?: AbortSignal) => {
+  await fetch(`${baseUrl}/free`, {
+    method: 'POST',
+    signal,
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ free_memory: true, unload_models: true }),
+  }).catch(() => undefined);
+};
+
 const generateComfyImage = async (
   prompt: string,
   pipeline: ImagePipeline,
@@ -550,11 +559,7 @@ const generateComfyImage = async (
 
     const blob = await viewResponse.blob();
     if (settings.comfyUnloadModel) {
-      fetch(`${baseUrl}/free`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ free_memory: true, unload_models: true }),
-      }).catch(() => undefined);
+      freeComfyModels(baseUrl).catch(() => undefined);
     }
     return URL.createObjectURL(blob);
   } catch (error) {
@@ -782,6 +787,9 @@ export const generateComfyFlux2ComposeImage = async (
   const baseUrl = getComfyBaseUrl(settings.comfyEndpoint);
   try {
     if (settings.provider !== 'comfyui') throw new Error('Flux2 compose работает только через ComfyUI.');
+    if (settings.comfyUnloadModel) {
+      await freeComfyModels(baseUrl, signal);
+    }
     const [backgroundImageName, characterImageName] = await Promise.all([
       uploadComfyInputImage(baseUrl, backgroundImageUrl, 'canva-story-bg', signal),
       uploadComfyInputImage(baseUrl, characterImageUrl, 'canva-story-ref', signal),
@@ -804,7 +812,7 @@ export const generateComfyFlux2ComposeImage = async (
     if (!promptData.prompt_id) throw new Error('ComfyUI не вернул prompt_id для Flux2 workflow.');
 
     const image = await waitForComfyImage(baseUrl, promptData.prompt_id, COMFY_FLUX2_TIMEOUT_MS, signal);
-    if (!image) throw new Error('Flux2 не вернул изображение за 45 минут. ComfyUI может ещё считать кадр, проверьте его окно и output.');
+    if (!image) throw new Error('Flux2 не вернул изображение за 6 часов. ComfyUI может ещё считать кадр, проверьте его окно и output.');
 
     const params = new URLSearchParams({
       filename: image.filename,
@@ -818,11 +826,7 @@ export const generateComfyFlux2ComposeImage = async (
 
     const blob = await viewResponse.blob();
     if (settings.comfyUnloadModel) {
-      fetch(`${baseUrl}/free`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ free_memory: true, unload_models: true }),
-      }).catch(() => undefined);
+      freeComfyModels(baseUrl).catch(() => undefined);
     }
     return URL.createObjectURL(blob);
   } catch (error) {

@@ -120,6 +120,21 @@ const getSceneHeroScope = (heroesText: string, sceneLabel: string) => {
   };
 };
 
+const getCharacterName = (description: string, index: number) => {
+  const firstPart = description.split(/[;.\n]/)[0]?.trim() || '';
+  const normalized = firstPart
+    .replace(/^ID\/Имя или роль\s*[—-]\s*/iu, '')
+    .replace(/^ID\/Имя или роль\s*—\s*/iu, '')
+    .trim();
+  return (normalized || `Персонаж ${index + 1}`).slice(0, 48);
+};
+
+const getCharacterDescriptions = (heroesText: string) =>
+  heroesText
+    .split(/\n+/)
+    .map((line) => line.trim())
+    .filter((line) => line.length > 0);
+
 const upsertScenarioGraph = (
   previousNodes: NodesState,
   sourceNodeId: string,
@@ -716,20 +731,86 @@ export const useNodeManagement = (
     const isCharacters = detailNode.label === 'Герои';
 
     try {
+      if (isCharacters) {
+        const characterDescriptions = getCharacterDescriptions(description);
+        setNodes((previousNodes) => {
+          const nextNodes = { ...previousNodes };
+          Object.entries(previousNodes).forEach(([nodeId, node]) => {
+            const assetKind = typeof node.metadata?.assetKind === 'string' ? node.metadata.assetKind : '';
+            if (
+              node.parentId === detailNodeId
+              && node.nodeType === 'pollinations_image'
+              && assetKind.startsWith('character_asset')
+            ) {
+              if (node.imageUrl?.startsWith('blob:')) URL.revokeObjectURL(node.imageUrl);
+              delete nextNodes[nodeId];
+            }
+          });
+          return nextNodes;
+        });
+
+        const generatedPrompts: string[] = [];
+        for (let index = 0; index < characterDescriptions.length; index += 1) {
+          const characterDescription = characterDescriptions[index];
+          const characterName = getCharacterName(characterDescription, index);
+          updateNode(detailNodeId, {
+            isLoading: true,
+            loadingProvider: generationSettings.mode,
+            error: undefined,
+            pollinationsApiError: undefined,
+            statusMessage: `Собираем prompt персонажа ${index + 1}/${characterDescriptions.length}: ${characterName}`,
+          });
+
+          const assetPrompt = await generateText({
+            operation: 'character_asset_prompt',
+            prompt: characterDescription,
+            systemPrompt: CHARACTER_ASSET_PROMPT_SYSTEM_PROMPT,
+            model: detailNode.selectedModel || MISTRAL_MODELS[0],
+          }, controller.signal, generationSettings);
+          generatedPrompts.push(`${characterName}\n${assetPrompt}`);
+
+          updateNode(detailNodeId, {
+            isLoading: false,
+            isLoadingImage: true,
+            loadingProvider: imageGenerationSettings.provider,
+            assetPrompt: generatedPrompts.join('\n\n'),
+            statusMessage: `Генерируем референс ${index + 1}/${characterDescriptions.length}: ${characterName}`,
+          });
+
+          const imageUrl = await generateImage(
+            assetPrompt,
+            detailNode.imagePipeline ?? 'sdxl',
+            imageGenerationSettings,
+            'character_asset',
+            controller.signal,
+          );
+          upsertImageNode(
+            detailNodeId,
+            imageUrl,
+            `Ассет ${index + 1} · ${characterName}`,
+            `character_asset:${index}`,
+            index,
+            assetPrompt,
+            characterDescription,
+          );
+        }
+
+        showNotice('success', `Создано референсов персонажей: ${characterDescriptions.length}.`);
+        return;
+      }
+
       updateNode(detailNodeId, {
         isLoading: true,
         loadingProvider: generationSettings.mode,
         error: undefined,
         pollinationsApiError: undefined,
-        statusMessage: isCharacters
-          ? 'Собираем SDXL prompt для character sheet...'
-          : 'Собираем SDXL prompt для location sheet...',
+        statusMessage: 'Собираем SDXL prompt для location sheet...',
       });
 
       const assetPrompt = await generateText({
-        operation: isCharacters ? 'character_asset_prompt' : 'location_asset_prompt',
+        operation: 'location_asset_prompt',
         prompt: description,
-        systemPrompt: isCharacters ? CHARACTER_ASSET_PROMPT_SYSTEM_PROMPT : LOCATION_ASSET_PROMPT_SYSTEM_PROMPT,
+        systemPrompt: LOCATION_ASSET_PROMPT_SYSTEM_PROMPT,
         model: detailNode.selectedModel || MISTRAL_MODELS[0],
       }, controller.signal, generationSettings);
 
@@ -738,28 +819,26 @@ export const useNodeManagement = (
         isLoadingImage: true,
         loadingProvider: imageGenerationSettings.provider,
         assetPrompt,
-        statusMessage: isCharacters
-          ? 'Генерируем персонажей в полный рост...'
-          : 'Генерируем лист локаций...',
+        statusMessage: 'Генерируем лист локаций...',
       });
 
       const imageUrl = await generateImage(
         assetPrompt,
         detailNode.imagePipeline ?? 'sdxl',
         imageGenerationSettings,
-        isCharacters ? 'character_asset' : 'location_asset',
+        'location_asset',
         controller.signal,
       );
       upsertImageNode(
         detailNodeId,
         imageUrl,
         'Ассет',
-        isCharacters ? 'character_asset' : 'location_asset',
+        'location_asset',
         0,
         assetPrompt,
         description,
       );
-      showNotice('success', isCharacters ? 'Ассет героев создан.' : 'Ассет локаций создан.');
+      showNotice('success', 'Ассет локаций создан.');
     } catch (error) {
       if (isAbortError(error)) {
         showNotice('info', 'Генерация ассета отменена.');
@@ -777,7 +856,7 @@ export const useNodeManagement = (
         statusMessage: undefined,
       });
     }
-  }, [generationSettings, imageGenerationSettings, showNotice, updateNode, upsertImageNode]);
+  }, [generationSettings, imageGenerationSettings, setNodes, showNotice, updateNode, upsertImageNode]);
 
   const handleGeneratePollinationsImage = useCallback(async (parentNodeId: string) => {
     const parentNode = nodesRef.current[parentNodeId];

@@ -34,6 +34,9 @@ const detailButtons: Array<{ type: DetailType; label: string }> = [
   { type: 'настроение', label: 'Настроение' },
 ];
 
+const countDetailRows = (value?: string) =>
+  value?.split(/\n+/).map((line) => line.trim()).filter(Boolean).length ?? 0;
+
 const NodeRenderer: React.FC<NodeRendererProps> = ({
   id,
   node,
@@ -65,6 +68,7 @@ const NodeRenderer: React.FC<NodeRendererProps> = ({
   };
   const isTextOutput = node.nodeType === 'script_output' || node.nodeType === 'script_detail';
   const canGenerateDetailAsset = node.nodeType === 'script_detail' && (node.label === 'Герои' || node.label === 'Локации');
+  const detailRowCount = countDetailRows(node.inputValue);
   const isBusy = Boolean(node.isLoading || node.isLoadingImage);
   const loadingLabel = node.isLoadingImage
     ? node.loadingProvider === 'comfyui'
@@ -264,7 +268,7 @@ const NodeRenderer: React.FC<NodeRendererProps> = ({
           >
             {isBusy
               ? 'Отменить ассет'
-              : `${node.label === 'Герои' ? 'Сгенерировать героев' : 'Сгенерировать локации'} · ${imageProvider === 'comfyui' ? 'ComfyUI' : 'Pollinations'}`}
+              : `${node.label === 'Герои' ? `Сгенерировать ${detailRowCount || ''} героев`.replace('  ', ' ') : 'Сгенерировать локации'} · ${imageProvider === 'comfyui' ? 'ComfyUI' : 'Pollinations'}`}
           </button>
         )}
 

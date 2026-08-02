@@ -21,6 +21,7 @@ import {
   LOCATION_DETAIL_SYSTEM_PROMPT,
   MISTRAL_MODELS,
   MOOD_DETAIL_SYSTEM_PROMPT,
+  NARRATION_DETAIL_SYSTEM_PROMPT,
   SCENARIO_SYSTEM_PROMPT,
   SCENE_CHARACTER_LAYER_PROMPT_SYSTEM_PROMPT,
   SCENE_LOCATION_PROMPT_SYSTEM_PROMPT,
@@ -80,6 +81,7 @@ const detailConfig: Record<DetailType, {
   герои: { label: 'Герои', operation: 'heroes', systemPrompt: HERO_DETAIL_SYSTEM_PROMPT, column: 0 },
   локации: { label: 'Локации', operation: 'locations', systemPrompt: LOCATION_DETAIL_SYSTEM_PROMPT, column: 1 },
   настроение: { label: 'Настроение', operation: 'mood', systemPrompt: MOOD_DETAIL_SYSTEM_PROMPT, column: 2 },
+  закадр: { label: 'Закадр', operation: 'narration', systemPrompt: NARRATION_DETAIL_SYSTEM_PROMPT, column: 3 },
 };
 
 const getExistingChild = (nodes: NodesState, parentId: string, predicate: (node: NodeData) => boolean) =>
@@ -506,6 +508,7 @@ export const useNodeManagement = (
       `Персонажи:\n${findDetail('Герои')}`,
       `Локации:\n${findDetail('Локации')}`,
       `Настроение:\n${findDetail('Настроение')}`,
+      `Закадровый смысл:\n${findDetail('Закадр')}`,
     ].join('\n\n');
     const result = await requestText(sceneNodeId, {
       operation: 'scene_prompt',

@@ -34,6 +34,7 @@ const detailButtons: Array<{ type: DetailType; label: string }> = [
   { type: 'герои', label: 'Герои' },
   { type: 'локации', label: 'Локации' },
   { type: 'настроение', label: 'Настроение' },
+  { type: 'закадр', label: 'Закадр' },
 ];
 
 const countDetailRows = (value?: string) =>

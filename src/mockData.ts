@@ -77,6 +77,17 @@ const createMood = (sceneCount: number) =>
     `Сцена ${index + 1}: ${index === 0 ? 'тихое ожидание' : 'нарастающее любопытство'}, спокойный темп, мягкий контраст, приглушённые холодные оттенки и один тёплый световой акцент.`,
   ).join('\n');
 
+const createNarration = (sceneCount: number) =>
+  Array.from({ length: sceneCount }, (_, index) =>
+    [
+      `Сцена ${index + 1}:`,
+      `Закадровый текст: ${index === 0
+        ? 'Иногда история начинается не с громкого события, а с маленького выбора, который уже нельзя отменить.'
+        : 'Каждый следующий шаг делает прежний мир менее надёжным, и герой начинает понимать цену своего решения.'}`,
+      `Смысловой акцент: ${index === 0 ? 'завязка внутреннего конфликта' : 'нарастание ставки и ожидания следующего поворота'}.`,
+    ].join(' '),
+  ).join('\n');
+
 const createScenePrompt = (request: GenerationRequest) => {
   const scene = request.sceneLabel || 'Scene';
   return `${scene}, cinematic visual storytelling, a clear subject performing the described action, grounded contemporary environment, expressive composition, medium-wide camera framing, subtle depth of field, soft directional dawn light, neutral charcoal and cool gray palette with one restrained amber accent, tactile realistic materials, coherent character and location details, quiet atmospheric tension, no text, no watermark`;
@@ -112,6 +123,8 @@ export const createMockCompletion = async (request: GenerationRequest, signal?: 
       return createLocations(request.prompt);
     case 'mood':
       return createMood(request.sceneCount ?? 4);
+    case 'narration':
+      return createNarration(request.sceneCount ?? 4);
     case 'scene_prompt':
       return createScenePrompt(request);
     case 'scene_location_prompt':

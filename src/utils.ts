@@ -26,6 +26,7 @@ export const getNodeIcon = (nodeType?: string, label?: string) => {
       if (label === 'Герои') return assetPath('character.png');
       if (label === 'Локации') return assetPath('location.png');
       if (label === 'Настроение') return assetPath('emotion.png');
+      if (label === 'Закадр') return assetPath('text.png');
       return assetPath('metaprompt.png');
     default:
       return assetPath('metaprompt.png');

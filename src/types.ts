@@ -9,7 +9,7 @@ export type NodeType =
   | 'script_detail'
   | 'pollinations_image';
 
-export type DetailType = 'герои' | 'локации' | 'настроение';
+export type DetailType = 'герои' | 'локации' | 'настроение' | 'закадр';
 export type EntityType = 'character' | 'location' | 'episode' | 'scene';
 export type ProductionStatus = 'idea' | 'draft' | 'ready' | 'in_production' | 'done';
 export type ImagePipeline = 'sdxl' | 'flux2_compose' | 'flux2_turbo_compose';
@@ -113,6 +113,7 @@ export type GenerationOperation =
   | 'heroes'
   | 'locations'
   | 'mood'
+  | 'narration'
   | 'scene_prompt'
   | 'scene_location_prompt'
   | 'scene_character_layer_prompt'

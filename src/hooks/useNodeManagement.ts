@@ -6,7 +6,13 @@ import {
   useRef,
   useState,
 } from 'react';
-import { generateImage, generateText, GenerationSettings, ImageGenerationSettings } from '../api';
+import {
+  generateComfyFlux2ComposeImage,
+  generateImage,
+  generateText,
+  GenerationSettings,
+  ImageGenerationSettings,
+} from '../api';
 import {
   ASSOCIATE_SYSTEM_PROMPT,
   CHARACTER_ASSET_PROMPT_SYSTEM_PROMPT,
@@ -55,6 +61,7 @@ interface UseNodeManagementReturn {
   handleGenerateScenePrompt: (sceneNodeId: string) => Promise<void>;
   handleGenerateSceneLocationAsset: (sceneNodeId: string) => Promise<void>;
   handleGenerateSceneCharacterLayer: (sceneNodeId: string) => Promise<void>;
+  handleComposeSceneFlux2: (sceneNodeId: string) => Promise<void>;
   handleGenerateDetailAsset: (detailNodeId: string) => Promise<void>;
   handleCopyToClipboard: (textToCopy: string) => Promise<void>;
   handleGeneratePollinationsImage: (nodeId: string) => Promise<void>;
@@ -153,6 +160,14 @@ const getImagePromptKind = (node: NodeData): ImagePromptKind => {
   if (imagePromptKinds.has(assetKind as ImagePromptKind)) return assetKind as ImagePromptKind;
   return 'default';
 };
+
+const getAssetKind = (node: NodeData) =>
+  typeof node.metadata?.assetKind === 'string' ? node.metadata.assetKind : '';
+
+const getReferenceLabel = (node: NodeData) =>
+  typeof node.metadata?.promptContext === 'string'
+    ? getCharacterName(node.metadata.promptContext, 0)
+    : node.label;
 
 const upsertScenarioGraph = (
   previousNodes: NodesState,
@@ -530,6 +545,7 @@ export const useNodeManagement = (
     offsetIndex = 0,
     imagePrompt = '',
     promptContext = '',
+    metadataPatch: NonNullable<NodeData['metadata']> = {},
   ) => {
     setNodes((previousNodes) => {
       const parentNode = previousNodes[parentNodeId];
@@ -568,6 +584,7 @@ export const useNodeManagement = (
             promptKind: assetKind,
             imageProvider: imageGenerationSettings.provider,
             imagePipeline: parentNode.imagePipeline ?? 'sdxl',
+            ...metadataPatch,
           },
         },
       };
@@ -732,6 +749,92 @@ export const useNodeManagement = (
       });
     }
   }, [generationSettings, imageGenerationSettings, showNotice, updateNode, upsertImageNode]);
+
+  const handleComposeSceneFlux2 = useCallback(async (sceneNodeId: string) => {
+    const currentNodes = nodesRef.current;
+    const sceneNode = currentNodes[sceneNodeId];
+    if (!sceneNode || sceneNode.nodeType !== 'scene' || sceneNode.isLoading || sceneNode.isLoadingImage) return;
+
+    const locationNode = Object.values(currentNodes).find((node) =>
+      node.parentId === sceneNodeId
+      && node.nodeType === 'pollinations_image'
+      && getAssetKind(node) === 'scene_location'
+      && Boolean(node.imageUrl));
+    const characterAssets = Object.values(currentNodes).filter((node) =>
+      node.nodeType === 'pollinations_image'
+      && getAssetKind(node).startsWith('character_asset')
+      && Boolean(node.imageUrl));
+    const referenceNode = characterAssets.find((node) => node.metadata?.isReference === true) ?? characterAssets[0];
+
+    if (!locationNode?.imageUrl) {
+      updateNode(sceneNodeId, { pollinationsApiError: 'Сначала сгенерируйте локацию этой сцены.' });
+      return;
+    }
+    if (!referenceNode?.imageUrl) {
+      updateNode(sceneNodeId, { pollinationsApiError: 'Сначала сгенерируйте или отметьте референс персонажа.' });
+      return;
+    }
+
+    const requestId = `flux2-compose:${sceneNodeId}`;
+    if (activeRequests.current.has(requestId)) return;
+    const controller = new AbortController();
+    activeRequests.current.set(requestId, controller);
+
+    const sceneDescription = sceneNode.sceneText || sceneNode.inputValue || sceneNode.label;
+    const referenceLabel = getReferenceLabel(referenceNode);
+    const composePrompt = [
+      `Use the first reference image as the background location plate for ${sceneNode.label}.`,
+      `Use the second reference image as the character identity reference for ${referenceLabel}.`,
+      'Create one coherent story frame: place the character naturally inside the location, matching perspective, scale, light direction, shadows, color palette, and painterly style.',
+      'Preserve the character identity, clothing, body type, and face from the character reference. Preserve the architecture and mood from the location reference.',
+      `Scene action: ${sceneDescription}`,
+      'Do not create a character sheet, turnaround, lineup, text, watermark, UI, border, split-screen, or collage.',
+    ].join(' ');
+    const promptContext = [
+      `Сцена: ${sceneNode.label}`,
+      `Описание сцены:\n${sceneDescription}`,
+      `Локация-референс: ${locationNode.label}`,
+      `Персонаж-референс: ${referenceNode.label}`,
+    ].join('\n\n');
+
+    try {
+      updateNode(sceneNodeId, {
+        isLoadingImage: true,
+        loadingProvider: 'comfyui',
+        pollinationsApiError: undefined,
+        statusMessage: 'Flux2 собирает кадр из локации и референса...',
+      });
+
+      const imageUrl = await generateComfyFlux2ComposeImage(
+        composePrompt,
+        locationNode.imageUrl,
+        referenceNode.imageUrl,
+        imageGenerationSettings,
+        controller.signal,
+      );
+      upsertImageNode(sceneNodeId, imageUrl, 'Кадр Flux2', 'scene_flux2_frame', 2, composePrompt, promptContext, {
+        backgroundNodeId: Object.entries(currentNodes).find(([, node]) => node === locationNode)?.[0] ?? '',
+        characterReferenceNodeId: Object.entries(currentNodes).find(([, node]) => node === referenceNode)?.[0] ?? '',
+        imagePipeline: 'flux2_compose',
+      });
+      showNotice('success', `Flux2 собрал кадр для «${sceneNode.label}».`);
+    } catch (error) {
+      if (isAbortError(error)) {
+        showNotice('info', 'Сборка кадра Flux2 отменена.');
+      } else {
+        const message = errorMessage(error);
+        updateNode(sceneNodeId, { pollinationsApiError: message });
+        showNotice('error', message);
+      }
+    } finally {
+      activeRequests.current.delete(requestId);
+      updateNode(sceneNodeId, {
+        isLoadingImage: false,
+        loadingProvider: undefined,
+        statusMessage: undefined,
+      });
+    }
+  }, [imageGenerationSettings, showNotice, updateNode, upsertImageNode]);
 
   const handleGenerateDetailAsset = useCallback(async (detailNodeId: string) => {
     const detailNode = nodesRef.current[detailNodeId];
@@ -930,13 +1033,32 @@ export const useNodeManagement = (
     });
 
     try {
-      const imageUrl = await generateImage(
-        prompt,
-        node.imagePipeline ?? 'sdxl',
-        imageGenerationSettings,
-        getImagePromptKind(node),
-        controller.signal,
-      );
+      const assetKind = getAssetKind(node);
+      let imageUrl: string;
+      if (assetKind === 'scene_flux2_frame') {
+        const backgroundNodeId = typeof node.metadata?.backgroundNodeId === 'string' ? node.metadata.backgroundNodeId : '';
+        const characterReferenceNodeId = typeof node.metadata?.characterReferenceNodeId === 'string' ? node.metadata.characterReferenceNodeId : '';
+        const backgroundNode = nodesRef.current[backgroundNodeId];
+        const characterNode = nodesRef.current[characterReferenceNodeId];
+        if (!backgroundNode?.imageUrl || !characterNode?.imageUrl) {
+          throw new Error('Не найдены исходная локация или персонаж для повторной сборки Flux2.');
+        }
+        imageUrl = await generateComfyFlux2ComposeImage(
+          prompt,
+          backgroundNode.imageUrl,
+          characterNode.imageUrl,
+          imageGenerationSettings,
+          controller.signal,
+        );
+      } else {
+        imageUrl = await generateImage(
+          prompt,
+          node.imagePipeline ?? 'sdxl',
+          imageGenerationSettings,
+          getImagePromptKind(node),
+          controller.signal,
+        );
+      }
 
       setNodes((previousNodes) => {
         const currentNode = previousNodes[nodeId];
@@ -954,7 +1076,7 @@ export const useNodeManagement = (
             metadata: {
               ...currentNode.metadata,
               imageProvider: imageGenerationSettings.provider,
-              imagePipeline: currentNode.imagePipeline ?? 'sdxl',
+              imagePipeline: assetKind === 'scene_flux2_frame' ? 'flux2_compose' : currentNode.imagePipeline ?? 'sdxl',
               rerolledAt: new Date().toISOString(),
             },
           },
@@ -1001,6 +1123,7 @@ export const useNodeManagement = (
     activeRequests.current.get(nodeId)?.abort();
     activeRequests.current.get(`image:${nodeId}`)?.abort();
     activeRequests.current.get(`reroll-image:${nodeId}`)?.abort();
+    activeRequests.current.get(`flux2-compose:${nodeId}`)?.abort();
     activeRequests.current.get(`scene-location:${nodeId}`)?.abort();
     activeRequests.current.get(`scene-characters:${nodeId}`)?.abort();
     activeRequests.current.get(`detail-asset:${nodeId}`)?.abort();
@@ -1023,6 +1146,7 @@ export const useNodeManagement = (
     handleGenerateScenePrompt,
     handleGenerateSceneLocationAsset,
     handleGenerateSceneCharacterLayer,
+    handleComposeSceneFlux2,
     handleGenerateDetailAsset,
     handleCopyToClipboard,
     handleGeneratePollinationsImage,

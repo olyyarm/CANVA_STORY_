@@ -21,7 +21,7 @@ const nodeTypes = new Set<NodeType>([
   'pollinations_image',
 ]);
 
-const imagePipelines = new Set<ImagePipeline>(['sdxl']);
+const imagePipelines = new Set<ImagePipeline>(['sdxl', 'flux2_compose']);
 
 const newId = () => {
   if (typeof crypto !== 'undefined' && 'randomUUID' in crypto) return crypto.randomUUID();

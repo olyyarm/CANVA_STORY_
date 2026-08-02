@@ -6,6 +6,9 @@ export const LM_STUDIO_DEFAULT_ENDPOINT = 'http://localhost:1234/v1/chat/complet
 export const LM_STUDIO_DEFAULT_MODEL = 'local-model';
 export const COMFYUI_DEFAULT_ENDPOINT = 'http://localhost:8188';
 export const COMFYUI_DEFAULT_CHECKPOINT = 'SDXL\\sd_xl_base_1.0.safetensors';
+const FLUX2_DIFFUSION_MODEL = 'flux2_dev_fp8mixed.safetensors';
+const FLUX2_TEXT_ENCODER = 'mistral_3_small_flux2_fp8.safetensors';
+const FLUX2_VAE = 'flux2-vae.safetensors';
 
 export type GenerationMode = 'mock' | 'mistral' | 'lmstudio';
 export type ImageProvider = 'pollinations' | 'comfyui';
@@ -406,6 +409,12 @@ interface ComfyImageRef {
   type?: string;
 }
 
+interface ComfyUploadResponse {
+  name?: string;
+  subfolder?: string;
+  type?: string;
+}
+
 interface ComfyHistoryEntry {
   outputs?: Record<string, { images?: ComfyImageRef[] }>;
 }
@@ -432,7 +441,7 @@ const generateComfyImage = async (
 ) => {
   const baseUrl = getComfyBaseUrl(settings.comfyEndpoint);
   try {
-    if (pipeline !== 'sdxl') throw new Error('Пока подключён только pipeline SDXL.');
+    if (pipeline !== 'sdxl') throw new Error('Этот генератор ожидает pipeline SDXL.');
     const checkpoint = await resolveComfyCheckpoint(baseUrl, settings.comfyCheckpoint, signal);
     const workflow = buildComfySdxlWorkflow(prompt, checkpoint, promptKind);
     const clientId = typeof crypto.randomUUID === 'function'
@@ -484,6 +493,263 @@ const generateComfyImage = async (
     if (error instanceof DOMException && error.name === 'AbortError') throw error;
     if (error instanceof TypeError) {
       throw new Error(`Не удалось подключиться к ComfyUI по адресу ${baseUrl}. Проверьте, что ComfyUI запущен, endpoint указан верно и разрешён CORS (--enable-cors-header).`);
+    }
+    throw error;
+  }
+};
+
+const uploadComfyInputImage = async (
+  baseUrl: string,
+  imageUrl: string,
+  filenamePrefix: string,
+  signal?: AbortSignal,
+) => {
+  const sourceResponse = await fetch(imageUrl, { signal });
+  if (!sourceResponse.ok) throw new Error(`Не удалось прочитать исходную картинку для Flux2: ${sourceResponse.status}.`);
+  const blob = await sourceResponse.blob();
+  const extension = blob.type.includes('jpeg') ? 'jpg' : 'png';
+  const fileName = `${filenamePrefix}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}.${extension}`;
+  const formData = new FormData();
+  formData.append('image', new File([blob], fileName, { type: blob.type || 'image/png' }));
+  formData.append('type', 'input');
+  formData.append('overwrite', 'true');
+
+  const response = await fetch(`${baseUrl}/upload/image`, {
+    method: 'POST',
+    signal,
+    body: formData,
+  });
+  if (!response.ok) {
+    throw new Error(getComfyError('ComfyUI не принял reference image', response, await readResponseDetails(response)));
+  }
+  const payload: ComfyUploadResponse = await response.json();
+  return payload.name || fileName;
+};
+
+const buildComfyFlux2ComposeWorkflow = (
+  prompt: string,
+  backgroundImageName: string,
+  characterImageName: string,
+) => {
+  const seed = Math.floor(Math.random() * 1_000_000_000_000);
+  return {
+    '6': {
+      class_type: 'CLIPTextEncode',
+      inputs: {
+        clip: ['38', 0],
+        text: prompt,
+      },
+    },
+    '8': {
+      class_type: 'VAEDecode',
+      inputs: {
+        samples: ['13', 0],
+        vae: ['10', 0],
+      },
+    },
+    '9': {
+      class_type: 'SaveImage',
+      inputs: {
+        filename_prefix: 'CANVA_STORY_FLUX2',
+        images: ['8', 0],
+      },
+    },
+    '10': {
+      class_type: 'VAELoader',
+      inputs: {
+        vae_name: FLUX2_VAE,
+      },
+    },
+    '12': {
+      class_type: 'UNETLoader',
+      inputs: {
+        unet_name: FLUX2_DIFFUSION_MODEL,
+        weight_dtype: 'default',
+      },
+    },
+    '13': {
+      class_type: 'SamplerCustomAdvanced',
+      inputs: {
+        noise: ['25', 0],
+        guider: ['22', 0],
+        sampler: ['16', 0],
+        sigmas: ['48', 0],
+        latent_image: ['47', 0],
+      },
+    },
+    '16': {
+      class_type: 'KSamplerSelect',
+      inputs: {
+        sampler_name: 'euler',
+      },
+    },
+    '22': {
+      class_type: 'BasicGuider',
+      inputs: {
+        model: ['12', 0],
+        conditioning: ['43', 0],
+      },
+    },
+    '25': {
+      class_type: 'RandomNoise',
+      inputs: {
+        noise_seed: seed,
+      },
+    },
+    '26': {
+      class_type: 'FluxGuidance',
+      inputs: {
+        guidance: 4,
+        conditioning: ['6', 0],
+      },
+    },
+    '38': {
+      class_type: 'CLIPLoader',
+      inputs: {
+        clip_name: FLUX2_TEXT_ENCODER,
+        type: 'flux2',
+        device: 'default',
+      },
+    },
+    '39': {
+      class_type: 'ReferenceLatent',
+      inputs: {
+        conditioning: ['26', 0],
+        latent: ['40', 0],
+      },
+    },
+    '40': {
+      class_type: 'VAEEncode',
+      inputs: {
+        pixels: ['41', 0],
+        vae: ['10', 0],
+      },
+    },
+    '41': {
+      class_type: 'ImageScaleToTotalPixels',
+      inputs: {
+        upscale_method: 'area',
+        megapixels: 1,
+        image: ['42', 0],
+      },
+    },
+    '42': {
+      class_type: 'LoadImage',
+      inputs: {
+        image: backgroundImageName,
+      },
+    },
+    '43': {
+      class_type: 'ReferenceLatent',
+      inputs: {
+        conditioning: ['39', 0],
+        latent: ['44', 0],
+      },
+    },
+    '44': {
+      class_type: 'VAEEncode',
+      inputs: {
+        pixels: ['45', 0],
+        vae: ['10', 0],
+      },
+    },
+    '45': {
+      class_type: 'ImageScaleToTotalPixels',
+      inputs: {
+        upscale_method: 'area',
+        megapixels: 1,
+        image: ['46', 0],
+      },
+    },
+    '46': {
+      class_type: 'LoadImage',
+      inputs: {
+        image: characterImageName,
+      },
+    },
+    '47': {
+      class_type: 'EmptyFlux2LatentImage',
+      inputs: {
+        width: 1024,
+        height: 1024,
+        batch_size: 1,
+      },
+    },
+    '48': {
+      class_type: 'Flux2Scheduler',
+      inputs: {
+        steps: 20,
+        width: 1024,
+        height: 1024,
+      },
+    },
+  };
+};
+
+export const generateComfyFlux2ComposeImage = async (
+  prompt: string,
+  backgroundImageUrl: string,
+  characterImageUrl: string,
+  settings: ImageGenerationSettings,
+  signal?: AbortSignal,
+) => {
+  const baseUrl = getComfyBaseUrl(settings.comfyEndpoint);
+  try {
+    if (settings.provider !== 'comfyui') throw new Error('Flux2 compose работает только через ComfyUI.');
+    const [backgroundImageName, characterImageName] = await Promise.all([
+      uploadComfyInputImage(baseUrl, backgroundImageUrl, 'canva-story-bg', signal),
+      uploadComfyInputImage(baseUrl, characterImageUrl, 'canva-story-ref', signal),
+    ]);
+    const workflow = buildComfyFlux2ComposeWorkflow(prompt, backgroundImageName, characterImageName);
+    const clientId = typeof crypto.randomUUID === 'function'
+      ? crypto.randomUUID()
+      : `canva-story-flux2-${Date.now()}`;
+
+    const promptResponse = await fetch(`${baseUrl}/prompt`, {
+      method: 'POST',
+      signal,
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ client_id: clientId, prompt: workflow }),
+    });
+    if (!promptResponse.ok) {
+      throw new Error(getComfyError('ComfyUI не принял Flux2 workflow', promptResponse, await readResponseDetails(promptResponse)));
+    }
+    const promptData: ComfyPromptResponse = await promptResponse.json();
+    if (!promptData.prompt_id) throw new Error('ComfyUI не вернул prompt_id для Flux2 workflow.');
+
+    let image: ComfyImageRef | null = null;
+    for (let attempt = 0; attempt < 480; attempt += 1) {
+      await wait(1000, signal);
+      const historyResponse = await fetch(`${baseUrl}/history/${promptData.prompt_id}`, { signal });
+      if (!historyResponse.ok) continue;
+      image = getImageFromComfyHistory(await historyResponse.json());
+      if (image) break;
+    }
+    if (!image) throw new Error('Flux2 не вернул изображение за отведённое время. Проверьте окно ComfyUI.');
+
+    const params = new URLSearchParams({
+      filename: image.filename,
+      subfolder: image.subfolder ?? '',
+      type: image.type ?? 'output',
+    });
+    const viewResponse = await fetch(`${baseUrl}/view?${params.toString()}`, { signal });
+    if (!viewResponse.ok) {
+      throw new Error(getComfyError('ComfyUI не отдал готовое Flux2 изображение', viewResponse, await readResponseDetails(viewResponse)));
+    }
+
+    const blob = await viewResponse.blob();
+    if (settings.comfyUnloadModel) {
+      fetch(`${baseUrl}/free`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ free_memory: true, unload_models: true }),
+      }).catch(() => undefined);
+    }
+    return URL.createObjectURL(blob);
+  } catch (error) {
+    if (error instanceof DOMException && error.name === 'AbortError') throw error;
+    if (error instanceof TypeError) {
+      throw new Error(`Не удалось подключиться к ComfyUI по адресу ${baseUrl}. Проверьте ComfyUI и CORS.`);
     }
     throw error;
   }

@@ -12,7 +12,7 @@ export type NodeType =
 export type DetailType = 'герои' | 'локации' | 'настроение';
 export type EntityType = 'character' | 'location' | 'episode' | 'scene';
 export type ProductionStatus = 'idea' | 'draft' | 'ready' | 'in_production' | 'done';
-export type ImagePipeline = 'sdxl';
+export type ImagePipeline = 'sdxl' | 'flux2_compose';
 export type ImagePromptKind = 'default' | 'scene_location' | 'scene_characters' | 'character_asset' | 'location_asset';
 
 export interface NodeData {

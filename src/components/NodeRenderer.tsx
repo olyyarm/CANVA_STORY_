@@ -22,6 +22,8 @@ interface NodeRendererProps {
   onGenerateSceneCharacterLayer: (nodeId: string) => Promise<void>;
   onGenerateDetailAsset: (nodeId: string) => Promise<void>;
   onCopyToClipboard: (text: string) => void;
+  onRegenerateImageNode: (nodeId: string) => Promise<void>;
+  onToggleReferenceImage: (nodeId: string) => void;
   imageProvider: ImageProvider;
   onCancelGeneration: (nodeId: string) => void;
   onDelete?: (nodeId: string) => void;
@@ -55,6 +57,8 @@ const NodeRenderer: React.FC<NodeRendererProps> = ({
   onGenerateSceneCharacterLayer,
   onGenerateDetailAsset,
   onCopyToClipboard,
+  onRegenerateImageNode,
+  onToggleReferenceImage,
   imageProvider,
   onCancelGeneration,
   onDelete,
@@ -89,6 +93,7 @@ const NodeRenderer: React.FC<NodeRendererProps> = ({
     imagePrompt ? `SDXL prompt:\n${imagePrompt}` : '',
     promptContext ? `\nРусский контекст:\n${promptContext}` : '',
   ].filter(Boolean).join('\n');
+  const isReferenceImage = node.nodeType === 'pollinations_image' && node.metadata?.isReference === true;
 
   const renderCopyButton = (text: string) => (
     <button
@@ -377,6 +382,28 @@ const NodeRenderer: React.FC<NodeRendererProps> = ({
                   title="Копировать промпт"
                 >
                   <img src={assetPath('copy.svg')} alt="" />
+                </button>
+              </div>
+            )}
+            {imagePrompt && (
+              <div className="generated-image-actions">
+                <button
+                  type="button"
+                  className={`node-secondary-button generated-reference-button${isReferenceImage ? ' generated-reference-button--active' : ''}`}
+                  onMouseDown={stopMouseDown}
+                  onClick={(event) => runWithoutDrag(event, () => onToggleReferenceImage(id))}
+                >
+                  {isReferenceImage ? 'Референс ✓' : 'Референс'}
+                </button>
+                <button
+                  type="button"
+                  className={`node-secondary-button${node.isLoadingImage ? ' node-secondary-button--cancel' : ''}`}
+                  onMouseDown={stopMouseDown}
+                  onClick={(event) => runWithoutDrag(event, () => node.isLoadingImage
+                    ? onCancelGeneration(id)
+                    : void onRegenerateImageNode(id))}
+                >
+                  {node.isLoadingImage ? 'Отменить' : 'Новый seed'}
                 </button>
               </div>
             )}

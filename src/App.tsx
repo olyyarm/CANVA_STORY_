@@ -141,6 +141,8 @@ const App = () => {
     handleGenerateSceneCharacterLayer,
     handleGenerateDetailAsset,
     handleCopyToClipboard,
+    handleRegenerateImageNode,
+    handleToggleReferenceImage,
     handleCancelGeneration,
   } = useNodeManagement(bootstrap.project.nodes, generationSettings, imageGenerationSettings);
 
@@ -607,6 +609,8 @@ const App = () => {
               onGenerateSceneCharacterLayer={handleGenerateSceneCharacterLayer}
               onGenerateDetailAsset={handleGenerateDetailAsset}
               onCopyToClipboard={handleCopyToClipboard}
+              onRegenerateImageNode={handleRegenerateImageNode}
+              onToggleReferenceImage={handleToggleReferenceImage}
               imageProvider={imageGenerationSettings.provider}
               onCancelGeneration={handleCancelGeneration}
             />

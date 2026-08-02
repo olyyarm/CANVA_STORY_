@@ -492,8 +492,9 @@ const generateComfyImage = async (
 const generatePollinationsImage = async (prompt: string, signal?: AbortSignal) => {
   const width = 1280;
   const height = 768;
+  const seed = Math.floor(Math.random() * 1_000_000_000);
   const encodedPrompt = encodeURIComponent(prompt);
-  const url = `https://image.pollinations.ai/prompt/${encodedPrompt}?model=flux&width=${width}&height=${height}&seed=0&nologo=true&enhance=1&private=1`;
+  const url = `https://image.pollinations.ai/prompt/${encodedPrompt}?model=flux&width=${width}&height=${height}&seed=${seed}&nologo=true&enhance=1&private=1`;
   const response = await fetch(url, { signal });
   if (!response.ok) throw new Error(`Сервис изображений вернул ошибку ${response.status}.`);
   return URL.createObjectURL(await response.blob());

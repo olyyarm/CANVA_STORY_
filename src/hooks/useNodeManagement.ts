@@ -25,6 +25,7 @@ import {
   DetailType,
   GenerationOperation,
   GenerationRequest,
+  ImagePromptKind,
   NodeData,
   NodesState,
 } from '../types';
@@ -57,6 +58,8 @@ interface UseNodeManagementReturn {
   handleGenerateDetailAsset: (detailNodeId: string) => Promise<void>;
   handleCopyToClipboard: (textToCopy: string) => Promise<void>;
   handleGeneratePollinationsImage: (nodeId: string) => Promise<void>;
+  handleRegenerateImageNode: (nodeId: string) => Promise<void>;
+  handleToggleReferenceImage: (nodeId: string) => void;
   handleCancelGeneration: (nodeId: string) => void;
 }
 
@@ -134,6 +137,22 @@ const getCharacterDescriptions = (heroesText: string) =>
     .split(/\n+/)
     .map((line) => line.trim())
     .filter((line) => line.length > 0);
+
+const imagePromptKinds = new Set<ImagePromptKind>([
+  'default',
+  'scene_location',
+  'scene_characters',
+  'character_asset',
+  'location_asset',
+]);
+
+const getImagePromptKind = (node: NodeData): ImagePromptKind => {
+  const promptKind = typeof node.metadata?.promptKind === 'string' ? node.metadata.promptKind.split(':')[0] : '';
+  if (imagePromptKinds.has(promptKind as ImagePromptKind)) return promptKind as ImagePromptKind;
+  const assetKind = typeof node.metadata?.assetKind === 'string' ? node.metadata.assetKind.split(':')[0] : '';
+  if (imagePromptKinds.has(assetKind as ImagePromptKind)) return assetKind as ImagePromptKind;
+  return 'default';
+};
 
 const upsertScenarioGraph = (
   previousNodes: NodesState,
@@ -893,9 +912,95 @@ export const useNodeManagement = (
     }
   }, [imageGenerationSettings, showNotice, updateNode, upsertImageNode]);
 
+  const handleRegenerateImageNode = useCallback(async (nodeId: string) => {
+    const node = nodesRef.current[nodeId];
+    const prompt = node?.masterPrompt?.trim();
+    if (!node || node.nodeType !== 'pollinations_image' || !prompt || node.isLoadingImage) return;
+
+    const requestId = `reroll-image:${nodeId}`;
+    if (activeRequests.current.has(requestId)) return;
+    const controller = new AbortController();
+    activeRequests.current.set(requestId, controller);
+
+    updateNode(nodeId, {
+      isLoadingImage: true,
+      loadingProvider: imageGenerationSettings.provider,
+      pollinationsApiError: undefined,
+      statusMessage: 'Перегенерируем с новым seed...',
+    });
+
+    try {
+      const imageUrl = await generateImage(
+        prompt,
+        node.imagePipeline ?? 'sdxl',
+        imageGenerationSettings,
+        getImagePromptKind(node),
+        controller.signal,
+      );
+
+      setNodes((previousNodes) => {
+        const currentNode = previousNodes[nodeId];
+        if (!currentNode || currentNode.nodeType !== 'pollinations_image') return previousNodes;
+        if (currentNode.imageUrl?.startsWith('blob:')) URL.revokeObjectURL(currentNode.imageUrl);
+        return {
+          ...previousNodes,
+          [nodeId]: {
+            ...currentNode,
+            imageUrl,
+            isLoadingImage: false,
+            loadingProvider: undefined,
+            pollinationsApiError: undefined,
+            statusMessage: undefined,
+            metadata: {
+              ...currentNode.metadata,
+              imageProvider: imageGenerationSettings.provider,
+              imagePipeline: currentNode.imagePipeline ?? 'sdxl',
+              rerolledAt: new Date().toISOString(),
+            },
+          },
+        };
+      });
+      showNotice('success', 'Картинка перегенерирована с новым seed.');
+    } catch (error) {
+      if (isAbortError(error)) {
+        showNotice('info', 'Перегенерация отменена.');
+      } else {
+        const message = errorMessage(error);
+        updateNode(nodeId, { pollinationsApiError: message });
+        showNotice('error', message);
+      }
+    } finally {
+      activeRequests.current.delete(requestId);
+      updateNode(nodeId, { isLoadingImage: false, loadingProvider: undefined, statusMessage: undefined });
+    }
+  }, [imageGenerationSettings, setNodes, showNotice, updateNode]);
+
+  const handleToggleReferenceImage = useCallback((nodeId: string) => {
+    setNodes((previousNodes) => {
+      const node = previousNodes[nodeId];
+      if (!node || node.nodeType !== 'pollinations_image') return previousNodes;
+      const isReference = node.metadata?.isReference === true;
+      return {
+        ...previousNodes,
+        [nodeId]: {
+          ...node,
+          metadata: {
+            ...node.metadata,
+            isReference: !isReference,
+            referencePrompt: node.masterPrompt ?? '',
+            referenceContext: typeof node.metadata?.promptContext === 'string' ? node.metadata.promptContext : '',
+          },
+          productionStatus: !isReference ? 'ready' : node.productionStatus,
+        },
+      };
+    });
+    showNotice('success', 'Статус референса обновлён.');
+  }, [setNodes, showNotice]);
+
   const handleCancelGeneration = useCallback((nodeId: string) => {
     activeRequests.current.get(nodeId)?.abort();
     activeRequests.current.get(`image:${nodeId}`)?.abort();
+    activeRequests.current.get(`reroll-image:${nodeId}`)?.abort();
     activeRequests.current.get(`scene-location:${nodeId}`)?.abort();
     activeRequests.current.get(`scene-characters:${nodeId}`)?.abort();
     activeRequests.current.get(`detail-asset:${nodeId}`)?.abort();
@@ -921,6 +1026,8 @@ export const useNodeManagement = (
     handleGenerateDetailAsset,
     handleCopyToClipboard,
     handleGeneratePollinationsImage,
+    handleRegenerateImageNode,
+    handleToggleReferenceImage,
     handleCancelGeneration,
   };
 };

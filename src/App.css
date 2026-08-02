@@ -831,6 +831,29 @@
   font-size: 11px;
 }
 
+.generated-image-actions {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 7px;
+  flex: 0 0 auto;
+}
+
+.generated-image-actions .node-secondary-button {
+  min-height: 32px;
+  font-size: 11px;
+}
+
+.generated-reference-button--active {
+  color: #171411;
+  border-color: rgba(224, 146, 71, 0.86);
+  background: #e09247;
+}
+
+.generated-reference-button--active:hover {
+  color: #171411;
+  background: #f0a050;
+}
+
 .generated-prompt-panel {
   display: flex;
   max-height: 48%;

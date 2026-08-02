@@ -315,6 +315,11 @@
   background: #252b33;
 }
 
+.project-actions button:disabled {
+  cursor: wait;
+  opacity: 0.62;
+}
+
 .project-actions .toolbar-danger-button:hover {
   color: #efaaa7;
   border-color: rgba(211, 106, 103, 0.42);

@@ -26,7 +26,6 @@ export interface ImageGenerationSettings {
   provider: ImageProvider;
   comfyEndpoint: string;
   comfyCheckpoint: string;
-  comfyUnloadModel: boolean;
 }
 
 export const getDefaultGenerationMode = (): GenerationMode => {
@@ -45,7 +44,6 @@ export const getDefaultImageGenerationSettings = (): ImageGenerationSettings => 
   provider: 'pollinations',
   comfyEndpoint: COMFYUI_DEFAULT_ENDPOINT,
   comfyCheckpoint: COMFYUI_DEFAULT_CHECKPOINT,
-  comfyUnloadModel: true,
 });
 
 const getErrorMessage = (value: unknown) => {
@@ -75,6 +73,15 @@ const getLmStudioEndpoint = (value: string) => {
   if (normalized.endsWith('/chat/completions')) return normalized;
   if (normalized.endsWith('/v1')) return `${normalized}/chat/completions`;
   return `${normalized}/v1/chat/completions`;
+};
+
+const getLmStudioBaseUrl = (value: string) => {
+  const endpoint = value.trim() || LM_STUDIO_DEFAULT_ENDPOINT;
+  const normalized = endpoint.replace(/\/+$/, '');
+  if (normalized.endsWith('/v1/chat/completions')) return normalized.slice(0, -'/v1/chat/completions'.length);
+  if (normalized.endsWith('/v1')) return normalized.slice(0, -'/v1'.length);
+  if (normalized.endsWith('/api/v1')) return normalized.slice(0, -'/api/v1'.length);
+  return normalized;
 };
 
 const callMistralAPI = async (request: GenerationRequest, signal?: AbortSignal): Promise<string> => {
@@ -508,12 +515,54 @@ const waitForComfyImage = async (
 };
 
 const freeComfyModels = async (baseUrl: string, signal?: AbortSignal) => {
-  await fetch(`${baseUrl}/free`, {
+  const response = await fetch(`${baseUrl}/free`, {
     method: 'POST',
     signal,
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ free_memory: true, unload_models: true }),
-  }).catch(() => undefined);
+  });
+  if (!response.ok) throw new Error(`ComfyUI не выгрузил модели: ${response.status}`);
+};
+
+export const unloadComfyModels = async (settings: ImageGenerationSettings, signal?: AbortSignal) => {
+  await freeComfyModels(getComfyBaseUrl(settings.comfyEndpoint), signal);
+};
+
+interface LmStudioModelEntry {
+  key?: string;
+  loaded_instances?: { id?: string }[];
+}
+
+interface LmStudioModelsResponse {
+  models?: LmStudioModelEntry[];
+}
+
+export const unloadLmStudioModels = async (settings: GenerationSettings, signal?: AbortSignal) => {
+  const baseUrl = getLmStudioBaseUrl(settings.lmStudioEndpoint);
+  const modelsResponse = await fetch(`${baseUrl}/api/v1/models`, { signal });
+  if (!modelsResponse.ok) {
+    throw new Error(`LM Studio не отдал список моделей: ${modelsResponse.status}`);
+  }
+
+  const data: LmStudioModelsResponse = await modelsResponse.json();
+  const instanceIds = (data.models ?? [])
+    .flatMap((model) => model.loaded_instances ?? [])
+    .map((instance) => instance.id)
+    .filter((id): id is string => Boolean(id));
+
+  await Promise.all(instanceIds.map(async (instanceId) => {
+    const response = await fetch(`${baseUrl}/api/v1/models/unload`, {
+      method: 'POST',
+      signal,
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ instance_id: instanceId }),
+    });
+    if (!response.ok) {
+      throw new Error(`LM Studio не выгрузил ${instanceId}: ${response.status}`);
+    }
+  }));
+
+  return instanceIds.length;
 };
 
 const generateComfyImage = async (
@@ -557,11 +606,7 @@ const generateComfyImage = async (
       throw new Error(getComfyError('ComfyUI не отдал готовое изображение', viewResponse, await readResponseDetails(viewResponse)));
     }
 
-    const blob = await viewResponse.blob();
-    if (settings.comfyUnloadModel) {
-      freeComfyModels(baseUrl).catch(() => undefined);
-    }
-    return URL.createObjectURL(blob);
+    return URL.createObjectURL(await viewResponse.blob());
   } catch (error) {
     if (error instanceof DOMException && error.name === 'AbortError') throw error;
     if (error instanceof TypeError) {
@@ -787,9 +832,6 @@ export const generateComfyFlux2ComposeImage = async (
   const baseUrl = getComfyBaseUrl(settings.comfyEndpoint);
   try {
     if (settings.provider !== 'comfyui') throw new Error('Flux2 compose работает только через ComfyUI.');
-    if (settings.comfyUnloadModel) {
-      await freeComfyModels(baseUrl, signal);
-    }
     const [backgroundImageName, characterImageName] = await Promise.all([
       uploadComfyInputImage(baseUrl, backgroundImageUrl, 'canva-story-bg', signal),
       uploadComfyInputImage(baseUrl, characterImageUrl, 'canva-story-ref', signal),
@@ -825,9 +867,6 @@ export const generateComfyFlux2ComposeImage = async (
     }
 
     const blob = await viewResponse.blob();
-    if (settings.comfyUnloadModel) {
-      freeComfyModels(baseUrl).catch(() => undefined);
-    }
     return URL.createObjectURL(blob);
   } catch (error) {
     if (error instanceof DOMException && error.name === 'AbortError') throw error;

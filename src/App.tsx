@@ -10,6 +10,8 @@ import {
   getDefaultImageGenerationSettings,
   LM_STUDIO_DEFAULT_ENDPOINT,
   LM_STUDIO_DEFAULT_MODEL,
+  unloadComfyModels,
+  unloadLmStudioModels,
 } from './api';
 import NodeRenderer from './components/NodeRenderer';
 import { useCanvasNavigation } from './hooks/useCanvasNavigation';
@@ -25,6 +27,7 @@ import {
   saveProject,
 } from './project';
 import { AppNotice, NodesState, ProjectDocument, ViewportState } from './types';
+import { errorMessage } from './utils';
 import './App.css';
 
 const GENERATION_SETTINGS_STORAGE_KEY = 'canva-story.generation-settings.v1';
@@ -81,9 +84,6 @@ const loadImageGenerationSettings = (): ImageGenerationSettings => {
       comfyCheckpoint: typeof parsed.comfyCheckpoint === 'string'
         ? parsed.comfyCheckpoint
         : COMFYUI_DEFAULT_CHECKPOINT,
-      comfyUnloadModel: typeof parsed.comfyUnloadModel === 'boolean'
-        ? parsed.comfyUnloadModel
-        : true,
     };
   } catch {
     return fallback;
@@ -120,6 +120,7 @@ const App = () => {
   const [projectTitle, setProjectTitle] = useState(bootstrap.project.title);
   const [projectNotice, setProjectNotice] = useState<AppNotice | null>(null);
   const [saveStatus, setSaveStatus] = useState<'saved' | 'saving' | 'error'>('saved');
+  const [isUnloadingModels, setIsUnloadingModels] = useState(false);
   const [generationSettings, setGenerationSettings] = useState<GenerationSettings>(loadGenerationSettings);
   const [imageGenerationSettings, setImageGenerationSettings] = useState<ImageGenerationSettings>(loadImageGenerationSettings);
   const [viewport, setViewport] = useState<ViewportState>(bootstrap.project.viewport);
@@ -389,9 +390,37 @@ const App = () => {
     setImageGenerationSettings((settings) => ({ ...settings, comfyCheckpoint: event.target.value }));
   }, []);
 
-  const handleComfyUnloadModelChange = useCallback((event: React.ChangeEvent<HTMLInputElement>) => {
-    setImageGenerationSettings((settings) => ({ ...settings, comfyUnloadModel: event.target.checked }));
-  }, []);
+  const handleUnloadLocalModels = useCallback(async () => {
+    if (isUnloadingModels) return;
+    setIsUnloadingModels(true);
+    const results: string[] = [];
+    const failures: string[] = [];
+
+    if (imageGenerationSettings.provider === 'comfyui') {
+      try {
+        await unloadComfyModels(imageGenerationSettings);
+        results.push('ComfyUI очищен');
+      } catch (error) {
+        failures.push(`ComfyUI: ${errorMessage(error)}`);
+      }
+    }
+
+    if (generationSettings.mode === 'lmstudio') {
+      try {
+        const count = await unloadLmStudioModels(generationSettings);
+        results.push(count > 0 ? `LM Studio: выгружено ${count}` : 'LM Studio: загруженных моделей нет');
+      } catch (error) {
+        failures.push(`LM Studio: ${errorMessage(error)}`);
+      }
+    }
+
+    if (results.length) showProjectNotice('success', results.join(' · '));
+    if (failures.length) showProjectNotice(results.length ? 'info' : 'error', failures.join(' · '));
+    if (!results.length && !failures.length) {
+      showProjectNotice('info', 'Выберите ComfyUI или LM Studio, чтобы выгрузить локальные модели.');
+    }
+    setIsUnloadingModels(false);
+  }, [generationSettings, imageGenerationSettings, isUnloadingModels, showProjectNotice]);
 
   const getConnectionPath = (parentId: string, childId: string) => {
     const parentNode = nodes[parentId];
@@ -524,14 +553,6 @@ const App = () => {
                   placeholder={COMFYUI_DEFAULT_CHECKPOINT}
                   aria-label="Checkpoint SDXL для ComfyUI"
                 />
-                <label className="generation-toggle">
-                  <input
-                    type="checkbox"
-                    checked={imageGenerationSettings.comfyUnloadModel}
-                    onChange={handleComfyUnloadModelChange}
-                  />
-                  <span>Выгружать</span>
-                </label>
               </>
             )}
           </div>
@@ -549,6 +570,9 @@ const App = () => {
         </div>
         <div className="project-actions" aria-label="Действия с проектом">
           <span className="node-count">{nodeEntries.length} нод</span>
+          <button type="button" onClick={handleUnloadLocalModels} disabled={isUnloadingModels}>
+            {isUnloadingModels ? 'Выгружаю…' : 'Выгрузить модели'}
+          </button>
           <button type="button" onClick={() => setPendingProjectAction('new')}>Новый</button>
           <button type="button" onClick={handleExport}>Экспорт</button>
           <button type="button" onClick={() => fileInputRef.current?.click()}>Импорт</button>

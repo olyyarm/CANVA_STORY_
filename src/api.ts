@@ -186,6 +186,8 @@ const getComfyBaseUrl = (value: string) => (value.trim() || COMFYUI_DEFAULT_ENDP
 const readResponseDetails = async (response: Response) => {
   try {
     const payload: unknown = await response.json();
+    const nodeDetails = getComfyNodeErrorDetails(payload);
+    if (nodeDetails) return nodeDetails;
     const message = getErrorMessage(payload);
     return message || JSON.stringify(payload);
   } catch {
@@ -195,6 +197,28 @@ const readResponseDetails = async (response: Response) => {
       return response.statusText;
     }
   }
+};
+
+const getComfyNodeErrorDetails = (value: unknown) => {
+  if (!value || typeof value !== 'object') return '';
+  const nodeErrors = (value as Record<string, unknown>).node_errors;
+  if (!nodeErrors || typeof nodeErrors !== 'object') return '';
+
+  const lines = Object.entries(nodeErrors as Record<string, unknown>).flatMap(([nodeId, nodeError]) => {
+    if (!nodeError || typeof nodeError !== 'object') return [];
+    const data = nodeError as Record<string, unknown>;
+    const classType = typeof data.class_type === 'string' ? data.class_type : 'node';
+    const errors = Array.isArray(data.errors) ? data.errors : [];
+    return errors.map((error) => {
+      if (!error || typeof error !== 'object') return `${classType} ${nodeId}: validation error`;
+      const details = error as Record<string, unknown>;
+      const message = typeof details.message === 'string' ? details.message : 'validation error';
+      const field = typeof details.details === 'string' ? ` (${details.details})` : '';
+      return `${classType} ${nodeId}: ${message}${field}`;
+    });
+  });
+
+  return lines.join('; ');
 };
 
 const getComfyError = (action: string, response: Response, details: string) =>
@@ -630,6 +654,7 @@ const buildComfyFlux2ComposeWorkflow = (
       inputs: {
         upscale_method: 'area',
         megapixels: 1,
+        resolution_steps: 1,
         image: ['42', 0],
       },
     },
@@ -658,6 +683,7 @@ const buildComfyFlux2ComposeWorkflow = (
       inputs: {
         upscale_method: 'area',
         megapixels: 1,
+        resolution_steps: 1,
         image: ['46', 0],
       },
     },

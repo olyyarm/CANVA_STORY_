@@ -802,7 +802,7 @@ export const useNodeManagement = (
         isLoadingImage: true,
         loadingProvider: 'comfyui',
         pollinationsApiError: undefined,
-        statusMessage: 'Flux2 собирает кадр из локации и референса...',
+        statusMessage: 'Flux2 собирает кадр из локации и референса. Это может занять 10-30 минут...',
       });
 
       const imageUrl = await generateComfyFlux2ComposeImage(

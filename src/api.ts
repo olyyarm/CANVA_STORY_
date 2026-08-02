@@ -9,6 +9,8 @@ export const COMFYUI_DEFAULT_CHECKPOINT = 'SDXL\\sd_xl_base_1.0.safetensors';
 const FLUX2_DIFFUSION_MODEL = 'flux2_dev_fp8mixed.safetensors';
 const FLUX2_TEXT_ENCODER = 'mistral_3_small_flux2_fp8.safetensors';
 const FLUX2_VAE = 'flux2-vae.safetensors';
+const COMFY_SDXL_TIMEOUT_MS = 4 * 60 * 1000;
+const COMFY_FLUX2_TIMEOUT_MS = 45 * 60 * 1000;
 
 export type GenerationMode = 'mock' | 'mistral' | 'lmstudio';
 export type ImageProvider = 'pollinations' | 'comfyui';
@@ -441,6 +443,11 @@ interface ComfyUploadResponse {
 
 interface ComfyHistoryEntry {
   outputs?: Record<string, { images?: ComfyImageRef[] }>;
+  status?: {
+    status_str?: string;
+    completed?: boolean;
+    messages?: unknown[];
+  };
 }
 
 const getImageFromComfyHistory = (value: unknown): ComfyImageRef | null => {
@@ -452,6 +459,49 @@ const getImageFromComfyHistory = (value: unknown): ComfyImageRef | null => {
       const image = output.images?.[0];
       if (image?.filename) return image;
     }
+  }
+  return null;
+};
+
+const getComfyExecutionFailure = (value: unknown) => {
+  if (!value || typeof value !== 'object') return '';
+  const entries = Object.values(value as Record<string, ComfyHistoryEntry>);
+  for (const entry of entries) {
+    if (entry.status?.status_str !== 'error') continue;
+    const messages = entry.status.messages ?? [];
+    const lastEvent = [...messages].reverse().find((message) => {
+      if (!Array.isArray(message)) return false;
+      return message[0] === 'execution_error' || message[0] === 'execution_interrupted';
+    });
+    if (!Array.isArray(lastEvent)) return 'ComfyUI остановил выполнение workflow.';
+    const eventType = String(lastEvent[0]);
+    const eventData = lastEvent[1] && typeof lastEvent[1] === 'object'
+      ? lastEvent[1] as Record<string, unknown>
+      : {};
+    const nodeType = typeof eventData.node_type === 'string' ? ` в ${eventData.node_type}` : '';
+    if (eventType === 'execution_interrupted') return `ComfyUI прервал выполнение workflow${nodeType}.`;
+    const exception = typeof eventData.exception_message === 'string' ? `: ${eventData.exception_message}` : '';
+    return `ComfyUI остановил workflow${nodeType}${exception}`;
+  }
+  return '';
+};
+
+const waitForComfyImage = async (
+  baseUrl: string,
+  promptId: string,
+  timeoutMs: number,
+  signal?: AbortSignal,
+) => {
+  const startedAt = Date.now();
+  while (Date.now() - startedAt < timeoutMs) {
+    await wait(1000, signal);
+    const historyResponse = await fetch(`${baseUrl}/history/${promptId}`, { signal });
+    if (!historyResponse.ok) continue;
+    const history: unknown = await historyResponse.json();
+    const image = getImageFromComfyHistory(history);
+    if (image) return image;
+    const failure = getComfyExecutionFailure(history);
+    if (failure) throw new Error(failure);
   }
   return null;
 };
@@ -484,14 +534,7 @@ const generateComfyImage = async (
     const promptData: ComfyPromptResponse = await promptResponse.json();
     if (!promptData.prompt_id) throw new Error('ComfyUI не вернул prompt_id. Проверьте workflow в консоли ComfyUI.');
 
-    let image: ComfyImageRef | null = null;
-    for (let attempt = 0; attempt < 240; attempt += 1) {
-      await wait(1000, signal);
-      const historyResponse = await fetch(`${baseUrl}/history/${promptData.prompt_id}`, { signal });
-      if (!historyResponse.ok) continue;
-      image = getImageFromComfyHistory(await historyResponse.json());
-      if (image) break;
-    }
+    const image = await waitForComfyImage(baseUrl, promptData.prompt_id, COMFY_SDXL_TIMEOUT_MS, signal);
     if (!image) throw new Error('ComfyUI не вернул изображение за отведённое время. Проверьте, не упал ли workflow в окне ComfyUI.');
 
     const params = new URLSearchParams({
@@ -743,15 +786,8 @@ export const generateComfyFlux2ComposeImage = async (
     const promptData: ComfyPromptResponse = await promptResponse.json();
     if (!promptData.prompt_id) throw new Error('ComfyUI не вернул prompt_id для Flux2 workflow.');
 
-    let image: ComfyImageRef | null = null;
-    for (let attempt = 0; attempt < 480; attempt += 1) {
-      await wait(1000, signal);
-      const historyResponse = await fetch(`${baseUrl}/history/${promptData.prompt_id}`, { signal });
-      if (!historyResponse.ok) continue;
-      image = getImageFromComfyHistory(await historyResponse.json());
-      if (image) break;
-    }
-    if (!image) throw new Error('Flux2 не вернул изображение за отведённое время. Проверьте окно ComfyUI.');
+    const image = await waitForComfyImage(baseUrl, promptData.prompt_id, COMFY_FLUX2_TIMEOUT_MS, signal);
+    if (!image) throw new Error('Flux2 не вернул изображение за 45 минут. ComfyUI может ещё считать кадр, проверьте его окно и output.');
 
     const params = new URLSearchParams({
       filename: image.filename,

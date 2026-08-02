@@ -21,6 +21,8 @@ interface NodeRendererProps {
   onGenerateSceneLocationAsset: (nodeId: string) => Promise<void>;
   onComposeSceneFlux2: (nodeId: string, pipeline?: Extract<ImagePipeline, 'flux2_compose' | 'flux2_turbo_compose'>) => Promise<void>;
   onGenerateDetailAsset: (nodeId: string) => Promise<void>;
+  onEditNarration: (nodeId: string) => Promise<void>;
+  onPrepareNarrationTts: (nodeId: string) => Promise<void>;
   onCopyToClipboard: (text: string) => void;
   onRegenerateImageNode: (nodeId: string) => Promise<void>;
   onToggleReferenceImage: (nodeId: string) => void;
@@ -57,6 +59,8 @@ const NodeRenderer: React.FC<NodeRendererProps> = ({
   onGenerateSceneLocationAsset,
   onComposeSceneFlux2,
   onGenerateDetailAsset,
+  onEditNarration,
+  onPrepareNarrationTts,
   onCopyToClipboard,
   onRegenerateImageNode,
   onToggleReferenceImage,
@@ -276,6 +280,31 @@ const NodeRenderer: React.FC<NodeRendererProps> = ({
               ? 'Отменить ассет'
               : `${node.label === 'Герои' ? `Сгенерировать ${detailRowCount || ''} героев`.replace('  ', ' ') : 'Сгенерировать локации'} · ${imageProvider === 'comfyui' ? 'ComfyUI' : 'Pollinations'}`}
           </button>
+        )}
+
+        {node.nodeType === 'script_detail' && node.label === 'Закадр' && (
+          <div className="node-segmented-actions node-segmented-actions--narration">
+            <button
+              type="button"
+              onMouseDown={stopMouseDown}
+              onClick={(event) => runWithoutDrag(event, () => isBusy
+                ? onCancelGeneration(id)
+                : void onEditNarration(id))}
+              disabled={node.isLoadingImage}
+            >
+              {node.isLoading ? 'Отменить' : 'Редактура'}
+            </button>
+            <button
+              type="button"
+              onMouseDown={stopMouseDown}
+              onClick={(event) => runWithoutDrag(event, () => isBusy
+                ? onCancelGeneration(id)
+                : void onPrepareNarrationTts(id))}
+              disabled={node.isLoadingImage}
+            >
+              {node.isLoading ? 'Отменить' : 'Подготовить TTS'}
+            </button>
+          </div>
         )}
 
         {node.nodeType === 'script_output' && (

@@ -141,6 +141,8 @@ const App = () => {
     handleGenerateSceneLocationAsset,
     handleComposeSceneFlux2,
     handleGenerateDetailAsset,
+    handleEditNarration,
+    handlePrepareNarrationTts,
     handleCopyToClipboard,
     handleRegenerateImageNode,
     handleToggleReferenceImage,
@@ -632,6 +634,8 @@ const App = () => {
               onGenerateSceneLocationAsset={handleGenerateSceneLocationAsset}
               onComposeSceneFlux2={handleComposeSceneFlux2}
               onGenerateDetailAsset={handleGenerateDetailAsset}
+              onEditNarration={handleEditNarration}
+              onPrepareNarrationTts={handlePrepareNarrationTts}
               onCopyToClipboard={handleCopyToClipboard}
               onRegenerateImageNode={handleRegenerateImageNode}
               onToggleReferenceImage={handleToggleReferenceImage}

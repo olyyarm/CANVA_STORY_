@@ -22,10 +22,12 @@ import {
   MISTRAL_MODELS,
   MOOD_DETAIL_SYSTEM_PROMPT,
   NARRATION_DETAIL_SYSTEM_PROMPT,
+  NARRATION_EDIT_SYSTEM_PROMPT,
   SCENARIO_SYSTEM_PROMPT,
   SCENE_CHARACTER_LAYER_PROMPT_SYSTEM_PROMPT,
   SCENE_LOCATION_PROMPT_SYSTEM_PROMPT,
   SCENE_MASTER_PROMPT_SYSTEM_PROMPT,
+  TTS_CLEANUP_SYSTEM_PROMPT,
 } from '../constants';
 import {
   AppNotice,
@@ -65,6 +67,8 @@ interface UseNodeManagementReturn {
   handleGenerateSceneCharacterLayer: (sceneNodeId: string) => Promise<void>;
   handleComposeSceneFlux2: (sceneNodeId: string, pipeline?: Extract<ImagePipeline, 'flux2_compose' | 'flux2_turbo_compose'>) => Promise<void>;
   handleGenerateDetailAsset: (detailNodeId: string) => Promise<void>;
+  handleEditNarration: (detailNodeId: string) => Promise<void>;
+  handlePrepareNarrationTts: (detailNodeId: string) => Promise<void>;
   handleCopyToClipboard: (textToCopy: string) => Promise<void>;
   handleGeneratePollinationsImage: (nodeId: string) => Promise<void>;
   handleRegenerateImageNode: (nodeId: string) => Promise<void>;
@@ -991,6 +995,97 @@ export const useNodeManagement = (
     }
   }, [generationSettings, imageGenerationSettings, setNodes, showNotice, updateNode, upsertImageNode]);
 
+  const handleEditNarration = useCallback(async (detailNodeId: string) => {
+    const detailNode = nodesRef.current[detailNodeId];
+    const narration = detailNode?.inputValue?.trim();
+    if (!detailNode || detailNode.nodeType !== 'script_detail' || detailNode.label !== 'Закадр' || detailNode.isLoading) return;
+    if (!narration) {
+      updateNode(detailNodeId, { error: 'Сначала сгенерируйте закадровый текст.' });
+      return;
+    }
+
+    const parentNode = detailNode.parentId ? nodesRef.current[detailNode.parentId] : undefined;
+    const prompt = [
+      `Сценарий:\n${parentNode?.inputValue || 'Не задано'}`,
+      `Текущий закадр:\n${narration}`,
+      'Задача: отредактируй закадр как смысловой двигатель истории.',
+    ].join('\n\n');
+    const result = await requestText(detailNodeId, {
+      operation: 'narration_edit',
+      prompt,
+      systemPrompt: NARRATION_EDIT_SYSTEM_PROMPT,
+      model: detailNode.selectedModel || parentNode?.selectedModel || MISTRAL_MODELS[0],
+      sceneCount: detailNode.sceneCount ?? parentNode?.sceneCount,
+    }, 'Редактируем закадр и усиливаем смысл...');
+    if (!result) return;
+
+    updateNode(detailNodeId, {
+      inputValue: result,
+      error: undefined,
+      statusMessage: 'Закадр отредактирован.',
+      metadata: {
+        ...detailNode.metadata,
+        editedAt: new Date().toISOString(),
+      },
+    });
+    showNotice('success', 'Закадр отредактирован.');
+  }, [requestText, showNotice, updateNode]);
+
+  const handlePrepareNarrationTts = useCallback(async (detailNodeId: string) => {
+    const detailNode = nodesRef.current[detailNodeId];
+    const narration = detailNode?.inputValue?.trim();
+    if (!detailNode || detailNode.nodeType !== 'script_detail' || detailNode.label !== 'Закадр' || detailNode.isLoading) return;
+    if (!narration) {
+      updateNode(detailNodeId, { error: 'Сначала сгенерируйте закадровый текст.' });
+      return;
+    }
+
+    const parentNode = detailNode.parentId ? nodesRef.current[detailNode.parentId] : undefined;
+    const result = await requestText(detailNodeId, {
+      operation: 'tts_cleanup',
+      prompt: narration,
+      systemPrompt: TTS_CLEANUP_SYSTEM_PROMPT,
+      model: detailNode.selectedModel || parentNode?.selectedModel || MISTRAL_MODELS[0],
+      sceneCount: detailNode.sceneCount ?? parentNode?.sceneCount,
+    }, 'Чистим закадр для TTS...');
+    if (!result) return;
+
+    setNodes((previousNodes) => {
+      const currentDetail = previousNodes[detailNodeId];
+      if (!currentDetail) return previousNodes;
+      const existing = getExistingChild(
+        previousNodes,
+        detailNodeId,
+        (node) => node.nodeType === 'script_detail' && node.label === 'TTS · Закадр',
+      );
+      const nodeId = existing?.[0] ?? generateNodeId();
+      return {
+        ...previousNodes,
+        [nodeId]: {
+          ...existing?.[1],
+          nodeType: 'script_detail',
+          x: existing?.[1].x ?? currentDetail.x + (currentDetail.width ?? 302) + 36,
+          y: existing?.[1].y ?? currentDetail.y,
+          label: 'TTS · Закадр',
+          width: existing?.[1].width ?? 360,
+          height: existing?.[1].height ?? 280,
+          isGenerated: true,
+          level: (currentDetail.level ?? 0) + 1,
+          parentId: detailNodeId,
+          inputValue: result,
+          error: undefined,
+          metadata: {
+            ...existing?.[1].metadata,
+            sourceKind: 'tts_cleanup',
+            sourceNodeId: detailNodeId,
+            cleanedAt: new Date().toISOString(),
+          },
+        },
+      };
+    });
+    showNotice('success', 'TTS-текст подготовлен.');
+  }, [requestText, setNodes, showNotice, updateNode]);
+
   const handleGeneratePollinationsImage = useCallback(async (parentNodeId: string) => {
     const parentNode = nodesRef.current[parentNodeId];
     if (!parentNode?.masterPrompt || parentNode.isLoadingImage) return;
@@ -1163,6 +1258,8 @@ export const useNodeManagement = (
     handleGenerateSceneCharacterLayer,
     handleComposeSceneFlux2,
     handleGenerateDetailAsset,
+    handleEditNarration,
+    handlePrepareNarrationTts,
     handleCopyToClipboard,
     handleGeneratePollinationsImage,
     handleRegenerateImageNode,

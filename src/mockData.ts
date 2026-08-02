@@ -88,6 +88,15 @@ const createNarration = (sceneCount: number) =>
     ].join(' '),
   ).join('\n');
 
+const cleanNarrationForTts = (text: string) =>
+  text
+    .replace(/Сцена\s+\d+\s*:\s*/giu, '')
+    .replace(/Закадровый текст\s*:\s*/giu, '')
+    .replace(/Смысловой акцент\s*:[^\n]*(?:\n|$)/giu, '\n\n')
+    .replace(/[ \t]+/g, ' ')
+    .replace(/\n{3,}/g, '\n\n')
+    .trim();
+
 const createScenePrompt = (request: GenerationRequest) => {
   const scene = request.sceneLabel || 'Scene';
   return `${scene}, cinematic visual storytelling, a clear subject performing the described action, grounded contemporary environment, expressive composition, medium-wide camera framing, subtle depth of field, soft directional dawn light, neutral charcoal and cool gray palette with one restrained amber accent, tactile realistic materials, coherent character and location details, quiet atmospheric tension, no text, no watermark`;
@@ -125,6 +134,10 @@ export const createMockCompletion = async (request: GenerationRequest, signal?: 
       return createMood(request.sceneCount ?? 4);
     case 'narration':
       return createNarration(request.sceneCount ?? 4);
+    case 'narration_edit':
+      return `${request.prompt}\n\nСцена ${request.sceneCount ?? 1}: Закадровый текст: Герой замечает не только новый мир, но и правило, по которому этот мир можно понять и изменить. Смысловой акцент: полезное знание становится действием и двигает конфликт.`;
+    case 'tts_cleanup':
+      return cleanNarrationForTts(request.prompt);
     case 'scene_prompt':
       return createScenePrompt(request);
     case 'scene_location_prompt':

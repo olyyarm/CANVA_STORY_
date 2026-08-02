@@ -706,6 +706,11 @@
   gap: 6px;
 }
 
+.node-segmented-actions--narration {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  margin-top: 8px;
+}
+
 .node-output {
   position: relative;
   display: flex;

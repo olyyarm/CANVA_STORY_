@@ -9,6 +9,7 @@ export const COMFYUI_DEFAULT_CHECKPOINT = 'SDXL\\sd_xl_base_1.0.safetensors';
 const FLUX2_DIFFUSION_MODEL = 'flux2_dev_fp8mixed.safetensors';
 const FLUX2_TEXT_ENCODER = 'mistral_3_small_flux2_fp8.safetensors';
 const FLUX2_VAE = 'flux2-vae.safetensors';
+const FLUX2_TURBO_LORA = 'Flux_2-Turbo-LoRA_comfyui.safetensors';
 const COMFY_SDXL_TIMEOUT_MS = 4 * 60 * 1000;
 const COMFY_FLUX2_TIMEOUT_MS = 45 * 60 * 1000;
 
@@ -597,8 +598,11 @@ const buildComfyFlux2ComposeWorkflow = (
   prompt: string,
   backgroundImageName: string,
   characterImageName: string,
+  pipeline: ImagePipeline,
 ) => {
   const seed = Math.floor(Math.random() * 1_000_000_000_000);
+  const isTurbo = pipeline === 'flux2_turbo_compose';
+  const steps = isTurbo ? 8 : 20;
   return {
     '6': {
       class_type: 'CLIPTextEncode',
@@ -653,7 +657,7 @@ const buildComfyFlux2ComposeWorkflow = (
     '22': {
       class_type: 'BasicGuider',
       inputs: {
-        model: ['12', 0],
+        model: [isTurbo ? '49' : '12', 0],
         conditioning: ['43', 0],
       },
     },
@@ -747,11 +751,23 @@ const buildComfyFlux2ComposeWorkflow = (
     '48': {
       class_type: 'Flux2Scheduler',
       inputs: {
-        steps: 20,
+        steps,
         width: 1024,
         height: 1024,
       },
     },
+    ...(isTurbo
+      ? {
+          '49': {
+            class_type: 'LoraLoaderModelOnly',
+            inputs: {
+              model: ['12', 0],
+              lora_name: FLUX2_TURBO_LORA,
+              strength_model: 1,
+            },
+          },
+        }
+      : {}),
   };
 };
 
@@ -759,6 +775,7 @@ export const generateComfyFlux2ComposeImage = async (
   prompt: string,
   backgroundImageUrl: string,
   characterImageUrl: string,
+  pipeline: Extract<ImagePipeline, 'flux2_compose' | 'flux2_turbo_compose'>,
   settings: ImageGenerationSettings,
   signal?: AbortSignal,
 ) => {
@@ -769,7 +786,7 @@ export const generateComfyFlux2ComposeImage = async (
       uploadComfyInputImage(baseUrl, backgroundImageUrl, 'canva-story-bg', signal),
       uploadComfyInputImage(baseUrl, characterImageUrl, 'canva-story-ref', signal),
     ]);
-    const workflow = buildComfyFlux2ComposeWorkflow(prompt, backgroundImageName, characterImageName);
+    const workflow = buildComfyFlux2ComposeWorkflow(prompt, backgroundImageName, characterImageName, pipeline);
     const clientId = typeof crypto.randomUUID === 'function'
       ? crypto.randomUUID()
       : `canva-story-flux2-${Date.now()}`;

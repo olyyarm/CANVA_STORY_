@@ -1,7 +1,7 @@
 import React from 'react';
 import { ImageProvider } from '../api';
 import { MISTRAL_MODELS } from '../constants';
-import { DetailType, NodeData } from '../types';
+import { DetailType, ImagePipeline, NodeData } from '../types';
 import { assetPath, getNodeIcon } from '../utils';
 
 interface NodeRendererProps {
@@ -20,7 +20,7 @@ interface NodeRendererProps {
   onCreateSceneNodes: (nodeId: string) => void;
   onGenerateSceneLocationAsset: (nodeId: string) => Promise<void>;
   onGenerateSceneCharacterLayer: (nodeId: string) => Promise<void>;
-  onComposeSceneFlux2: (nodeId: string) => Promise<void>;
+  onComposeSceneFlux2: (nodeId: string, pipeline?: Extract<ImagePipeline, 'flux2_compose' | 'flux2_turbo_compose'>) => Promise<void>;
   onGenerateDetailAsset: (nodeId: string) => Promise<void>;
   onCopyToClipboard: (text: string) => void;
   onRegenerateImageNode: (nodeId: string) => Promise<void>;
@@ -356,16 +356,28 @@ const NodeRenderer: React.FC<NodeRendererProps> = ({
               {isBusy ? 'Отменить персонажей' : `Сгенерировать героев сцены · ${imageProvider === 'comfyui' ? 'ComfyUI' : 'Pollinations'}`}
             </button>
             {imageProvider === 'comfyui' && (
-              <button
-                type="button"
-                className={`node-primary-button${isBusy ? ' node-primary-button--cancel' : ''}`}
-                onMouseDown={stopMouseDown}
-                onClick={(event) => runWithoutDrag(event, () => isBusy
-                  ? onCancelGeneration(id)
-                  : void onComposeSceneFlux2(id))}
-              >
-                {isBusy ? 'Отменить Flux2' : 'Собрать кадр Flux2'}
-              </button>
+              <>
+                <button
+                  type="button"
+                  className={`node-primary-button${isBusy ? ' node-primary-button--cancel' : ''}`}
+                  onMouseDown={stopMouseDown}
+                  onClick={(event) => runWithoutDrag(event, () => isBusy
+                    ? onCancelGeneration(id)
+                    : void onComposeSceneFlux2(id, 'flux2_compose'))}
+                >
+                  {isBusy ? 'Отменить Flux2' : 'Собрать кадр Flux2'}
+                </button>
+                <button
+                  type="button"
+                  className={`node-secondary-button${isBusy ? ' node-secondary-button--cancel' : ''}`}
+                  onMouseDown={stopMouseDown}
+                  onClick={(event) => runWithoutDrag(event, () => isBusy
+                    ? onCancelGeneration(id)
+                    : void onComposeSceneFlux2(id, 'flux2_turbo_compose'))}
+                >
+                  {isBusy ? 'Отменить Turbo' : 'Собрать кадр Flux2 Turbo'}
+                </button>
+              </>
             )}
           </>
         )}

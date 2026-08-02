@@ -31,6 +31,7 @@ import {
   DetailType,
   GenerationOperation,
   GenerationRequest,
+  ImagePipeline,
   ImagePromptKind,
   NodeData,
   NodesState,
@@ -61,7 +62,7 @@ interface UseNodeManagementReturn {
   handleGenerateScenePrompt: (sceneNodeId: string) => Promise<void>;
   handleGenerateSceneLocationAsset: (sceneNodeId: string) => Promise<void>;
   handleGenerateSceneCharacterLayer: (sceneNodeId: string) => Promise<void>;
-  handleComposeSceneFlux2: (sceneNodeId: string) => Promise<void>;
+  handleComposeSceneFlux2: (sceneNodeId: string, pipeline?: Extract<ImagePipeline, 'flux2_compose' | 'flux2_turbo_compose'>) => Promise<void>;
   handleGenerateDetailAsset: (detailNodeId: string) => Promise<void>;
   handleCopyToClipboard: (textToCopy: string) => Promise<void>;
   handleGeneratePollinationsImage: (nodeId: string) => Promise<void>;
@@ -750,7 +751,10 @@ export const useNodeManagement = (
     }
   }, [generationSettings, imageGenerationSettings, showNotice, updateNode, upsertImageNode]);
 
-  const handleComposeSceneFlux2 = useCallback(async (sceneNodeId: string) => {
+  const handleComposeSceneFlux2 = useCallback(async (
+    sceneNodeId: string,
+    pipeline: Extract<ImagePipeline, 'flux2_compose' | 'flux2_turbo_compose'> = 'flux2_compose',
+  ) => {
     const currentNodes = nodesRef.current;
     const sceneNode = currentNodes[sceneNodeId];
     if (!sceneNode || sceneNode.nodeType !== 'scene' || sceneNode.isLoading || sceneNode.isLoadingImage) return;
@@ -775,6 +779,7 @@ export const useNodeManagement = (
       return;
     }
 
+    const isTurbo = pipeline === 'flux2_turbo_compose';
     const requestId = `flux2-compose:${sceneNodeId}`;
     if (activeRequests.current.has(requestId)) return;
     const controller = new AbortController();
@@ -802,22 +807,25 @@ export const useNodeManagement = (
         isLoadingImage: true,
         loadingProvider: 'comfyui',
         pollinationsApiError: undefined,
-        statusMessage: 'Flux2 собирает кадр из локации и референса. Это может занять 10-30 минут...',
+        statusMessage: isTurbo
+          ? 'Flux2 Turbo собирает кадр на 8 шагах...'
+          : 'Flux2 собирает кадр из локации и референса. Это может занять 10-30 минут...',
       });
 
       const imageUrl = await generateComfyFlux2ComposeImage(
         composePrompt,
         locationNode.imageUrl,
         referenceNode.imageUrl,
+        pipeline,
         imageGenerationSettings,
         controller.signal,
       );
-      upsertImageNode(sceneNodeId, imageUrl, 'Кадр Flux2', 'scene_flux2_frame', 2, composePrompt, promptContext, {
+      upsertImageNode(sceneNodeId, imageUrl, isTurbo ? 'Кадр Flux2 Turbo' : 'Кадр Flux2', 'scene_flux2_frame', isTurbo ? 3 : 2, composePrompt, promptContext, {
         backgroundNodeId: Object.entries(currentNodes).find(([, node]) => node === locationNode)?.[0] ?? '',
         characterReferenceNodeId: Object.entries(currentNodes).find(([, node]) => node === referenceNode)?.[0] ?? '',
-        imagePipeline: 'flux2_compose',
+        imagePipeline: pipeline,
       });
-      showNotice('success', `Flux2 собрал кадр для «${sceneNode.label}».`);
+      showNotice('success', `${isTurbo ? 'Flux2 Turbo' : 'Flux2'} собрал кадр для «${sceneNode.label}».`);
     } catch (error) {
       if (isAbortError(error)) {
         showNotice('info', 'Сборка кадра Flux2 отменена.');
@@ -1043,10 +1051,12 @@ export const useNodeManagement = (
         if (!backgroundNode?.imageUrl || !characterNode?.imageUrl) {
           throw new Error('Не найдены исходная локация или персонаж для повторной сборки Flux2.');
         }
+        const composePipeline = node.imagePipeline === 'flux2_turbo_compose' ? 'flux2_turbo_compose' : 'flux2_compose';
         imageUrl = await generateComfyFlux2ComposeImage(
           prompt,
           backgroundNode.imageUrl,
           characterNode.imageUrl,
+          composePipeline,
           imageGenerationSettings,
           controller.signal,
         );
@@ -1076,7 +1086,9 @@ export const useNodeManagement = (
             metadata: {
               ...currentNode.metadata,
               imageProvider: imageGenerationSettings.provider,
-              imagePipeline: assetKind === 'scene_flux2_frame' ? 'flux2_compose' : currentNode.imagePipeline ?? 'sdxl',
+              imagePipeline: assetKind === 'scene_flux2_frame'
+                ? currentNode.imagePipeline === 'flux2_turbo_compose' ? 'flux2_turbo_compose' : 'flux2_compose'
+                : currentNode.imagePipeline ?? 'sdxl',
               rerolledAt: new Date().toISOString(),
             },
           },

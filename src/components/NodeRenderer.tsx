@@ -22,6 +22,7 @@ interface NodeRendererProps {
   onComposeSceneFlux2: (nodeId: string, pipeline?: Extract<ImagePipeline, 'flux2_compose' | 'flux2_turbo_compose'>) => Promise<void>;
   onGenerateDetailAsset: (nodeId: string) => Promise<void>;
   onEditNarration: (nodeId: string) => Promise<void>;
+  onNarrationEditorialLoop: (nodeId: string) => Promise<void>;
   onPrepareNarrationTts: (nodeId: string) => Promise<void>;
   onCopyToClipboard: (text: string) => void;
   onRegenerateImageNode: (nodeId: string) => Promise<void>;
@@ -60,6 +61,7 @@ const NodeRenderer: React.FC<NodeRendererProps> = ({
   onComposeSceneFlux2,
   onGenerateDetailAsset,
   onEditNarration,
+  onNarrationEditorialLoop,
   onPrepareNarrationTts,
   onCopyToClipboard,
   onRegenerateImageNode,
@@ -303,6 +305,16 @@ const NodeRenderer: React.FC<NodeRendererProps> = ({
               disabled={node.isLoadingImage}
             >
               {node.isLoading ? 'Отменить' : 'Подготовить TTS'}
+            </button>
+            <button
+              type="button"
+              onMouseDown={stopMouseDown}
+              onClick={(event) => runWithoutDrag(event, () => isBusy
+                ? onCancelGeneration(id)
+                : void onNarrationEditorialLoop(id))}
+              disabled={node.isLoadingImage}
+            >
+              {node.isLoading ? 'Отменить' : 'Редактура луп'}
             </button>
           </div>
         )}

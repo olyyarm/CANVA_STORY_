@@ -142,6 +142,7 @@ const App = () => {
     handleComposeSceneFlux2,
     handleGenerateDetailAsset,
     handleEditNarration,
+    handleNarrationEditorialLoop,
     handlePrepareNarrationTts,
     handleCopyToClipboard,
     handleRegenerateImageNode,
@@ -635,6 +636,7 @@ const App = () => {
               onComposeSceneFlux2={handleComposeSceneFlux2}
               onGenerateDetailAsset={handleGenerateDetailAsset}
               onEditNarration={handleEditNarration}
+              onNarrationEditorialLoop={handleNarrationEditorialLoop}
               onPrepareNarrationTts={handlePrepareNarrationTts}
               onCopyToClipboard={handleCopyToClipboard}
               onRegenerateImageNode={handleRegenerateImageNode}

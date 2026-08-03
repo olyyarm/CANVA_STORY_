@@ -115,6 +115,7 @@ export type GenerationOperation =
   | 'mood'
   | 'narration'
   | 'narration_edit'
+  | 'brief_revision'
   | 'tts_cleanup'
   | 'scene_prompt'
   | 'scene_location_prompt'

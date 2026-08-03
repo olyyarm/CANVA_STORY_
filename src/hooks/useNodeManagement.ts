@@ -27,6 +27,7 @@ import {
   SCENE_CHARACTER_LAYER_PROMPT_SYSTEM_PROMPT,
   SCENE_LOCATION_PROMPT_SYSTEM_PROMPT,
   SCENE_MASTER_PROMPT_SYSTEM_PROMPT,
+  STORY_BRIEF_REVISION_SYSTEM_PROMPT,
   TTS_CLEANUP_SYSTEM_PROMPT,
 } from '../constants';
 import {
@@ -68,6 +69,7 @@ interface UseNodeManagementReturn {
   handleComposeSceneFlux2: (sceneNodeId: string, pipeline?: Extract<ImagePipeline, 'flux2_compose' | 'flux2_turbo_compose'>) => Promise<void>;
   handleGenerateDetailAsset: (detailNodeId: string) => Promise<void>;
   handleEditNarration: (detailNodeId: string) => Promise<void>;
+  handleNarrationEditorialLoop: (detailNodeId: string) => Promise<void>;
   handlePrepareNarrationTts: (detailNodeId: string) => Promise<void>;
   handleCopyToClipboard: (textToCopy: string) => Promise<void>;
   handleGeneratePollinationsImage: (nodeId: string) => Promise<void>;
@@ -1031,6 +1033,125 @@ export const useNodeManagement = (
     showNotice('success', 'Закадр отредактирован.');
   }, [requestText, showNotice, updateNode]);
 
+  const handleNarrationEditorialLoop = useCallback(async (detailNodeId: string) => {
+    const detailNode = nodesRef.current[detailNodeId];
+    const narration = detailNode?.inputValue?.trim();
+    const outputNode = detailNode?.parentId ? nodesRef.current[detailNode.parentId] : undefined;
+    const sourceNode = outputNode?.parentId ? nodesRef.current[outputNode.parentId] : undefined;
+    if (
+      !detailNode
+      || detailNode.nodeType !== 'script_detail'
+      || detailNode.label !== 'Закадр'
+      || detailNode.isLoading
+      || !outputNode
+      || outputNode.nodeType !== 'script_output'
+      || !sourceNode
+    ) return;
+    if (!narration) {
+      updateNode(detailNodeId, { error: 'Сначала сгенерируйте закадровый текст.' });
+      return;
+    }
+
+    const sourceNodeId = outputNode.parentId ?? '';
+    const sceneCount = clampSceneCount(outputNode.sceneCount ?? sourceNode.sceneCount ?? detailNode.sceneCount ?? 4);
+    const model = detailNode.selectedModel || outputNode.selectedModel || sourceNode.selectedModel || MISTRAL_MODELS[0];
+    const briefPrompt = [
+      `Исходная короткая заявка:\n${sourceNode.inputValue || 'Не задано'}`,
+      `Текущий сценарий:\n${outputNode.inputValue || 'Не задано'}`,
+      `Сильные идеи из закадра:\n${narration}`,
+      'Задача: собери расширенную заявку для следующего прохода.',
+    ].join('\n\n');
+
+    const revisedBrief = await requestText(detailNodeId, {
+      operation: 'brief_revision',
+      prompt: briefPrompt,
+      systemPrompt: STORY_BRIEF_REVISION_SYSTEM_PROMPT,
+      model,
+      sceneCount,
+    }, 'Редактура луп: поднимаем сильные идеи в заявку...');
+    if (!revisedBrief) return;
+
+    const theme = sourceNode.themeInputValue?.trim();
+    const scenarioSystemPrompt = theme
+      ? `${SCENARIO_SYSTEM_PROMPT}\nСтилистическое направление: ${theme}.`
+      : SCENARIO_SYSTEM_PROMPT;
+    const revisedScenario = await requestText(detailNodeId, {
+      operation: 'scenario',
+      prompt: revisedBrief,
+      systemPrompt: scenarioSystemPrompt,
+      model,
+      sceneCount,
+    }, `Редактура луп: пересобираем ${sceneCount} сцен...`);
+    if (!revisedScenario) return;
+
+    const revisedNarration = await requestText(detailNodeId, {
+      operation: 'narration',
+      prompt: revisedScenario,
+      systemPrompt: NARRATION_DETAIL_SYSTEM_PROMPT,
+      model,
+      sceneCount,
+    }, 'Редактура луп: пересобираем закадр...');
+    if (!revisedNarration) return;
+
+    setNodes((previousNodes) => {
+      let nextNodes = upsertScenarioGraph(previousNodes, sourceNodeId, revisedScenario, sceneCount);
+      const currentOutput = nextNodes[detailNode.parentId ?? ''];
+      const currentDetail = nextNodes[detailNodeId];
+      if (!currentOutput || !currentDetail) return nextNodes;
+      const sceneIds = new Set(Object.entries(nextNodes)
+        .filter(([, node]) => node.parentId === detailNode.parentId && node.nodeType === 'scene')
+        .map(([nodeId]) => nodeId));
+      nextNodes = { ...nextNodes };
+      Object.entries(nextNodes).forEach(([nodeId, node]) => {
+        if (node.nodeType === 'pollinations_image' && node.parentId && sceneIds.has(node.parentId)) {
+          if (node.imageUrl?.startsWith('blob:')) URL.revokeObjectURL(node.imageUrl);
+          delete nextNodes[nodeId];
+        }
+      });
+      const existingBrief = getExistingChild(
+        nextNodes,
+        currentOutput.parentId ?? '',
+        (node) => node.nodeType === 'script_detail' && node.label === 'Заявка · редактура',
+      );
+      const briefNodeId = existingBrief?.[0] ?? generateNodeId();
+      nextNodes = {
+        ...nextNodes,
+        [detailNodeId]: {
+          ...currentDetail,
+          inputValue: revisedNarration,
+          error: undefined,
+          statusMessage: 'Редакторский луп завершён.',
+          metadata: {
+            ...currentDetail.metadata,
+            editorialLoopAt: new Date().toISOString(),
+          },
+        },
+        [briefNodeId]: {
+          ...existingBrief?.[1],
+          nodeType: 'script_detail',
+          x: existingBrief?.[1].x ?? currentDetail.x,
+          y: existingBrief?.[1].y ?? currentDetail.y + (currentDetail.height ?? 280) + 36,
+          label: 'Заявка · редактура',
+          width: existingBrief?.[1].width ?? 420,
+          height: existingBrief?.[1].height ?? 280,
+          isGenerated: true,
+          level: (currentDetail.level ?? 0) + 1,
+          parentId: sourceNodeId,
+          inputValue: revisedBrief,
+          error: undefined,
+          metadata: {
+            ...existingBrief?.[1].metadata,
+            sourceKind: 'brief_revision',
+            sourceNarrationNodeId: detailNodeId,
+            revisedAt: new Date().toISOString(),
+          },
+        },
+      };
+      return nextNodes;
+    });
+    showNotice('success', 'Редакторский луп завершён: заявка, сценарий и закадр обновлены.');
+  }, [requestText, setNodes, showNotice, updateNode]);
+
   const handlePrepareNarrationTts = useCallback(async (detailNodeId: string) => {
     const detailNode = nodesRef.current[detailNodeId];
     const narration = detailNode?.inputValue?.trim();
@@ -1259,6 +1380,7 @@ export const useNodeManagement = (
     handleComposeSceneFlux2,
     handleGenerateDetailAsset,
     handleEditNarration,
+    handleNarrationEditorialLoop,
     handlePrepareNarrationTts,
     handleCopyToClipboard,
     handleGeneratePollinationsImage,

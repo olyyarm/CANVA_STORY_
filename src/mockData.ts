@@ -97,6 +97,14 @@ const cleanNarrationForTts = (text: string) =>
     .replace(/\n{3,}/g, '\n\n')
     .trim();
 
+const createBriefRevision = (request: GenerationRequest) =>
+  [
+    'Манхва о регрессоре-брокере, который попадает в фэнтези-мир и превращает торговлю в способ менять устройство континента.',
+    'Герой использует навыки анализа рынка, оценки риска и построения доверия, чтобы видеть в магических товарах не экзотику, а систему связей, ресурсов и власти.',
+    'Полезная фактура встроена в сюжет через сделки, наблюдения и последствия: каждое знание становится преимуществом, конфликтом или моральным выбором.',
+    `Будущая глава рассчитана на ${request.sceneCount ?? 4} сцен: пробуждение, знакомство с рынком, первая аналитическая находка, первая сделка, расширение влияния и намёк на большую стратегию.`,
+  ].join(' ');
+
 const createScenePrompt = (request: GenerationRequest) => {
   const scene = request.sceneLabel || 'Scene';
   return `${scene}, cinematic visual storytelling, a clear subject performing the described action, grounded contemporary environment, expressive composition, medium-wide camera framing, subtle depth of field, soft directional dawn light, neutral charcoal and cool gray palette with one restrained amber accent, tactile realistic materials, coherent character and location details, quiet atmospheric tension, no text, no watermark`;
@@ -136,6 +144,8 @@ export const createMockCompletion = async (request: GenerationRequest, signal?: 
       return createNarration(request.sceneCount ?? 4);
     case 'narration_edit':
       return `${request.prompt}\n\nСцена ${request.sceneCount ?? 1}: Закадровый текст: Герой замечает не только новый мир, но и правило, по которому этот мир можно понять и изменить. Смысловой акцент: полезное знание становится действием и двигает конфликт.`;
+    case 'brief_revision':
+      return createBriefRevision(request);
     case 'tts_cleanup':
       return cleanNarrationForTts(request.prompt);
     case 'scene_prompt':

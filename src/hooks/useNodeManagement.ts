@@ -142,6 +142,10 @@ const buildChapterPrompt = (material: string, nodes: NodesState) =>
     'Задача: собрать главу как последовательный сценарий сцен. Используй материал главы как главный источник, а базы проекта и сезонную память как контекст.',
   ].join('\n\n'), nodes);
 
+const isEditorialReviewText = (text: string) =>
+  /^(отлично|хорошо|замечательно|прекрасно|резюме получилось|получилось)/iu.test(text.trim())
+  || /(понравил[оа]сь|сильный момент|очень информативн|структурированн|учитывающ|полезно для дальнейшего)/iu.test(text);
+
 const upsertScriptDetailNode = (
   previousNodes: NodesState,
   parentId: string,
@@ -768,13 +772,14 @@ export const useNodeManagement = (
     }
 
     const chapterSummaryPrompt = withStoryReferenceContext([
+      'Ниже входные материалы готовой главы. Не оценивай их качество и не комментируй, хорошо ли они написаны. Извлеки только факты истории для сезонной памяти.',
       `Материал главы:\n${material}`,
       `Сценарий главы:\n${scenario}`,
       ...detailResults.map((detail) => `${detail.label}:\n${detail.text}`),
-      'Задача: сделать резюме этой главы для будущих глав.',
+      'Выход: заполни шаблон резюме из system prompt. Начни строго со строки "Глава:".',
     ].join('\n\n'), nodesRef.current);
     setChapterAutoStatus('Автосборка: делаем резюме главы...');
-    const chapterSummary = await requestText(outputNodeId, {
+    let chapterSummary = await requestText(outputNodeId, {
       operation: 'chapter_summary',
       prompt: chapterSummaryPrompt,
       systemPrompt: CHAPTER_SUMMARY_SYSTEM_PROMPT,
@@ -784,6 +789,26 @@ export const useNodeManagement = (
     if (!chapterSummary) {
       updateNode(chapterMaterialNodeId, { error: 'Автосборка остановилась на резюме главы.' });
       return;
+    }
+    if (isEditorialReviewText(chapterSummary)) {
+      setChapterAutoStatus('Резюме похоже на комментарий редактора. Переписываем в память главы...');
+      const repairedSummary = await requestText(outputNodeId, {
+        operation: 'chapter_summary',
+        prompt: [
+          'Предыдущий ответ ошибочный: он оценивал качество текста вместо резюме главы.',
+          `Ошибочный ответ:\n${chapterSummary}`,
+          'Перепиши заново. Не используй ни одной фразы похвалы или оценки. Начни строго со строки "Глава:".',
+          chapterSummaryPrompt,
+        ].join('\n\n'),
+        systemPrompt: CHAPTER_SUMMARY_SYSTEM_PROMPT,
+        model,
+        sceneCount,
+      }, 'Автосборка: переписываем резюме главы...', true);
+      if (!repairedSummary || isEditorialReviewText(repairedSummary)) {
+        updateNode(chapterMaterialNodeId, { error: 'Модель снова вернула комментарий вместо резюме. Попробуйте другую модель или перезапустите автосборку.' });
+        return;
+      }
+      chapterSummary = repairedSummary;
     }
 
     setNodes((previousNodes) => upsertScriptDetailNode(previousNodes, outputNodeId, 'Резюме главы', chapterSummary, {

@@ -303,8 +303,9 @@ export const useNodeManagement = (
     nodeId: string,
     request: GenerationRequest,
     statusMessage: string,
+    continueLoading = false,
   ) => {
-    if (activeRequests.current.has(nodeId) || nodesRef.current[nodeId]?.isLoading) return null;
+    if (activeRequests.current.has(nodeId) || (!continueLoading && nodesRef.current[nodeId]?.isLoading)) return null;
     const controller = new AbortController();
     activeRequests.current.set(nodeId, controller);
     updateNode(nodeId, {
@@ -1081,7 +1082,7 @@ export const useNodeManagement = (
       systemPrompt: scenarioSystemPrompt,
       model,
       sceneCount,
-    }, `Редактура луп: пересобираем ${sceneCount} сцен...`);
+    }, `Редактура луп: пересобираем ${sceneCount} сцен...`, true);
     if (!revisedScenario) return;
 
     const revisedNarration = await requestText(detailNodeId, {
@@ -1090,7 +1091,7 @@ export const useNodeManagement = (
       systemPrompt: NARRATION_DETAIL_SYSTEM_PROMPT,
       model,
       sceneCount,
-    }, 'Редактура луп: пересобираем закадр...');
+    }, 'Редактура луп: пересобираем закадр...', true);
     if (!revisedNarration) return;
 
     setNodes((previousNodes) => {

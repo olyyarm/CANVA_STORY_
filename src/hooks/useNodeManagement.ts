@@ -277,6 +277,7 @@ const upsertScenarioGraph = (
   sourceNodeId: string,
   generatedContent: string,
   requestedSceneCount: number,
+  preferredOutputNodeId?: string,
 ) => {
   const sourceNode = previousNodes[sourceNodeId];
   if (!sourceNode) return previousNodes;
@@ -286,7 +287,7 @@ const upsertScenarioGraph = (
     sourceNodeId,
     (node) => node.nodeType === 'script_output',
   );
-  const outputNodeId = existingOutput?.[0] ?? generateNodeId();
+  const outputNodeId = existingOutput?.[0] ?? preferredOutputNodeId ?? generateNodeId();
   const existingOutputNode = existingOutput?.[1];
   const outputNode: NodeData = {
     nodeType: 'script_output',
@@ -687,6 +688,7 @@ export const useNodeManagement = (
       return;
     }
 
+    showNotice('info', 'Автосборка главы запущена.');
     const sceneCount = clampSceneCount(materialNode.sceneCount ?? 8);
     const model = materialNode.selectedModel || MISTRAL_MODELS[0];
     const scenario = await requestText(chapterMaterialNodeId, {
@@ -698,17 +700,19 @@ export const useNodeManagement = (
     }, `Автосборка: пишем ${sceneCount} сцен главы...`);
     if (!scenario) return;
 
-    setNodes((previousNodes) => upsertScenarioGraph(previousNodes, chapterMaterialNodeId, scenario, sceneCount));
-    const outputEntry = getExistingChild(
+    const existingOutputEntry = getExistingChild(
       nodesRef.current,
       chapterMaterialNodeId,
       (node) => node.nodeType === 'script_output',
     );
-    const outputNodeId = outputEntry?.[0];
-    if (!outputNodeId) {
-      updateNode(chapterMaterialNodeId, { error: 'Сценарий создан, но не удалось найти ноду сценария для продолжения.' });
-      return;
-    }
+    const outputNodeId = existingOutputEntry?.[0] ?? generateNodeId();
+    setNodes((previousNodes) => upsertScenarioGraph(
+      previousNodes,
+      chapterMaterialNodeId,
+      scenario,
+      sceneCount,
+      outputNodeId,
+    ));
 
     const detailResults: Array<{ label: string; text: string }> = [];
     for (const config of Object.values(detailConfig)) {

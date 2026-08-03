@@ -359,7 +359,7 @@ const NodeRenderer: React.FC<NodeRendererProps> = ({
                 ? onCancelGeneration(id)
                 : onCreateSceneNodes(id))}
             >
-              {node.isLoading ? 'Отменить генерацию' : 'Синхронизировать сцены'}
+              {node.isLoading ? 'Отменить генерацию' : 'Создать/обновить сцены'}
             </button>
           </div>
         )}

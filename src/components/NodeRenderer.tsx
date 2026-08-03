@@ -105,6 +105,7 @@ const NodeRenderer: React.FC<NodeRendererProps> = ({
         : node.loadingProvider === 'mock'
           ? 'Собираем тестовый ответ...'
           : 'Генерация идёт...';
+  const visibleStatusMessage = node.statusMessage?.trim();
   const imagePrompt = node.nodeType === 'pollinations_image' ? node.masterPrompt?.trim() ?? '' : '';
   const promptContext = node.nodeType === 'pollinations_image' && typeof node.metadata?.promptContext === 'string'
     ? node.metadata.promptContext.trim()
@@ -180,9 +181,10 @@ const NodeRenderer: React.FC<NodeRendererProps> = ({
         {isBusy && (
           <div className="node-loading-message" role="status" aria-live="polite">
             <span className="node-loading-spinner" aria-hidden="true" />
-            <span>{loadingLabel}</span>
+            <span>{visibleStatusMessage || loadingLabel}</span>
           </div>
         )}
+        {!isBusy && visibleStatusMessage && <div className="node-message">{visibleStatusMessage}</div>}
 
         {node.nodeType === 'text' && node.hasInput && (
           <>

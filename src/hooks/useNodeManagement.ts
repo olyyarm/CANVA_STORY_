@@ -400,7 +400,18 @@ export const useNodeManagement = (
     statusMessage: string,
     continueLoading = false,
   ) => {
-    if (activeRequests.current.has(nodeId) || (!continueLoading && nodesRef.current[nodeId]?.isLoading)) return null;
+    if (activeRequests.current.has(nodeId)) {
+      const message = 'По этой ноде уже есть активный запрос. Дождитесь ответа или нажмите отмену.';
+      updateNode(nodeId, { error: message, statusMessage: undefined });
+      showNotice('info', message);
+      return null;
+    }
+    if (!continueLoading && nodesRef.current[nodeId]?.isLoading) {
+      const message = 'Нода ещё помечена как занятая предыдущим запросом. Нажмите отмену и попробуйте снова.';
+      updateNode(nodeId, { error: message, statusMessage: undefined });
+      showNotice('info', message);
+      return null;
+    }
     const controller = new AbortController();
     activeRequests.current.set(nodeId, controller);
     updateNode(nodeId, {
@@ -677,17 +688,31 @@ export const useNodeManagement = (
   const handleAutoBuildChapter = useCallback(async (chapterMaterialNodeId: string) => {
     const materialNode = nodesRef.current[chapterMaterialNodeId];
     const material = materialNode?.inputValue?.trim();
-    if (
-      !materialNode
-      || materialNode.nodeType !== 'script_detail'
-      || getSourceKind(materialNode) !== 'chapter_material'
-      || materialNode.isLoading
-    ) return;
+    if (!materialNode) {
+      showNotice('error', 'Не удалось найти ноду материала главы.');
+      return;
+    }
+    if (materialNode.nodeType !== 'script_detail' || getSourceKind(materialNode) !== 'chapter_material') {
+      const message = 'Эта кнопка может запускать автосборку только из ноды «Материал главы».';
+      updateNode(chapterMaterialNodeId, { error: message });
+      showNotice('error', message);
+      return;
+    }
+    if (materialNode.isLoading) {
+      const message = 'Автосборка для этой ноды уже идёт. Если это старый зависший запуск, нажмите отмену.';
+      updateNode(chapterMaterialNodeId, { error: message });
+      showNotice('info', message);
+      return;
+    }
     if (!material) {
       updateNode(chapterMaterialNodeId, { error: 'Вставьте материал главы перед автосборкой.' });
       return;
     }
 
+    updateNode(chapterMaterialNodeId, {
+      error: undefined,
+      statusMessage: 'Клик получен. Запускаем автосборку главы...',
+    });
     showNotice('info', 'Автосборка главы запущена.');
     const sceneCount = clampSceneCount(materialNode.sceneCount ?? 8);
     const model = materialNode.selectedModel || MISTRAL_MODELS[0];
@@ -1701,7 +1726,14 @@ export const useNodeManagement = (
     activeRequests.current.get(`scene-location:${nodeId}`)?.abort();
     activeRequests.current.get(`scene-characters:${nodeId}`)?.abort();
     activeRequests.current.get(`detail-asset:${nodeId}`)?.abort();
-  }, []);
+    updateNode(nodeId, {
+      isLoading: false,
+      isLoadingImage: false,
+      loadingProvider: undefined,
+      statusMessage: undefined,
+    });
+    showNotice('info', 'Загрузка для ноды сброшена.');
+  }, [showNotice, updateNode]);
 
   return {
     nodes,

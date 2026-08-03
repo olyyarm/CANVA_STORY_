@@ -714,6 +714,10 @@ export const useNodeManagement = (
       statusMessage: 'Клик получен. Запускаем автосборку главы...',
     });
     showNotice('info', 'Автосборка главы запущена.');
+    const setChapterAutoStatus = (statusMessage: string) => {
+      updateNode(chapterMaterialNodeId, { error: undefined, statusMessage });
+      showNotice('info', statusMessage);
+    };
     const sceneCount = clampSceneCount(materialNode.sceneCount ?? 8);
     const model = materialNode.selectedModel || MISTRAL_MODELS[0];
     const scenario = await requestText(chapterMaterialNodeId, {
@@ -723,8 +727,12 @@ export const useNodeManagement = (
       model,
       sceneCount,
     }, `Автосборка: пишем ${sceneCount} сцен главы...`);
-    if (!scenario) return;
+    if (!scenario) {
+      updateNode(chapterMaterialNodeId, { error: 'Автосборка остановилась на создании сценария.' });
+      return;
+    }
 
+    setChapterAutoStatus('Сценарий главы создан. Создаём ноды сцен и готовим детали...');
     const existingOutputEntry = getExistingChild(
       nodesRef.current,
       chapterMaterialNodeId,
@@ -741,6 +749,7 @@ export const useNodeManagement = (
 
     const detailResults: Array<{ label: string; text: string }> = [];
     for (const config of Object.values(detailConfig)) {
+      setChapterAutoStatus(`Автосборка: готовим «${config.label}»...`);
       const detailText = await requestText(outputNodeId, {
         operation: config.operation,
         prompt: withStoryReferenceContext(scenario, nodesRef.current),
@@ -748,7 +757,10 @@ export const useNodeManagement = (
         model,
         sceneCount,
       }, `Автосборка: готовим «${config.label}»...`, true);
-      if (!detailText) return;
+      if (!detailText) {
+        updateNode(chapterMaterialNodeId, { error: `Автосборка остановилась на разделе «${config.label}».` });
+        return;
+      }
       detailResults.push({ label: config.label, text: detailText });
       setNodes((previousNodes) => upsertScriptDetailNode(previousNodes, outputNodeId, config.label, detailText, {
         column: config.column,
@@ -761,6 +773,7 @@ export const useNodeManagement = (
       ...detailResults.map((detail) => `${detail.label}:\n${detail.text}`),
       'Задача: сделать резюме этой главы для будущих глав.',
     ].join('\n\n'), nodesRef.current);
+    setChapterAutoStatus('Автосборка: делаем резюме главы...');
     const chapterSummary = await requestText(outputNodeId, {
       operation: 'chapter_summary',
       prompt: chapterSummaryPrompt,
@@ -768,7 +781,10 @@ export const useNodeManagement = (
       model,
       sceneCount,
     }, 'Автосборка: делаем резюме главы...', true);
-    if (!chapterSummary) return;
+    if (!chapterSummary) {
+      updateNode(chapterMaterialNodeId, { error: 'Автосборка остановилась на резюме главы.' });
+      return;
+    }
 
     setNodes((previousNodes) => upsertScriptDetailNode(previousNodes, outputNodeId, 'Резюме главы', chapterSummary, {
       column: 4,
@@ -781,6 +797,7 @@ export const useNodeManagement = (
 
     const seasonMemoryEntry = findNodeBySourceKind(nodesRef.current, 'season_memory');
     const oldSeasonMemory = seasonMemoryEntry?.[1].inputValue?.trim() || DEFAULT_SEASON_MEMORY;
+    setChapterAutoStatus('Автосборка: обновляем сезонную память...');
     const updatedSeasonMemory = await requestText(outputNodeId, {
       operation: 'season_memory_update',
       prompt: [
@@ -792,7 +809,10 @@ export const useNodeManagement = (
       model,
       sceneCount,
     }, 'Автосборка: обновляем сезонную память...', true);
-    if (!updatedSeasonMemory) return;
+    if (!updatedSeasonMemory) {
+      updateNode(chapterMaterialNodeId, { error: 'Автосборка остановилась на обновлении сезонной памяти.' });
+      return;
+    }
 
     setNodes((previousNodes) => {
       const existing = findNodeBySourceKind(previousNodes, 'season_memory');
@@ -829,6 +849,10 @@ export const useNodeManagement = (
       };
     });
 
+    updateNode(chapterMaterialNodeId, {
+      error: undefined,
+      statusMessage: 'Автосборка завершена: сценарий, детали, закадр, резюме и сезонная память готовы.',
+    });
     showNotice('success', 'Глава собрана: сценарий, детали, закадр, резюме и сезонная память готовы.');
   }, [requestText, setNodes, showNotice, updateNode]);
 

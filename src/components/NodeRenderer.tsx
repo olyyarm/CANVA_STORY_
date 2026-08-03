@@ -16,6 +16,7 @@ interface NodeRendererProps {
   onSceneCountChange: (event: React.ChangeEvent<HTMLInputElement>, nodeId: string) => void;
   onContinueAssociation: (nodeId: string) => void;
   onScriptVisualize: (nodeId: string) => void;
+  onBuildScenarioFromBrief: (nodeId: string) => Promise<void>;
   onScenarioDetailClick: (nodeId: string, detailType: DetailType) => void;
   onCreateSceneNodes: (nodeId: string) => void;
   onGenerateSceneLocationAsset: (nodeId: string) => Promise<void>;
@@ -55,6 +56,7 @@ const NodeRenderer: React.FC<NodeRendererProps> = ({
   onSceneCountChange,
   onContinueAssociation,
   onScriptVisualize,
+  onBuildScenarioFromBrief,
   onScenarioDetailClick,
   onCreateSceneNodes,
   onGenerateSceneLocationAsset,
@@ -79,6 +81,7 @@ const NodeRenderer: React.FC<NodeRendererProps> = ({
   };
   const isTextOutput = node.nodeType === 'script_output' || node.nodeType === 'script_detail';
   const canGenerateDetailAsset = node.nodeType === 'script_detail' && (node.label === 'Герои' || node.label === 'Локации');
+  const canBuildScenarioFromBrief = node.nodeType === 'script_detail' && node.metadata?.sourceKind === 'brief_revision';
   const detailRowCount = countDetailRows(node.inputValue);
   const isBusy = Boolean(node.isLoading || node.isLoadingImage);
   const loadingLabel = node.isLoadingImage
@@ -281,6 +284,20 @@ const NodeRenderer: React.FC<NodeRendererProps> = ({
             {isBusy
               ? 'Отменить ассет'
               : `${node.label === 'Герои' ? `Сгенерировать ${detailRowCount || ''} героев`.replace('  ', ' ') : 'Сгенерировать локации'} · ${imageProvider === 'comfyui' ? 'ComfyUI' : 'Pollinations'}`}
+          </button>
+        )}
+
+        {canBuildScenarioFromBrief && (
+          <button
+            type="button"
+            className={`node-primary-button${node.isLoading ? ' node-primary-button--cancel' : ''}`}
+            onMouseDown={stopMouseDown}
+            onClick={(event) => runWithoutDrag(event, () => node.isLoading
+              ? onCancelGeneration(id)
+              : void onBuildScenarioFromBrief(id))}
+            disabled={node.isLoadingImage}
+          >
+            {node.isLoading ? 'Отменить генерацию' : 'Собрать сценарий'}
           </button>
         )}
 

@@ -136,6 +136,7 @@ const App = () => {
     handleSceneCountChange,
     handleContinueAssociation,
     handleScriptVisualization,
+    handleBuildScenarioFromBrief,
     handleScenarioDetailClick,
     handleCreateSceneNodes,
     handleGenerateSceneLocationAsset,
@@ -630,6 +631,7 @@ const App = () => {
               onSceneCountChange={handleSceneCountChange}
               onContinueAssociation={handleContinueAssociation}
               onScriptVisualize={handleScriptVisualization}
+              onBuildScenarioFromBrief={handleBuildScenarioFromBrief}
               onScenarioDetailClick={handleScenarioDetailClick}
               onCreateSceneNodes={handleCreateSceneNodes}
               onGenerateSceneLocationAsset={handleGenerateSceneLocationAsset}

@@ -61,6 +61,7 @@ interface UseNodeManagementReturn {
   handleSceneCountChange: (event: React.ChangeEvent<HTMLInputElement>, nodeId: string) => void;
   handleContinueAssociation: (sourceNodeId: string) => Promise<void>;
   handleScriptVisualization: (sourceNodeId: string) => Promise<void>;
+  handleBuildScenarioFromBrief: (briefNodeId: string) => Promise<void>;
   handleScenarioDetailClick: (sourceNodeId: string, detailType: DetailType) => Promise<void>;
   handleCreateSceneNodes: (sourceNodeId: string) => void;
   handleGenerateScenePrompt: (sceneNodeId: string) => Promise<void>;
@@ -439,6 +440,40 @@ export const useNodeManagement = (
 
     setNodes((previousNodes) => upsertScenarioGraph(previousNodes, sourceNodeId, result, sceneCount));
     showNotice('success', `Сценарий и ${parseSceneBlocks(result, sceneCount).length} сцен готовы.`);
+  }, [requestText, setNodes, showNotice, updateNode]);
+
+  const handleBuildScenarioFromBrief = useCallback(async (briefNodeId: string) => {
+    const briefNode = nodesRef.current[briefNodeId];
+    const brief = briefNode?.inputValue?.trim();
+    const sourceNode = briefNode?.parentId ? nodesRef.current[briefNode.parentId] : undefined;
+    if (
+      !briefNode
+      || briefNode.nodeType !== 'script_detail'
+      || briefNode.metadata?.sourceKind !== 'brief_revision'
+      || briefNode.isLoading
+      || !sourceNode
+    ) return;
+    if (!brief) {
+      updateNode(briefNodeId, { error: 'В заявке редактора нет текста для сборки сценария.' });
+      return;
+    }
+
+    const sceneCount = clampSceneCount(briefNode.sceneCount ?? sourceNode.sceneCount ?? 4);
+    const theme = sourceNode.themeInputValue?.trim();
+    const systemPrompt = theme
+      ? `${SCENARIO_SYSTEM_PROMPT}\nСтилистическое направление: ${theme}.`
+      : SCENARIO_SYSTEM_PROMPT;
+    const result = await requestText(briefNodeId, {
+      operation: 'scenario',
+      prompt: brief,
+      systemPrompt,
+      model: briefNode.selectedModel || sourceNode.selectedModel || MISTRAL_MODELS[0],
+      sceneCount,
+    }, `Собираем ${sceneCount} сцен из редакторской заявки...`);
+    if (!result) return;
+
+    setNodes((previousNodes) => upsertScenarioGraph(previousNodes, briefNode.parentId ?? '', result, sceneCount));
+    showNotice('success', `Сценарий пересобран из редакторской заявки: ${parseSceneBlocks(result, sceneCount).length} сцен.`);
   }, [requestText, setNodes, showNotice, updateNode]);
 
   const handleScenarioDetailClick = useCallback(async (sourceNodeId: string, detailType: DetailType) => {
@@ -1373,6 +1408,7 @@ export const useNodeManagement = (
     handleSceneCountChange,
     handleContinueAssociation,
     handleScriptVisualization,
+    handleBuildScenarioFromBrief,
     handleScenarioDetailClick,
     handleCreateSceneNodes,
     handleGenerateScenePrompt,

@@ -116,6 +116,8 @@ export type GenerationOperation =
   | 'narration'
   | 'narration_edit'
   | 'brief_revision'
+  | 'chapter_summary'
+  | 'season_memory_update'
   | 'tts_cleanup'
   | 'scene_prompt'
   | 'scene_location_prompt'

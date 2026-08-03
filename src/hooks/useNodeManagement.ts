@@ -16,8 +16,11 @@ import {
 import {
   ASSOCIATE_SYSTEM_PROMPT,
   CHARACTER_ASSET_PROMPT_SYSTEM_PROMPT,
+  CHAPTER_SUMMARY_SYSTEM_PROMPT,
+  DEFAULT_CHAPTER_MATERIAL,
   DEFAULT_FORMAT_BIBLE,
   DEFAULT_KNOWLEDGE_BASE,
+  DEFAULT_SEASON_MEMORY,
   HERO_DETAIL_SYSTEM_PROMPT,
   LOCATION_ASSET_PROMPT_SYSTEM_PROMPT,
   LOCATION_DETAIL_SYSTEM_PROMPT,
@@ -29,6 +32,7 @@ import {
   SCENE_CHARACTER_LAYER_PROMPT_SYSTEM_PROMPT,
   SCENE_LOCATION_PROMPT_SYSTEM_PROMPT,
   SCENE_MASTER_PROMPT_SYSTEM_PROMPT,
+  SEASON_MEMORY_UPDATE_SYSTEM_PROMPT,
   STORY_BRIEF_REVISION_SYSTEM_PROMPT,
   TTS_CLEANUP_SYSTEM_PROMPT,
 } from '../constants';
@@ -64,6 +68,7 @@ interface UseNodeManagementReturn {
   handleContinueAssociation: (sourceNodeId: string) => Promise<void>;
   handleScriptVisualization: (sourceNodeId: string) => Promise<void>;
   handleBuildScenarioFromBrief: (briefNodeId: string) => Promise<void>;
+  handleAutoBuildChapter: (chapterMaterialNodeId: string) => Promise<void>;
   handleEnsureStoryReferenceNodes: () => void;
   handleScenarioDetailClick: (sourceNodeId: string, detailType: DetailType) => Promise<void>;
   handleCreateSceneNodes: (sourceNodeId: string) => void;
@@ -97,7 +102,13 @@ const detailConfig: Record<DetailType, {
 const getExistingChild = (nodes: NodesState, parentId: string, predicate: (node: NodeData) => boolean) =>
   Object.entries(nodes).find(([, node]) => node.parentId === parentId && predicate(node));
 
-const referenceSourceKinds = new Set(['format_bible', 'knowledge_base']);
+const referenceSourceKinds = new Set(['format_bible', 'knowledge_base', 'season_memory']);
+
+const getSourceKind = (node?: NodeData) =>
+  typeof node?.metadata?.sourceKind === 'string' ? node.metadata.sourceKind : '';
+
+const findNodeBySourceKind = (nodes: NodesState, sourceKind: string) =>
+  Object.entries(nodes).find(([, node]) => node.nodeType === 'script_detail' && getSourceKind(node) === sourceKind);
 
 const getStoryReferenceContext = (nodes: NodesState) => {
   const references = Object.values(nodes)
@@ -122,6 +133,58 @@ const withStoryReferenceContext = (prompt: string, nodes: NodesState) => {
     'Справочные базы проекта. Используй как ориентир для структуры, фактуры, профессий, лазеек и эмоционального тона. Не копируй дословно, если это пример или шаблон.',
     context,
   ].join('\n\n');
+};
+
+const buildChapterPrompt = (material: string, nodes: NodesState) =>
+  withStoryReferenceContext([
+    'Материал текущей главы:',
+    material,
+    'Задача: собрать главу как последовательный сценарий сцен. Используй материал главы как главный источник, а базы проекта и сезонную память как контекст.',
+  ].join('\n\n'), nodes);
+
+const upsertScriptDetailNode = (
+  previousNodes: NodesState,
+  parentId: string,
+  label: string,
+  inputValue: string,
+  options: {
+    column?: number;
+    width?: number;
+    height?: number;
+    metadata?: NodeData['metadata'];
+  } = {},
+) => {
+  const parentNode = previousNodes[parentId];
+  if (!parentNode) return previousNodes;
+  const existing = getExistingChild(
+    previousNodes,
+    parentId,
+    (node) => node.nodeType === 'script_detail' && node.label === label,
+  );
+  const nodeId = existing?.[0] ?? generateNodeId();
+  const column = options.column ?? 0;
+  const nextNode: NodeData = {
+    ...existing?.[1],
+    nodeType: 'script_detail',
+    x: existing?.[1].x ?? parentNode.x + column * 326,
+    y: existing?.[1].y ?? parentNode.y + (parentNode.height ?? 390) + 36,
+    label,
+    width: existing?.[1].width ?? options.width ?? 302,
+    height: existing?.[1].height ?? options.height ?? 280,
+    isGenerated: true,
+    level: (parentNode.level ?? 0) + 1,
+    parentId,
+    inputValue,
+    error: undefined,
+    metadata: {
+      ...existing?.[1].metadata,
+      ...options.metadata,
+    },
+  };
+  return {
+    ...previousNodes,
+    [nodeId]: nextNode,
+  };
 };
 
 const getSceneNumber = (label: string) => {
@@ -480,8 +543,14 @@ export const useNodeManagement = (
       const existingKnowledgeBase = Object.values(previousNodes).some(
         (node) => node.nodeType === 'script_detail' && node.metadata?.sourceKind === 'knowledge_base',
       );
-      if (existingFormatBible && existingKnowledgeBase) {
-        showNotice('info', 'Базы уже есть на канве.');
+      const existingSeasonMemory = Object.values(previousNodes).some(
+        (node) => node.nodeType === 'script_detail' && node.metadata?.sourceKind === 'season_memory',
+      );
+      const existingChapterMaterial = Object.values(previousNodes).some(
+        (node) => node.nodeType === 'script_detail' && node.metadata?.sourceKind === 'chapter_material',
+      );
+      if (existingFormatBible && existingKnowledgeBase && existingSeasonMemory && existingChapterMaterial) {
+        showNotice('info', 'Базы и материалы уже есть на канве.');
         return previousNodes;
       }
 
@@ -527,7 +596,45 @@ export const useNodeManagement = (
         };
       }
 
-      showNotice('success', 'Библия формата и база знаний готовы.');
+      if (!existingSeasonMemory) {
+        nextNodes[generateNodeId()] = {
+          nodeType: 'script_detail',
+          x: anchorX + 450,
+          y: anchorY + 330,
+          label: 'Сезонная память',
+          width: 420,
+          height: 300,
+          isGenerated: true,
+          level: anchor?.level ?? 0,
+          inputValue: DEFAULT_SEASON_MEMORY,
+          error: undefined,
+          metadata: {
+            sourceKind: 'season_memory',
+          },
+        };
+      }
+
+      if (!existingChapterMaterial) {
+        nextNodes[generateNodeId()] = {
+          nodeType: 'script_detail',
+          x: anchorX + 890,
+          y: anchorY + 330,
+          label: 'Материал главы',
+          width: 430,
+          height: 360,
+          isGenerated: true,
+          level: anchor?.level ?? 0,
+          inputValue: DEFAULT_CHAPTER_MATERIAL,
+          selectedModel: anchor?.selectedModel || MISTRAL_MODELS[0],
+          sceneCount: 8,
+          error: undefined,
+          metadata: {
+            sourceKind: 'chapter_material',
+          },
+        };
+      }
+
+      showNotice('success', 'Базы, сезонная память и материал главы готовы.');
       return nextNodes;
     });
   }, [setNodes, showNotice]);
@@ -566,6 +673,136 @@ export const useNodeManagement = (
     showNotice('success', `Сценарий пересобран из редакторской заявки: ${parseSceneBlocks(result, sceneCount).length} сцен.`);
   }, [requestText, setNodes, showNotice, updateNode]);
 
+  const handleAutoBuildChapter = useCallback(async (chapterMaterialNodeId: string) => {
+    const materialNode = nodesRef.current[chapterMaterialNodeId];
+    const material = materialNode?.inputValue?.trim();
+    if (
+      !materialNode
+      || materialNode.nodeType !== 'script_detail'
+      || getSourceKind(materialNode) !== 'chapter_material'
+      || materialNode.isLoading
+    ) return;
+    if (!material) {
+      updateNode(chapterMaterialNodeId, { error: 'Вставьте материал главы перед автосборкой.' });
+      return;
+    }
+
+    const sceneCount = clampSceneCount(materialNode.sceneCount ?? 8);
+    const model = materialNode.selectedModel || MISTRAL_MODELS[0];
+    const scenario = await requestText(chapterMaterialNodeId, {
+      operation: 'scenario',
+      prompt: buildChapterPrompt(material, nodesRef.current),
+      systemPrompt: SCENARIO_SYSTEM_PROMPT,
+      model,
+      sceneCount,
+    }, `Автосборка: пишем ${sceneCount} сцен главы...`);
+    if (!scenario) return;
+
+    setNodes((previousNodes) => upsertScenarioGraph(previousNodes, chapterMaterialNodeId, scenario, sceneCount));
+    const outputEntry = getExistingChild(
+      nodesRef.current,
+      chapterMaterialNodeId,
+      (node) => node.nodeType === 'script_output',
+    );
+    const outputNodeId = outputEntry?.[0];
+    if (!outputNodeId) {
+      updateNode(chapterMaterialNodeId, { error: 'Сценарий создан, но не удалось найти ноду сценария для продолжения.' });
+      return;
+    }
+
+    const detailResults: Array<{ label: string; text: string }> = [];
+    for (const config of Object.values(detailConfig)) {
+      const detailText = await requestText(outputNodeId, {
+        operation: config.operation,
+        prompt: withStoryReferenceContext(scenario, nodesRef.current),
+        systemPrompt: config.systemPrompt,
+        model,
+        sceneCount,
+      }, `Автосборка: готовим «${config.label}»...`, true);
+      if (!detailText) return;
+      detailResults.push({ label: config.label, text: detailText });
+      setNodes((previousNodes) => upsertScriptDetailNode(previousNodes, outputNodeId, config.label, detailText, {
+        column: config.column,
+      }));
+    }
+
+    const chapterSummaryPrompt = withStoryReferenceContext([
+      `Материал главы:\n${material}`,
+      `Сценарий главы:\n${scenario}`,
+      ...detailResults.map((detail) => `${detail.label}:\n${detail.text}`),
+      'Задача: сделать резюме этой главы для будущих глав.',
+    ].join('\n\n'), nodesRef.current);
+    const chapterSummary = await requestText(outputNodeId, {
+      operation: 'chapter_summary',
+      prompt: chapterSummaryPrompt,
+      systemPrompt: CHAPTER_SUMMARY_SYSTEM_PROMPT,
+      model,
+      sceneCount,
+    }, 'Автосборка: делаем резюме главы...', true);
+    if (!chapterSummary) return;
+
+    setNodes((previousNodes) => upsertScriptDetailNode(previousNodes, outputNodeId, 'Резюме главы', chapterSummary, {
+      column: 4,
+      width: 360,
+      height: 280,
+      metadata: {
+        sourceKind: 'chapter_summary',
+      },
+    }));
+
+    const seasonMemoryEntry = findNodeBySourceKind(nodesRef.current, 'season_memory');
+    const oldSeasonMemory = seasonMemoryEntry?.[1].inputValue?.trim() || DEFAULT_SEASON_MEMORY;
+    const updatedSeasonMemory = await requestText(outputNodeId, {
+      operation: 'season_memory_update',
+      prompt: [
+        `Старая сезонная память:\n${oldSeasonMemory}`,
+        `Новое резюме главы:\n${chapterSummary}`,
+        'Задача: обновить сезонную память для следующей главы.',
+      ].join('\n\n'),
+      systemPrompt: SEASON_MEMORY_UPDATE_SYSTEM_PROMPT,
+      model,
+      sceneCount,
+    }, 'Автосборка: обновляем сезонную память...', true);
+    if (!updatedSeasonMemory) return;
+
+    setNodes((previousNodes) => {
+      const existing = findNodeBySourceKind(previousNodes, 'season_memory');
+      if (existing) {
+        return {
+          ...previousNodes,
+          [existing[0]]: {
+            ...existing[1],
+            inputValue: updatedSeasonMemory,
+            error: undefined,
+            statusMessage: 'Сезонная память обновлена.',
+          },
+        };
+      }
+      const currentMaterial = previousNodes[chapterMaterialNodeId] ?? materialNode;
+      return {
+        ...previousNodes,
+        [generateNodeId()]: {
+          nodeType: 'script_detail',
+          x: currentMaterial.x - 450,
+          y: currentMaterial.y,
+          label: 'Сезонная память',
+          width: 420,
+          height: 300,
+          isGenerated: true,
+          level: currentMaterial.level ?? 0,
+          inputValue: updatedSeasonMemory,
+          error: undefined,
+          statusMessage: 'Сезонная память обновлена.',
+          metadata: {
+            sourceKind: 'season_memory',
+          },
+        },
+      };
+    });
+
+    showNotice('success', 'Глава собрана: сценарий, детали, закадр, резюме и сезонная память готовы.');
+  }, [requestText, setNodes, showNotice, updateNode]);
+
   const handleScenarioDetailClick = useCallback(async (sourceNodeId: string, detailType: DetailType) => {
     const sourceNode = nodesRef.current[sourceNodeId];
     if (!sourceNode?.inputValue || sourceNode.isLoading) return;
@@ -579,33 +816,9 @@ export const useNodeManagement = (
     }, `Готовим раздел «${config.label}»…`);
     if (!result) return;
 
-    setNodes((previousNodes) => {
-      const currentSource = previousNodes[sourceNodeId];
-      if (!currentSource) return previousNodes;
-      const existing = getExistingChild(
-        previousNodes,
-        sourceNodeId,
-        (node) => node.nodeType === 'script_detail' && node.label === config.label,
-      );
-      const nodeId = existing?.[0] ?? generateNodeId();
-      return {
-        ...previousNodes,
-        [nodeId]: {
-          ...existing?.[1],
-          nodeType: 'script_detail',
-          x: existing?.[1].x ?? currentSource.x + config.column * 326,
-          y: existing?.[1].y ?? currentSource.y + (currentSource.height ?? 390) + 36,
-          label: config.label,
-          width: existing?.[1].width ?? 302,
-          height: existing?.[1].height ?? 280,
-          isGenerated: true,
-          level: (currentSource.level ?? 0) + 1,
-          parentId: sourceNodeId,
-          inputValue: result,
-          error: undefined,
-        },
-      };
-    });
+    setNodes((previousNodes) => upsertScriptDetailNode(previousNodes, sourceNodeId, config.label, result, {
+      column: config.column,
+    }));
     showNotice('success', `Раздел «${config.label}» готов.`);
   }, [requestText, setNodes, showNotice]);
 
@@ -1499,6 +1712,7 @@ export const useNodeManagement = (
     handleContinueAssociation,
     handleScriptVisualization,
     handleBuildScenarioFromBrief,
+    handleAutoBuildChapter,
     handleEnsureStoryReferenceNodes,
     handleScenarioDetailClick,
     handleCreateSceneNodes,

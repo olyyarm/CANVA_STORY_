@@ -1,7 +1,9 @@
 import {
+  DEFAULT_CHAPTER_MATERIAL,
   DEFAULT_FORMAT_BIBLE,
   DEFAULT_KNOWLEDGE_BASE,
   DEFAULT_SCENE_COUNT,
+  DEFAULT_SEASON_MEMORY,
   MISTRAL_MODELS,
 } from './constants';
 import {
@@ -100,6 +102,36 @@ export const createStarterNodes = (): NodesState => ({
     inputValue: DEFAULT_KNOWLEDGE_BASE,
     metadata: {
       sourceKind: 'knowledge_base',
+    },
+  },
+  seasonMemoryNode: {
+    nodeType: 'script_detail',
+    x: 480,
+    y: 370,
+    label: 'Сезонная память',
+    width: 420,
+    height: 300,
+    isGenerated: true,
+    level: 0,
+    inputValue: DEFAULT_SEASON_MEMORY,
+    metadata: {
+      sourceKind: 'season_memory',
+    },
+  },
+  chapterMaterialNode: {
+    nodeType: 'script_detail',
+    x: 920,
+    y: 370,
+    label: 'Материал главы',
+    width: 430,
+    height: 360,
+    isGenerated: true,
+    level: 0,
+    inputValue: DEFAULT_CHAPTER_MATERIAL,
+    selectedModel: MISTRAL_MODELS[0],
+    sceneCount: 8,
+    metadata: {
+      sourceKind: 'chapter_material',
     },
   },
 });

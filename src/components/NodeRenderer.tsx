@@ -17,6 +17,7 @@ interface NodeRendererProps {
   onContinueAssociation: (nodeId: string) => void;
   onScriptVisualize: (nodeId: string) => void;
   onBuildScenarioFromBrief: (nodeId: string) => Promise<void>;
+  onAutoBuildChapter: (nodeId: string) => Promise<void>;
   onScenarioDetailClick: (nodeId: string, detailType: DetailType) => void;
   onCreateSceneNodes: (nodeId: string) => void;
   onGenerateSceneLocationAsset: (nodeId: string) => Promise<void>;
@@ -57,6 +58,7 @@ const NodeRenderer: React.FC<NodeRendererProps> = ({
   onContinueAssociation,
   onScriptVisualize,
   onBuildScenarioFromBrief,
+  onAutoBuildChapter,
   onScenarioDetailClick,
   onCreateSceneNodes,
   onGenerateSceneLocationAsset,
@@ -82,8 +84,14 @@ const NodeRenderer: React.FC<NodeRendererProps> = ({
   const isTextOutput = node.nodeType === 'script_output' || node.nodeType === 'script_detail';
   const canGenerateDetailAsset = node.nodeType === 'script_detail' && (node.label === 'Герои' || node.label === 'Локации');
   const canBuildScenarioFromBrief = node.nodeType === 'script_detail' && node.metadata?.sourceKind === 'brief_revision';
+  const canAutoBuildChapter = node.nodeType === 'script_detail' && node.metadata?.sourceKind === 'chapter_material';
   const isEditableReferenceNode = node.nodeType === 'script_detail'
-    && (node.metadata?.sourceKind === 'format_bible' || node.metadata?.sourceKind === 'knowledge_base');
+    && (
+      node.metadata?.sourceKind === 'format_bible'
+      || node.metadata?.sourceKind === 'knowledge_base'
+      || node.metadata?.sourceKind === 'season_memory'
+      || node.metadata?.sourceKind === 'chapter_material'
+    );
   const detailRowCount = countDetailRows(node.inputValue);
   const isBusy = Boolean(node.isLoading || node.isLoadingImage);
   const loadingLabel = node.isLoadingImage
@@ -264,16 +272,47 @@ const NodeRenderer: React.FC<NodeRendererProps> = ({
         )}
 
         {isEditableReferenceNode && (
-          <label className="node-field node-field--grow">
-            <span>Материал</span>
-            <textarea
-              value={node.inputValue ?? ''}
-              onChange={(event) => onInputChange(event, id)}
-              onMouseDown={stopMouseDown}
-              placeholder="Добавьте правила формата, факты, профессии, кейсы или наблюдения..."
-              disabled={node.isLoading}
-            />
-          </label>
+          <>
+            <label className="node-field node-field--grow">
+              <span>Материал</span>
+              <textarea
+                value={node.inputValue ?? ''}
+                onChange={(event) => onInputChange(event, id)}
+                onMouseDown={stopMouseDown}
+                placeholder="Добавьте правила формата, факты, профессии, кейсы или наблюдения..."
+                disabled={node.isLoading}
+              />
+            </label>
+            {canAutoBuildChapter && (
+              <div className="node-field-grid">
+                <label className="node-field">
+                  <span>Сцен</span>
+                  <input
+                    type="number"
+                    min="1"
+                    max="20"
+                    value={node.sceneCount ?? 8}
+                    onChange={(event) => onSceneCountChange(event, id)}
+                    onMouseDown={stopMouseDown}
+                    disabled={node.isLoading}
+                  />
+                </label>
+                <label className="node-field">
+                  <span>Модель</span>
+                  <select
+                    value={node.selectedModel ?? MISTRAL_MODELS[0]}
+                    onChange={(event) => onModelChange(event, id)}
+                    onMouseDown={stopMouseDown}
+                    disabled={node.isLoading}
+                  >
+                    {MISTRAL_MODELS.map((modelName) => (
+                      <option key={modelName} value={modelName}>{modelName}</option>
+                    ))}
+                  </select>
+                </label>
+              </div>
+            )}
+          </>
         )}
 
         {isTextOutput && node.inputValue && !isEditableReferenceNode && (
@@ -313,6 +352,20 @@ const NodeRenderer: React.FC<NodeRendererProps> = ({
             disabled={node.isLoadingImage}
           >
             {node.isLoading ? 'Отменить генерацию' : 'Собрать сценарий'}
+          </button>
+        )}
+
+        {canAutoBuildChapter && (
+          <button
+            type="button"
+            className={`node-primary-button${node.isLoading ? ' node-primary-button--cancel' : ''}`}
+            onMouseDown={stopMouseDown}
+            onClick={(event) => runWithoutDrag(event, () => node.isLoading
+              ? onCancelGeneration(id)
+              : void onAutoBuildChapter(id))}
+            disabled={node.isLoadingImage}
+          >
+            {node.isLoading ? 'Отменить автосборку' : 'Автособрать главу'}
           </button>
         )}
 

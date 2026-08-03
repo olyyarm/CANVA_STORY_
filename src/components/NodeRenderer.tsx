@@ -26,6 +26,8 @@ interface NodeRendererProps {
   onEditNarration: (nodeId: string) => Promise<void>;
   onNarrationEditorialLoop: (nodeId: string) => Promise<void>;
   onPrepareNarrationTts: (nodeId: string) => Promise<void>;
+  onSpeakNarration: (nodeId: string) => void;
+  onStopSpeech: () => void;
   onCopyToClipboard: (text: string) => void;
   onRegenerateImageNode: (nodeId: string) => Promise<void>;
   onToggleReferenceImage: (nodeId: string) => void;
@@ -67,6 +69,8 @@ const NodeRenderer: React.FC<NodeRendererProps> = ({
   onEditNarration,
   onNarrationEditorialLoop,
   onPrepareNarrationTts,
+  onSpeakNarration,
+  onStopSpeech,
   onCopyToClipboard,
   onRegenerateImageNode,
   onToggleReferenceImage,
@@ -85,6 +89,8 @@ const NodeRenderer: React.FC<NodeRendererProps> = ({
   const canGenerateDetailAsset = node.nodeType === 'script_detail' && (node.label === 'Герои' || node.label === 'Локации');
   const canBuildScenarioFromBrief = node.nodeType === 'script_detail' && node.metadata?.sourceKind === 'brief_revision';
   const canAutoBuildChapter = node.nodeType === 'script_detail' && node.metadata?.sourceKind === 'chapter_material';
+  const canSpeakNarration = node.nodeType === 'script_detail'
+    && (node.label === 'Закадр' || node.metadata?.sourceKind === 'tts_cleanup');
   const isEditableReferenceNode = node.nodeType === 'script_detail'
     && (
       node.metadata?.sourceKind === 'format_bible'
@@ -93,18 +99,20 @@ const NodeRenderer: React.FC<NodeRendererProps> = ({
       || node.metadata?.sourceKind === 'chapter_material'
     );
   const detailRowCount = countDetailRows(node.inputValue);
-  const isBusy = Boolean(node.isLoading || node.isLoadingImage);
-  const loadingLabel = node.isLoadingImage
-    ? node.loadingProvider === 'comfyui'
-      ? 'ComfyUI загружает модель или рендерит кадр...'
-      : 'Pollinations создаёт кадр...'
-    : node.loadingProvider === 'lmstudio'
-      ? 'LM Studio загружает модель и готовит ответ...'
-      : node.loadingProvider === 'mistral'
-        ? 'Mistral API готовит ответ...'
-        : node.loadingProvider === 'mock'
-          ? 'Собираем тестовый ответ...'
-          : 'Генерация идёт...';
+  const isBusy = Boolean(node.isLoading || node.isLoadingImage || node.isSpeaking);
+  const loadingLabel = node.isSpeaking
+    ? 'Озвучиваем закадр...'
+    : node.isLoadingImage
+      ? node.loadingProvider === 'comfyui'
+        ? 'ComfyUI загружает модель или рендерит кадр...'
+        : 'Pollinations создаёт кадр...'
+      : node.loadingProvider === 'lmstudio'
+        ? 'LM Studio загружает модель и готовит ответ...'
+        : node.loadingProvider === 'mistral'
+          ? 'Mistral API готовит ответ...'
+          : node.loadingProvider === 'mock'
+            ? 'Собираем тестовый ответ...'
+            : 'Генерация идёт...';
   const visibleStatusMessage = node.statusMessage?.trim();
   const imagePrompt = node.nodeType === 'pollinations_image' ? node.masterPrompt?.trim() ?? '' : '';
   const promptContext = node.nodeType === 'pollinations_image' && typeof node.metadata?.promptContext === 'string'
@@ -376,32 +384,47 @@ const NodeRenderer: React.FC<NodeRendererProps> = ({
             <button
               type="button"
               onMouseDown={stopMouseDown}
-              onClick={(event) => runWithoutDrag(event, () => isBusy
+              onClick={(event) => runWithoutDrag(event, () => node.isLoading
                 ? onCancelGeneration(id)
                 : void onEditNarration(id))}
-              disabled={node.isLoadingImage}
+              disabled={Boolean(node.isLoadingImage || node.isSpeaking)}
             >
               {node.isLoading ? 'Отменить' : 'Редактура'}
             </button>
             <button
               type="button"
               onMouseDown={stopMouseDown}
-              onClick={(event) => runWithoutDrag(event, () => isBusy
+              onClick={(event) => runWithoutDrag(event, () => node.isLoading
                 ? onCancelGeneration(id)
                 : void onPrepareNarrationTts(id))}
-              disabled={node.isLoadingImage}
+              disabled={Boolean(node.isLoadingImage || node.isSpeaking)}
             >
               {node.isLoading ? 'Отменить' : 'Подготовить TTS'}
             </button>
             <button
               type="button"
               onMouseDown={stopMouseDown}
-              onClick={(event) => runWithoutDrag(event, () => isBusy
+              onClick={(event) => runWithoutDrag(event, () => node.isLoading
                 ? onCancelGeneration(id)
                 : void onNarrationEditorialLoop(id))}
-              disabled={node.isLoadingImage}
+              disabled={Boolean(node.isLoadingImage || node.isSpeaking)}
             >
               {node.isLoading ? 'Отменить' : 'Редактура луп'}
+            </button>
+          </div>
+        )}
+
+        {canSpeakNarration && (
+          <div className="node-segmented-actions node-segmented-actions--voice">
+            <button
+              type="button"
+              onMouseDown={stopMouseDown}
+              onClick={(event) => runWithoutDrag(event, () => node.isSpeaking
+                ? onStopSpeech()
+                : onSpeakNarration(id))}
+              disabled={Boolean(node.isLoading || node.isLoadingImage)}
+            >
+              {node.isSpeaking ? 'Стоп' : 'Озвучить'}
             </button>
           </div>
         )}

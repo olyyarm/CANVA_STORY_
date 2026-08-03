@@ -80,6 +80,8 @@ interface UseNodeManagementReturn {
   handleEditNarration: (detailNodeId: string) => Promise<void>;
   handleNarrationEditorialLoop: (detailNodeId: string) => Promise<void>;
   handlePrepareNarrationTts: (detailNodeId: string) => Promise<void>;
+  handleSpeakNarration: (detailNodeId: string) => void;
+  handleStopSpeech: () => void;
   handleCopyToClipboard: (textToCopy: string) => Promise<void>;
   handleGeneratePollinationsImage: (nodeId: string) => Promise<void>;
   handleRegenerateImageNode: (nodeId: string) => Promise<void>;
@@ -145,6 +147,33 @@ const buildChapterPrompt = (material: string, nodes: NodesState) =>
 const isEditorialReviewText = (text: string) =>
   /^(отлично|хорошо|замечательно|прекрасно|резюме получилось|получилось)/iu.test(text.trim())
   || /(понравил[оа]сь|сильный момент|очень информативн|структурированн|учитывающ|полезно для дальнейшего)/iu.test(text);
+
+const cleanupBrowserSpeechText = (text: string) =>
+  text
+    .replace(/Сцена\s*\d+\s*[:.\-–—]?\s*/giu, '\n')
+    .replace(/Закадровый текст\s*:\s*/giu, '')
+    .replace(/Смысловой акцент\s*:\s*[^\n]+/giu, '')
+    .replace(/\s+/g, ' ')
+    .trim();
+
+const splitSpeechText = (text: string) => {
+  const sentences = text.match(/[^.!?…]+[.!?…]?/gu) ?? [text];
+  const chunks: string[] = [];
+  let current = '';
+  sentences.forEach((sentence) => {
+    const trimmed = sentence.trim();
+    if (!trimmed) return;
+    const next = `${current} ${trimmed}`.trim();
+    if (next.length > 700 && current) {
+      chunks.push(current);
+      current = trimmed;
+    } else {
+      current = next;
+    }
+  });
+  if (current) chunks.push(current);
+  return chunks;
+};
 
 const upsertScriptDetailNode = (
   previousNodes: NodesState,
@@ -366,6 +395,8 @@ export const useNodeManagement = (
   const nodesRef = useRef(nodes);
   const activeRequests = useRef(new Map<string, AbortController>());
   const noticeCounter = useRef(0);
+  const speechUtteranceRef = useRef<SpeechSynthesisUtterance | null>(null);
+  const speakingNodeIdRef = useRef<string | null>(null);
 
   useEffect(() => {
     nodesRef.current = nodes;
@@ -374,6 +405,7 @@ export const useNodeManagement = (
   useEffect(() => () => {
     activeRequests.current.forEach((controller) => controller.abort());
     activeRequests.current.clear();
+    window.speechSynthesis?.cancel();
   }, []);
 
   const setNodes = useCallback<Dispatch<SetStateAction<NodesState>>>((action) => {
@@ -1624,6 +1656,98 @@ export const useNodeManagement = (
     showNotice('success', 'TTS-текст подготовлен.');
   }, [requestText, setNodes, showNotice, updateNode]);
 
+  const handleStopSpeech = useCallback(() => {
+    window.speechSynthesis.cancel();
+    speechUtteranceRef.current = null;
+    const speakingNodeId = speakingNodeIdRef.current;
+    speakingNodeIdRef.current = null;
+    if (speakingNodeId) {
+      updateNode(speakingNodeId, {
+        isSpeaking: false,
+        statusMessage: 'Озвучка остановлена.',
+      });
+    }
+    showNotice('info', 'Озвучка остановлена.');
+  }, [showNotice, updateNode]);
+
+  const handleSpeakNarration = useCallback((detailNodeId: string) => {
+    const detailNode = nodesRef.current[detailNodeId];
+    const rawText = detailNode?.inputValue?.trim();
+    if (!detailNode || detailNode.nodeType !== 'script_detail') return;
+    if (!('speechSynthesis' in window) || !('SpeechSynthesisUtterance' in window)) {
+      const message = 'Браузер не поддерживает встроенную озвучку. Нужен Chrome, Edge или другой браузер с Web Speech API.';
+      updateNode(detailNodeId, { error: message });
+      showNotice('error', message);
+      return;
+    }
+    if (!rawText) {
+      updateNode(detailNodeId, { error: 'В этой ноде нет текста для озвучки.' });
+      return;
+    }
+
+    const previousNodeId = speakingNodeIdRef.current;
+    window.speechSynthesis.cancel();
+    if (previousNodeId && previousNodeId !== detailNodeId) {
+      updateNode(previousNodeId, { isSpeaking: false, statusMessage: undefined });
+    }
+
+    const text = cleanupBrowserSpeechText(rawText);
+    const chunks = splitSpeechText(text);
+    if (chunks.length === 0) {
+      updateNode(detailNodeId, { error: 'После очистки не осталось текста для озвучки.' });
+      return;
+    }
+
+    const synth = window.speechSynthesis;
+    const voices = synth.getVoices();
+    const russianVoice = voices.find((voice) => voice.lang.toLocaleLowerCase().startsWith('ru'))
+      ?? voices.find((voice) => /russian|рус/i.test(voice.name))
+      ?? null;
+    speakingNodeIdRef.current = detailNodeId;
+    updateNode(detailNodeId, {
+      error: undefined,
+      isSpeaking: true,
+      statusMessage: `Озвучиваем закадр: 1/${chunks.length}`,
+    });
+
+    const finishSpeech = (statusMessage: string) => {
+      if (speakingNodeIdRef.current !== detailNodeId) return;
+      speakingNodeIdRef.current = null;
+      speechUtteranceRef.current = null;
+      updateNode(detailNodeId, {
+        isSpeaking: false,
+        statusMessage,
+      });
+    };
+
+    const speakChunk = (index: number) => {
+      if (speakingNodeIdRef.current !== detailNodeId) return;
+      const utterance = new SpeechSynthesisUtterance(chunks[index]);
+      speechUtteranceRef.current = utterance;
+      utterance.lang = 'ru-RU';
+      utterance.rate = 0.95;
+      utterance.pitch = 1;
+      if (russianVoice) utterance.voice = russianVoice;
+      utterance.onend = () => {
+        if (speakingNodeIdRef.current !== detailNodeId) return;
+        if (index + 1 < chunks.length) {
+          updateNode(detailNodeId, { statusMessage: `Озвучиваем закадр: ${index + 2}/${chunks.length}` });
+          speakChunk(index + 1);
+        } else {
+          finishSpeech('Озвучка завершена.');
+          showNotice('success', 'Озвучка завершена.');
+        }
+      };
+      utterance.onerror = () => {
+        finishSpeech('Озвучка остановилась из-за ошибки браузерного голоса.');
+        updateNode(detailNodeId, { error: 'Браузерный голос остановился из-за ошибки. Попробуйте другой голос в системе или подготовьте TTS-текст заново.' });
+      };
+      synth.speak(utterance);
+    };
+
+    speakChunk(0);
+  }, [showNotice, updateNode]);
+
   const handleGeneratePollinationsImage = useCallback(async (parentNodeId: string) => {
     const parentNode = nodesRef.current[parentNodeId];
     if (!parentNode?.masterPrompt || parentNode.isLoadingImage) return;
@@ -1775,9 +1899,15 @@ export const useNodeManagement = (
     activeRequests.current.get(`scene-location:${nodeId}`)?.abort();
     activeRequests.current.get(`scene-characters:${nodeId}`)?.abort();
     activeRequests.current.get(`detail-asset:${nodeId}`)?.abort();
+    if (speakingNodeIdRef.current === nodeId) {
+      window.speechSynthesis.cancel();
+      speechUtteranceRef.current = null;
+      speakingNodeIdRef.current = null;
+    }
     updateNode(nodeId, {
       isLoading: false,
       isLoadingImage: false,
+      isSpeaking: false,
       loadingProvider: undefined,
       statusMessage: undefined,
     });
@@ -1809,6 +1939,8 @@ export const useNodeManagement = (
     handleEditNarration,
     handleNarrationEditorialLoop,
     handlePrepareNarrationTts,
+    handleSpeakNarration,
+    handleStopSpeech,
     handleCopyToClipboard,
     handleGeneratePollinationsImage,
     handleRegenerateImageNode,

@@ -147,6 +147,8 @@ const App = () => {
     handleEditNarration,
     handleNarrationEditorialLoop,
     handlePrepareNarrationTts,
+    handleSpeakNarration,
+    handleStopSpeech,
     handleCopyToClipboard,
     handleRegenerateImageNode,
     handleToggleReferenceImage,
@@ -644,6 +646,8 @@ const App = () => {
               onEditNarration={handleEditNarration}
               onNarrationEditorialLoop={handleNarrationEditorialLoop}
               onPrepareNarrationTts={handlePrepareNarrationTts}
+              onSpeakNarration={handleSpeakNarration}
+              onStopSpeech={handleStopSpeech}
               onCopyToClipboard={handleCopyToClipboard}
               onRegenerateImageNode={handleRegenerateImageNode}
               onToggleReferenceImage={handleToggleReferenceImage}

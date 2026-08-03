@@ -47,6 +47,13 @@ const detailButtons: Array<{ type: DetailType; label: string }> = [
 const countDetailRows = (value?: string) =>
   value?.split(/\n+/).map((line) => line.trim()).filter(Boolean).length ?? 0;
 
+const getAssetKind = (node: NodeData) =>
+  typeof node.metadata?.assetKind === 'string' ? node.metadata.assetKind : '';
+
+const isDefaultReferenceImage = (node: NodeData) =>
+  node.metadata?.isReference === true
+  || (getAssetKind(node).startsWith('character_asset') && node.metadata?.isReference !== false);
+
 const NodeRenderer: React.FC<NodeRendererProps> = ({
   id,
   node,
@@ -122,7 +129,7 @@ const NodeRenderer: React.FC<NodeRendererProps> = ({
     imagePrompt ? `SDXL prompt:\n${imagePrompt}` : '',
     promptContext ? `\nРусский контекст:\n${promptContext}` : '',
   ].filter(Boolean).join('\n');
-  const isReferenceImage = node.nodeType === 'pollinations_image' && node.metadata?.isReference === true;
+  const isReferenceImage = node.nodeType === 'pollinations_image' && isDefaultReferenceImage(node);
 
   const renderCopyButton = (text: string) => (
     <button

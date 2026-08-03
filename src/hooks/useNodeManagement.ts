@@ -300,6 +300,10 @@ const getImagePromptKind = (node: NodeData): ImagePromptKind => {
 const getAssetKind = (node: NodeData) =>
   typeof node.metadata?.assetKind === 'string' ? node.metadata.assetKind : '';
 
+const isCharacterReferenceNode = (node: NodeData) =>
+  node.metadata?.isReference === true
+  || (getAssetKind(node).startsWith('character_asset') && node.metadata?.isReference !== false);
+
 const getReferenceLabel = (node: NodeData) =>
   typeof node.metadata?.promptContext === 'string'
     ? getCharacterName(node.metadata.promptContext, 0)
@@ -1009,6 +1013,7 @@ export const useNodeManagement = (
     setNodes((previousNodes) => {
       const parentNode = previousNodes[parentNodeId];
       if (!parentNode) return previousNodes;
+      const isCharacterAsset = assetKind.startsWith('character_asset');
       const existing = getExistingChild(
         previousNodes,
         parentNodeId,
@@ -1043,6 +1048,11 @@ export const useNodeManagement = (
             promptKind: assetKind,
             imageProvider: imageGenerationSettings.provider,
             imagePipeline: parentNode.imagePipeline ?? 'sdxl',
+            ...(isCharacterAsset ? {
+              isReference: existing?.[1].metadata?.isReference ?? true,
+              referencePrompt: imagePrompt,
+              referenceContext: promptContext,
+            } : {}),
             ...metadataPatch,
           },
         },
@@ -1226,7 +1236,7 @@ export const useNodeManagement = (
       node.nodeType === 'pollinations_image'
       && getAssetKind(node).startsWith('character_asset')
       && Boolean(node.imageUrl));
-    const referenceNode = characterAssets.find((node) => node.metadata?.isReference === true) ?? characterAssets[0];
+    const referenceNode = characterAssets.find(isCharacterReferenceNode) ?? characterAssets[0];
 
     if (!locationNode?.imageUrl) {
       updateNode(sceneNodeId, { pollinationsApiError: 'Сначала сгенерируйте локацию этой сцены.' });
@@ -1849,6 +1859,10 @@ export const useNodeManagement = (
               imagePipeline: assetKind === 'scene_flux2_frame'
                 ? currentNode.imagePipeline === 'flux2_turbo_compose' ? 'flux2_turbo_compose' : 'flux2_compose'
                 : currentNode.imagePipeline ?? 'sdxl',
+              ...(isCharacterReferenceNode(currentNode) ? {
+                referencePrompt: currentNode.masterPrompt ?? '',
+                referenceContext: typeof currentNode.metadata?.promptContext === 'string' ? currentNode.metadata.promptContext : '',
+              } : {}),
               rerolledAt: new Date().toISOString(),
             },
           },
@@ -1873,7 +1887,7 @@ export const useNodeManagement = (
     setNodes((previousNodes) => {
       const node = previousNodes[nodeId];
       if (!node || node.nodeType !== 'pollinations_image') return previousNodes;
-      const isReference = node.metadata?.isReference === true;
+      const isReference = isCharacterReferenceNode(node);
       return {
         ...previousNodes,
         [nodeId]: {

@@ -1,4 +1,9 @@
-import { DEFAULT_SCENE_COUNT, MISTRAL_MODELS } from './constants';
+import {
+  DEFAULT_FORMAT_BIBLE,
+  DEFAULT_KNOWLEDGE_BASE,
+  DEFAULT_SCENE_COUNT,
+  MISTRAL_MODELS,
+} from './constants';
 import {
   ImagePipeline,
   NodeData,
@@ -68,6 +73,34 @@ export const createStarterNodes = (): NodesState => ({
     outputNodeLabel: 'СЦЕНАРИЙ ВИЗУАЛИЗАЦИИ',
     selectedModel: MISTRAL_MODELS[0],
     sceneCount: DEFAULT_SCENE_COUNT,
+  },
+  formatBibleNode: {
+    nodeType: 'script_detail',
+    x: 480,
+    y: 40,
+    label: 'Библия формата',
+    width: 420,
+    height: 300,
+    isGenerated: true,
+    level: 0,
+    inputValue: DEFAULT_FORMAT_BIBLE,
+    metadata: {
+      sourceKind: 'format_bible',
+    },
+  },
+  knowledgeBaseNode: {
+    nodeType: 'script_detail',
+    x: 920,
+    y: 40,
+    label: 'База знаний',
+    width: 430,
+    height: 300,
+    isGenerated: true,
+    level: 0,
+    inputValue: DEFAULT_KNOWLEDGE_BASE,
+    metadata: {
+      sourceKind: 'knowledge_base',
+    },
   },
 });
 

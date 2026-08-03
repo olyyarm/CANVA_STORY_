@@ -137,6 +137,7 @@ const App = () => {
     handleContinueAssociation,
     handleScriptVisualization,
     handleBuildScenarioFromBrief,
+    handleEnsureStoryReferenceNodes,
     handleScenarioDetailClick,
     handleCreateSceneNodes,
     handleGenerateSceneLocationAsset,
@@ -574,6 +575,7 @@ const App = () => {
         </div>
         <div className="project-actions" aria-label="Действия с проектом">
           <span className="node-count">{nodeEntries.length} нод</span>
+          <button type="button" onClick={handleEnsureStoryReferenceNodes}>Базы</button>
           <button type="button" onClick={handleUnloadLocalModels} disabled={isUnloadingModels}>
             {isUnloadingModels ? 'Выгружаю…' : 'Выгрузить модели'}
           </button>

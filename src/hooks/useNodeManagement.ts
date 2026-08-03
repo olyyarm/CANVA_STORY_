@@ -16,6 +16,8 @@ import {
 import {
   ASSOCIATE_SYSTEM_PROMPT,
   CHARACTER_ASSET_PROMPT_SYSTEM_PROMPT,
+  DEFAULT_FORMAT_BIBLE,
+  DEFAULT_KNOWLEDGE_BASE,
   HERO_DETAIL_SYSTEM_PROMPT,
   LOCATION_ASSET_PROMPT_SYSTEM_PROMPT,
   LOCATION_DETAIL_SYSTEM_PROMPT,
@@ -62,6 +64,7 @@ interface UseNodeManagementReturn {
   handleContinueAssociation: (sourceNodeId: string) => Promise<void>;
   handleScriptVisualization: (sourceNodeId: string) => Promise<void>;
   handleBuildScenarioFromBrief: (briefNodeId: string) => Promise<void>;
+  handleEnsureStoryReferenceNodes: () => void;
   handleScenarioDetailClick: (sourceNodeId: string, detailType: DetailType) => Promise<void>;
   handleCreateSceneNodes: (sourceNodeId: string) => void;
   handleGenerateScenePrompt: (sceneNodeId: string) => Promise<void>;
@@ -93,6 +96,33 @@ const detailConfig: Record<DetailType, {
 
 const getExistingChild = (nodes: NodesState, parentId: string, predicate: (node: NodeData) => boolean) =>
   Object.entries(nodes).find(([, node]) => node.parentId === parentId && predicate(node));
+
+const referenceSourceKinds = new Set(['format_bible', 'knowledge_base']);
+
+const getStoryReferenceContext = (nodes: NodesState) => {
+  const references = Object.values(nodes)
+    .filter((node) =>
+      node.nodeType === 'script_detail'
+      && typeof node.metadata?.sourceKind === 'string'
+      && referenceSourceKinds.has(node.metadata.sourceKind)
+      && node.inputValue?.trim())
+    .sort((first, second) => first.label.localeCompare(second.label, 'ru'));
+
+  if (references.length === 0) return '';
+  return references
+    .map((node) => `${node.label}:\n${node.inputValue?.trim()}`)
+    .join('\n\n');
+};
+
+const withStoryReferenceContext = (prompt: string, nodes: NodesState) => {
+  const context = getStoryReferenceContext(nodes);
+  if (!context) return prompt;
+  return [
+    prompt,
+    'Справочные базы проекта. Используй как ориентир для структуры, фактуры, профессий, лазеек и эмоционального тона. Не копируй дословно, если это пример или шаблон.',
+    context,
+  ].join('\n\n');
+};
 
 const getSceneNumber = (label: string) => {
   const match = label.match(/сцена\s*(\d+)/iu);
@@ -431,7 +461,7 @@ export const useNodeManagement = (
       : SCENARIO_SYSTEM_PROMPT;
     const result = await requestText(sourceNodeId, {
       operation: 'scenario',
-      prompt: script,
+      prompt: withStoryReferenceContext(script, nodesRef.current),
       systemPrompt,
       model: sourceNode.selectedModel || MISTRAL_MODELS[0],
       sceneCount,
@@ -441,6 +471,66 @@ export const useNodeManagement = (
     setNodes((previousNodes) => upsertScenarioGraph(previousNodes, sourceNodeId, result, sceneCount));
     showNotice('success', `Сценарий и ${parseSceneBlocks(result, sceneCount).length} сцен готовы.`);
   }, [requestText, setNodes, showNotice, updateNode]);
+
+  const handleEnsureStoryReferenceNodes = useCallback(() => {
+    setNodes((previousNodes) => {
+      const existingFormatBible = Object.values(previousNodes).some(
+        (node) => node.nodeType === 'script_detail' && node.metadata?.sourceKind === 'format_bible',
+      );
+      const existingKnowledgeBase = Object.values(previousNodes).some(
+        (node) => node.nodeType === 'script_detail' && node.metadata?.sourceKind === 'knowledge_base',
+      );
+      if (existingFormatBible && existingKnowledgeBase) {
+        showNotice('info', 'Базы уже есть на канве.');
+        return previousNodes;
+      }
+
+      const anchor = Object.values(previousNodes).find((node) => node.nodeType === 'script_input')
+        ?? Object.values(previousNodes)[0];
+      const anchorX = anchor?.x ?? 40;
+      const anchorY = anchor?.y ?? 40;
+      const nextNodes = { ...previousNodes };
+
+      if (!existingFormatBible) {
+        nextNodes[generateNodeId()] = {
+          nodeType: 'script_detail',
+          x: anchorX + 450,
+          y: anchorY,
+          label: 'Библия формата',
+          width: 420,
+          height: 300,
+          isGenerated: true,
+          level: anchor?.level ?? 0,
+          inputValue: DEFAULT_FORMAT_BIBLE,
+          error: undefined,
+          metadata: {
+            sourceKind: 'format_bible',
+          },
+        };
+      }
+
+      if (!existingKnowledgeBase) {
+        nextNodes[generateNodeId()] = {
+          nodeType: 'script_detail',
+          x: anchorX + 890,
+          y: anchorY,
+          label: 'База знаний',
+          width: 430,
+          height: 300,
+          isGenerated: true,
+          level: anchor?.level ?? 0,
+          inputValue: DEFAULT_KNOWLEDGE_BASE,
+          error: undefined,
+          metadata: {
+            sourceKind: 'knowledge_base',
+          },
+        };
+      }
+
+      showNotice('success', 'Библия формата и база знаний готовы.');
+      return nextNodes;
+    });
+  }, [setNodes, showNotice]);
 
   const handleBuildScenarioFromBrief = useCallback(async (briefNodeId: string) => {
     const briefNode = nodesRef.current[briefNodeId];
@@ -465,7 +555,7 @@ export const useNodeManagement = (
       : SCENARIO_SYSTEM_PROMPT;
     const result = await requestText(briefNodeId, {
       operation: 'scenario',
-      prompt: brief,
+      prompt: withStoryReferenceContext(brief, nodesRef.current),
       systemPrompt,
       model: briefNode.selectedModel || sourceNode.selectedModel || MISTRAL_MODELS[0],
       sceneCount,
@@ -482,7 +572,7 @@ export const useNodeManagement = (
     const config = detailConfig[detailType];
     const result = await requestText(sourceNodeId, {
       operation: config.operation,
-      prompt: sourceNode.inputValue,
+      prompt: withStoryReferenceContext(sourceNode.inputValue, nodesRef.current),
       systemPrompt: config.systemPrompt,
       model: sourceNode.selectedModel || MISTRAL_MODELS[0],
       sceneCount: sourceNode.sceneCount,
@@ -1050,7 +1140,7 @@ export const useNodeManagement = (
     ].join('\n\n');
     const result = await requestText(detailNodeId, {
       operation: 'narration_edit',
-      prompt,
+      prompt: withStoryReferenceContext(prompt, nodesRef.current),
       systemPrompt: NARRATION_EDIT_SYSTEM_PROMPT,
       model: detailNode.selectedModel || parentNode?.selectedModel || MISTRAL_MODELS[0],
       sceneCount: detailNode.sceneCount ?? parentNode?.sceneCount,
@@ -1100,7 +1190,7 @@ export const useNodeManagement = (
 
     const revisedBrief = await requestText(detailNodeId, {
       operation: 'brief_revision',
-      prompt: briefPrompt,
+      prompt: withStoryReferenceContext(briefPrompt, nodesRef.current),
       systemPrompt: STORY_BRIEF_REVISION_SYSTEM_PROMPT,
       model,
       sceneCount,
@@ -1113,7 +1203,7 @@ export const useNodeManagement = (
       : SCENARIO_SYSTEM_PROMPT;
     const revisedScenario = await requestText(detailNodeId, {
       operation: 'scenario',
-      prompt: revisedBrief,
+      prompt: withStoryReferenceContext(revisedBrief, nodesRef.current),
       systemPrompt: scenarioSystemPrompt,
       model,
       sceneCount,
@@ -1122,7 +1212,7 @@ export const useNodeManagement = (
 
     const revisedNarration = await requestText(detailNodeId, {
       operation: 'narration',
-      prompt: revisedScenario,
+      prompt: withStoryReferenceContext(revisedScenario, nodesRef.current),
       systemPrompt: NARRATION_DETAIL_SYSTEM_PROMPT,
       model,
       sceneCount,
@@ -1409,6 +1499,7 @@ export const useNodeManagement = (
     handleContinueAssociation,
     handleScriptVisualization,
     handleBuildScenarioFromBrief,
+    handleEnsureStoryReferenceNodes,
     handleScenarioDetailClick,
     handleCreateSceneNodes,
     handleGenerateScenePrompt,

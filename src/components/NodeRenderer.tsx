@@ -82,6 +82,8 @@ const NodeRenderer: React.FC<NodeRendererProps> = ({
   const isTextOutput = node.nodeType === 'script_output' || node.nodeType === 'script_detail';
   const canGenerateDetailAsset = node.nodeType === 'script_detail' && (node.label === 'Герои' || node.label === 'Локации');
   const canBuildScenarioFromBrief = node.nodeType === 'script_detail' && node.metadata?.sourceKind === 'brief_revision';
+  const isEditableReferenceNode = node.nodeType === 'script_detail'
+    && (node.metadata?.sourceKind === 'format_bible' || node.metadata?.sourceKind === 'knowledge_base');
   const detailRowCount = countDetailRows(node.inputValue);
   const isBusy = Boolean(node.isLoading || node.isLoadingImage);
   const loadingLabel = node.isLoadingImage
@@ -261,7 +263,20 @@ const NodeRenderer: React.FC<NodeRendererProps> = ({
           </>
         )}
 
-        {isTextOutput && node.inputValue && (
+        {isEditableReferenceNode && (
+          <label className="node-field node-field--grow">
+            <span>Материал</span>
+            <textarea
+              value={node.inputValue ?? ''}
+              onChange={(event) => onInputChange(event, id)}
+              onMouseDown={stopMouseDown}
+              placeholder="Добавьте правила формата, факты, профессии, кейсы или наблюдения..."
+              disabled={node.isLoading}
+            />
+          </label>
+        )}
+
+        {isTextOutput && node.inputValue && !isEditableReferenceNode && (
           <div className="node-output">
             <div className="node-output__text">{node.inputValue}</div>
             {renderCopyButton(node.inputValue)}

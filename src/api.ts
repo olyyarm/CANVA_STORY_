@@ -28,6 +28,11 @@ export interface ImageGenerationSettings {
   comfyCheckpoint: string;
 }
 
+export interface Flux2CharacterReference {
+  imageUrl: string;
+  label: string;
+}
+
 export const getDefaultGenerationMode = (): GenerationMode => {
   const apiKey = import.meta.env.VITE_MISTRAL_API_KEY?.trim();
   const forceMock = String(import.meta.env.VITE_MOCK_MODE).toLowerCase() === 'true';
@@ -644,6 +649,66 @@ const uploadComfyInputImage = async (
   return payload.name || fileName;
 };
 
+const loadCanvasImage = async (imageUrl: string, signal?: AbortSignal) => {
+  const response = await fetch(imageUrl, { signal });
+  if (!response.ok) throw new Error(`Не удалось прочитать character reference для Flux2: ${response.status}.`);
+  const objectUrl = URL.createObjectURL(await response.blob());
+  const image = new Image();
+  image.src = objectUrl;
+  await image.decode();
+  return { image, objectUrl };
+};
+
+const createCharacterReferenceBoard = async (
+  references: Flux2CharacterReference[],
+  signal?: AbortSignal,
+) => {
+  const loadedImages = await Promise.all(references.map((reference) => loadCanvasImage(reference.imageUrl, signal)));
+  const size = 1024;
+  const count = loadedImages.length;
+  const columns = count <= 2 ? count : Math.ceil(Math.sqrt(count));
+  const rows = Math.ceil(count / columns);
+  const canvas = document.createElement('canvas');
+  canvas.width = size;
+  canvas.height = size;
+  const context = canvas.getContext('2d');
+  if (!context) throw new Error('Браузер не смог собрать reference-board для Flux2.');
+
+  context.fillStyle = '#d8d4ca';
+  context.fillRect(0, 0, size, size);
+  const cellWidth = size / columns;
+  const cellHeight = size / rows;
+  const padding = Math.max(18, Math.min(cellWidth, cellHeight) * 0.06);
+
+  loadedImages.forEach(({ image }, index) => {
+    const column = index % columns;
+    const row = Math.floor(index / columns);
+    const targetX = column * cellWidth + padding;
+    const targetY = row * cellHeight + padding;
+    const targetWidth = cellWidth - padding * 2;
+    const targetHeight = cellHeight - padding * 2;
+    const scale = Math.min(targetWidth / image.width, targetHeight / image.height);
+    const drawWidth = image.width * scale;
+    const drawHeight = image.height * scale;
+    context.drawImage(
+      image,
+      targetX + (targetWidth - drawWidth) / 2,
+      targetY + (targetHeight - drawHeight) / 2,
+      drawWidth,
+      drawHeight,
+    );
+  });
+
+  loadedImages.forEach(({ objectUrl }) => URL.revokeObjectURL(objectUrl));
+  const blob = await new Promise<Blob>((resolve, reject) => {
+    canvas.toBlob((value) => {
+      if (value) resolve(value);
+      else reject(new Error('Браузер не смог сохранить reference-board для Flux2.'));
+    }, 'image/png');
+  });
+  return URL.createObjectURL(blob);
+};
+
 const buildComfyFlux2ComposeWorkflow = (
   prompt: string,
   backgroundImageName: string,
@@ -824,14 +889,23 @@ const buildComfyFlux2ComposeWorkflow = (
 export const generateComfyFlux2ComposeImage = async (
   prompt: string,
   backgroundImageUrl: string,
-  characterImageUrl: string,
+  characterReferences: Flux2CharacterReference[] | string,
   pipeline: Extract<ImagePipeline, 'flux2_compose' | 'flux2_turbo_compose'>,
   settings: ImageGenerationSettings,
   signal?: AbortSignal,
 ) => {
   const baseUrl = getComfyBaseUrl(settings.comfyEndpoint);
+  let referenceBoardUrl: string | null = null;
   try {
     if (settings.provider !== 'comfyui') throw new Error('Flux2 compose работает только через ComfyUI.');
+    const normalizedReferences = Array.isArray(characterReferences)
+      ? characterReferences.filter((reference) => reference.imageUrl)
+      : [{ imageUrl: characterReferences, label: 'character reference' }];
+    if (normalizedReferences.length === 0) throw new Error('Для Flux2 нужен хотя бы один character reference.');
+    const characterImageUrl = normalizedReferences.length === 1
+      ? normalizedReferences[0].imageUrl
+      : await createCharacterReferenceBoard(normalizedReferences, signal);
+    if (normalizedReferences.length > 1) referenceBoardUrl = characterImageUrl;
     const [backgroundImageName, characterImageName] = await Promise.all([
       uploadComfyInputImage(baseUrl, backgroundImageUrl, 'canva-story-bg', signal),
       uploadComfyInputImage(baseUrl, characterImageUrl, 'canva-story-ref', signal),
@@ -874,6 +948,8 @@ export const generateComfyFlux2ComposeImage = async (
       throw new Error(`Не удалось подключиться к ComfyUI по адресу ${baseUrl}. Проверьте ComfyUI и CORS.`);
     }
     throw error;
+  } finally {
+    if (referenceBoardUrl) URL.revokeObjectURL(referenceBoardUrl);
   }
 };
 

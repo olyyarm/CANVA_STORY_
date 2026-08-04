@@ -7,6 +7,7 @@ import {
   useState,
 } from 'react';
 import {
+  Flux2CharacterReference,
   generateComfyFlux2ComposeImage,
   generateImage,
   generateText,
@@ -303,6 +304,13 @@ const getImagePromptKind = (node: NodeData): ImagePromptKind => {
 const getAssetKind = (node: NodeData) =>
   typeof node.metadata?.assetKind === 'string' ? node.metadata.assetKind : '';
 
+const MAX_SCENE_CHARACTER_REFERENCES = 6;
+
+const getCharacterAssetIndex = (node: NodeData) => {
+  const match = getAssetKind(node).match(/^character_asset:(\d+)$/u);
+  return match ? Number(match[1]) : null;
+};
+
 const isCharacterReferenceNode = (node: NodeData) =>
   node.metadata?.isReference === true
   || (getAssetKind(node).startsWith('character_asset') && node.metadata?.isReference !== false);
@@ -357,6 +365,49 @@ const selectBestCharacterReference = (nodes: NodeData[], sceneLabel: string, sce
   nodes
     .map((node, index) => ({ node, score: getReferenceMatchScore(node, sceneLabel, sceneDescription, index) }))
     .sort((left, right) => right.score - left.score)[0]?.node;
+
+const selectSceneCharacterReferences = (
+  nodes: NodesState,
+  sceneNode: NodeData,
+  sceneDescription: string,
+) => {
+  const sceneNumber = getSceneNumber(sceneNode.label);
+  const details = Object.values(nodes).filter(
+    (node) => node.parentId === sceneNode.parentId && node.nodeType === 'script_detail',
+  );
+  const heroesText = details.find((node) => node.label === 'Герои')?.inputValue ?? '';
+  const characterDescriptions = getCharacterDescriptions(heroesText);
+  const characterAssets = Object.values(nodes).filter((node) =>
+    node.nodeType === 'pollinations_image'
+    && getAssetKind(node).startsWith('character_asset')
+    && isCharacterReferenceNode(node)
+    && Boolean(node.imageUrl));
+
+  const scored = characterAssets.map((node, index) => {
+    const assetIndex = getCharacterAssetIndex(node);
+    const description = assetIndex === null ? '' : characterDescriptions[assetIndex] ?? '';
+    const sceneNumbers = description ? getReferencedSceneNumbers(description) : null;
+    let score = getReferenceMatchScore(node, sceneNode.label, sceneDescription, index);
+    if (sceneNumber && sceneNumbers?.has(sceneNumber)) score += 150;
+    if (sceneNumber && sceneNumbers && !sceneNumbers.has(sceneNumber)) score -= 250;
+    if (description && !sceneNumbers && /(все[х\s]+сцен|каждой сцен|all scenes)/iu.test(description)) score += 130;
+    return { node, score };
+  }).sort((left, right) => right.score - left.score);
+
+  const selected = scored
+    .filter(({ score }) => score >= 60)
+    .slice(0, MAX_SCENE_CHARACTER_REFERENCES)
+    .map(({ node }) => node);
+
+  if (selected.length > 0) return selected;
+  const fallback = selectBestCharacterReference(characterAssets, sceneNode.label, sceneDescription);
+  return fallback ? [fallback] : [];
+};
+
+const toFlux2CharacterReference = (node: NodeData): Flux2CharacterReference => ({
+  imageUrl: node.imageUrl ?? '',
+  label: getReferenceLabel(node),
+});
 
 const upsertScenarioGraph = (
   previousNodes: NodesState,
@@ -1282,18 +1333,17 @@ export const useNodeManagement = (
       && node.nodeType === 'pollinations_image'
       && getAssetKind(node) === 'scene_location'
       && Boolean(node.imageUrl));
-    const characterAssets = Object.values(currentNodes).filter((node) =>
-      node.nodeType === 'pollinations_image'
-      && getAssetKind(node).startsWith('character_asset')
-      && Boolean(node.imageUrl));
-    const activeCharacterReferences = characterAssets.filter(isCharacterReferenceNode);
-    const referenceNode = selectBestCharacterReference(activeCharacterReferences, sceneNode.label, sceneDescription);
+    const referenceNodes = selectSceneCharacterReferences(currentNodes, sceneNode, sceneDescription);
+    const referenceLabels = referenceNodes.map(getReferenceLabel);
+    const referenceNodeIds = referenceNodes.map((referenceNode) =>
+      Object.entries(currentNodes).find(([, node]) => node === referenceNode)?.[0] ?? '',
+    ).filter(Boolean);
 
     if (!locationNode?.imageUrl) {
       updateNode(sceneNodeId, { pollinationsApiError: 'Сначала сгенерируйте локацию этой сцены.' });
       return;
     }
-    if (!referenceNode?.imageUrl) {
+    if (referenceNodes.length === 0 || referenceNodes.some((referenceNode) => !referenceNode.imageUrl)) {
       updateNode(sceneNodeId, { pollinationsApiError: 'Сначала сгенерируйте или отметьте референс персонажа.' });
       return;
     }
@@ -1304,12 +1354,17 @@ export const useNodeManagement = (
     const controller = new AbortController();
     activeRequests.current.set(requestId, controller);
 
-    const referenceLabel = getReferenceLabel(referenceNode);
+    const referenceSummary = referenceLabels.map((label, index) => `${index + 1}. ${label}`).join('; ');
     const composePrompt = [
       `Use the first reference image as the background location plate for ${sceneNode.label}.`,
-      `Use the second reference image as the character identity reference for ${referenceLabel}.`,
+      referenceNodes.length > 1
+        ? `Use the second reference image as a character reference board. It contains these character references in reading order: ${referenceSummary}.`
+        : `Use the second reference image as the character identity reference for ${referenceSummary}.`,
       'Create one coherent story frame: place the character naturally inside the location, matching perspective, scale, light direction, shadows, color palette, and painterly style.',
-      'Preserve the character identity, clothing, body type, and face from the character reference. Preserve the architecture and mood from the location reference.',
+      referenceNodes.length > 1
+        ? 'Preserve the identity, clothing, body type, and face of each listed character from the reference board. Include the characters required by the scene action; do not invent extra main characters.'
+        : 'Preserve the character identity, clothing, body type, and face from the character reference.',
+      'Preserve the architecture and mood from the location reference.',
       `Scene action: ${sceneDescription}`,
       'Do not create a character sheet, turnaround, lineup, text, watermark, UI, border, split-screen, or collage.',
     ].join(' ');
@@ -1317,8 +1372,7 @@ export const useNodeManagement = (
       `Сцена: ${sceneNode.label}`,
       `Описание сцены:\n${sceneDescription}`,
       `Локация-референс: ${locationNode.label}`,
-      `Персонаж-референс: ${referenceNode.label}`,
-      `Имя персонажа-референса: ${referenceLabel}`,
+      `Персонажи-референсы:\n${referenceNodes.map((referenceNode, index) => `${index + 1}. ${referenceNode.label} — ${getReferenceLabel(referenceNode)}`).join('\n')}`,
     ].join('\n\n');
 
     try {
@@ -1334,14 +1388,15 @@ export const useNodeManagement = (
       const imageUrl = await generateComfyFlux2ComposeImage(
         composePrompt,
         locationNode.imageUrl,
-        referenceNode.imageUrl,
+        referenceNodes.map(toFlux2CharacterReference),
         pipeline,
         imageGenerationSettings,
         controller.signal,
       );
       upsertImageNode(sceneNodeId, imageUrl, isTurbo ? 'Кадр Flux2 Turbo' : 'Кадр Flux2', 'scene_flux2_frame', isTurbo ? 3 : 2, composePrompt, promptContext, {
         backgroundNodeId: Object.entries(currentNodes).find(([, node]) => node === locationNode)?.[0] ?? '',
-        characterReferenceNodeId: Object.entries(currentNodes).find(([, node]) => node === referenceNode)?.[0] ?? '',
+        characterReferenceNodeId: referenceNodeIds[0] ?? '',
+        characterReferenceNodeIds: referenceNodeIds.join(','),
         imagePipeline: pipeline,
       });
       showNotice('success', `${isTurbo ? 'Flux2 Turbo' : 'Flux2'} собрал кадр для «${sceneNode.label}».`);
@@ -1866,17 +1921,22 @@ export const useNodeManagement = (
       let imageUrl: string;
       if (assetKind === 'scene_flux2_frame') {
         const backgroundNodeId = typeof node.metadata?.backgroundNodeId === 'string' ? node.metadata.backgroundNodeId : '';
+        const characterReferenceNodeIds = typeof node.metadata?.characterReferenceNodeIds === 'string'
+          ? node.metadata.characterReferenceNodeIds.split(',').map((value) => value.trim()).filter(Boolean)
+          : [];
         const characterReferenceNodeId = typeof node.metadata?.characterReferenceNodeId === 'string' ? node.metadata.characterReferenceNodeId : '';
         const backgroundNode = nodesRef.current[backgroundNodeId];
-        const characterNode = nodesRef.current[characterReferenceNodeId];
-        if (!backgroundNode?.imageUrl || !characterNode?.imageUrl) {
+        const characterNodes = (characterReferenceNodeIds.length > 0 ? characterReferenceNodeIds : [characterReferenceNodeId])
+          .map((referenceNodeId) => nodesRef.current[referenceNodeId])
+          .filter((referenceNode): referenceNode is NodeData => Boolean(referenceNode?.imageUrl));
+        if (!backgroundNode?.imageUrl || characterNodes.length === 0) {
           throw new Error('Не найдены исходная локация или персонаж для повторной сборки Flux2.');
         }
         const composePipeline = node.imagePipeline === 'flux2_turbo_compose' ? 'flux2_turbo_compose' : 'flux2_compose';
         imageUrl = await generateComfyFlux2ComposeImage(
           prompt,
           backgroundNode.imageUrl,
-          characterNode.imageUrl,
+          characterNodes.map(toFlux2CharacterReference),
           composePipeline,
           imageGenerationSettings,
           controller.signal,

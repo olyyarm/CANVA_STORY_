@@ -10,7 +10,11 @@ const FLUX2_DIFFUSION_MODEL = 'flux2_dev_fp8mixed.safetensors';
 const FLUX2_TEXT_ENCODER = 'mistral_3_small_flux2_fp8.safetensors';
 const FLUX2_VAE = 'flux2-vae.safetensors';
 const FLUX2_TURBO_LORA = 'Flux_2-Turbo-LoRA_comfyui.safetensors';
+const Z_IMAGE_TURBO_DIFFUSION_MODEL = 'z_image_turbo_bf16.safetensors';
+const Z_IMAGE_TEXT_ENCODER = 'qwen_3_4b.safetensors';
+const Z_IMAGE_VAE = 'ae.safetensors';
 const COMFY_SDXL_TIMEOUT_MS = 4 * 60 * 1000;
+const COMFY_Z_IMAGE_TIMEOUT_MS = 45 * 60 * 1000;
 const COMFY_FLUX2_TIMEOUT_MS = 6 * 60 * 60 * 1000;
 const COMFY_TTS_TIMEOUT_MS = 45 * 60 * 1000;
 
@@ -442,6 +446,93 @@ const buildComfySdxlWorkflow = (prompt: string, checkpoint: string, promptKind: 
   };
 };
 
+const buildComfyZImageTurboWorkflow = (prompt: string, promptKind: ImagePromptKind) => {
+  const seed = Math.floor(Math.random() * 1_000_000_000);
+  const isCharacterAsset = promptKind === 'character_asset';
+  const width = isCharacterAsset ? 832 : 1024;
+  const height = isCharacterAsset ? 1216 : 1024;
+  return {
+    '3': {
+      class_type: 'KSampler',
+      inputs: {
+        cfg: 1,
+        denoise: 1,
+        latent_image: ['13', 0],
+        model: ['11', 0],
+        negative: ['33', 0],
+        positive: ['27', 0],
+        sampler_name: 'res_multistep',
+        scheduler: 'simple',
+        seed,
+        steps: 8,
+      },
+    },
+    '8': {
+      class_type: 'VAEDecode',
+      inputs: {
+        samples: ['3', 0],
+        vae: ['29', 0],
+      },
+    },
+    '9': {
+      class_type: 'SaveImage',
+      inputs: {
+        filename_prefix: 'CANVA_STORY_Z_IMAGE',
+        images: ['8', 0],
+      },
+    },
+    '11': {
+      class_type: 'ModelSamplingAuraFlow',
+      inputs: {
+        model: ['28', 0],
+        shift: 3,
+      },
+    },
+    '13': {
+      class_type: 'EmptySD3LatentImage',
+      inputs: {
+        batch_size: 1,
+        height,
+        width,
+      },
+    },
+    '27': {
+      class_type: 'CLIPTextEncode',
+      inputs: {
+        clip: ['30', 0],
+        text: prompt,
+      },
+    },
+    '28': {
+      class_type: 'UNETLoader',
+      inputs: {
+        unet_name: Z_IMAGE_TURBO_DIFFUSION_MODEL,
+        weight_dtype: 'default',
+      },
+    },
+    '29': {
+      class_type: 'VAELoader',
+      inputs: {
+        vae_name: Z_IMAGE_VAE,
+      },
+    },
+    '30': {
+      class_type: 'CLIPLoader',
+      inputs: {
+        clip_name: Z_IMAGE_TEXT_ENCODER,
+        device: 'default',
+        type: 'lumina2',
+      },
+    },
+    '33': {
+      class_type: 'ConditioningZeroOut',
+      inputs: {
+        conditioning: ['27', 0],
+      },
+    },
+  };
+};
+
 interface ComfyPromptResponse {
   prompt_id?: string;
 }
@@ -709,9 +800,12 @@ const generateComfyImage = async (
 ) => {
   const baseUrl = getComfyBaseUrl(settings.comfyEndpoint);
   try {
-    if (pipeline !== 'sdxl') throw new Error('Этот генератор ожидает pipeline SDXL.');
-    const checkpoint = await resolveComfyCheckpoint(baseUrl, settings.comfyCheckpoint, signal);
-    const workflow = buildComfySdxlWorkflow(prompt, checkpoint, promptKind);
+    if (pipeline !== 'sdxl' && pipeline !== 'z_image_turbo') {
+      throw new Error('Этот генератор ожидает pipeline SDXL или Z-Image Turbo.');
+    }
+    const workflow = pipeline === 'sdxl'
+      ? buildComfySdxlWorkflow(prompt, await resolveComfyCheckpoint(baseUrl, settings.comfyCheckpoint, signal), promptKind)
+      : buildComfyZImageTurboWorkflow(prompt, promptKind);
     const clientId = typeof crypto.randomUUID === 'function'
       ? crypto.randomUUID()
       : `canva-story-${Date.now()}`;
@@ -723,12 +817,17 @@ const generateComfyImage = async (
       body: JSON.stringify({ client_id: clientId, prompt: workflow }),
     });
     if (!promptResponse.ok) {
-      throw new Error(getComfyError('ComfyUI не принял SDXL workflow', promptResponse, await readResponseDetails(promptResponse)));
+      throw new Error(getComfyError(`ComfyUI не принял ${pipeline === 'sdxl' ? 'SDXL' : 'Z-Image Turbo'} workflow`, promptResponse, await readResponseDetails(promptResponse)));
     }
     const promptData: ComfyPromptResponse = await promptResponse.json();
     if (!promptData.prompt_id) throw new Error('ComfyUI не вернул prompt_id. Проверьте workflow в консоли ComfyUI.');
 
-    const image = await waitForComfyImage(baseUrl, promptData.prompt_id, COMFY_SDXL_TIMEOUT_MS, signal);
+    const image = await waitForComfyImage(
+      baseUrl,
+      promptData.prompt_id,
+      pipeline === 'sdxl' ? COMFY_SDXL_TIMEOUT_MS : COMFY_Z_IMAGE_TIMEOUT_MS,
+      signal,
+    );
     if (!image) throw new Error('ComfyUI не вернул изображение за отведённое время. Проверьте, не упал ли workflow в окне ComfyUI.');
 
     const params = new URLSearchParams({

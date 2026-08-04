@@ -347,6 +347,21 @@ const NodeRenderer: React.FC<NodeRendererProps> = ({
           <div className="node-message node-message--error" role="alert">{node.pollinationsApiError}</div>
         )}
 
+        {canGenerateDetailAsset && imageProvider === 'comfyui' && (
+          <label className="node-field node-field--inline">
+            <span>Pipeline</span>
+            <select
+              value={node.imagePipeline ?? 'sdxl'}
+              onChange={(event) => onImagePipelineChange(event, id)}
+              onMouseDown={stopMouseDown}
+              disabled={node.isLoadingImage}
+            >
+              <option value="sdxl">SDXL</option>
+              <option value="z_image_turbo">Z-Image Turbo</option>
+            </select>
+          </label>
+        )}
+
         {canGenerateDetailAsset && (
           <button
             type="button"
@@ -509,6 +524,7 @@ const NodeRenderer: React.FC<NodeRendererProps> = ({
                   disabled={node.isLoadingImage}
                 >
                   <option value="sdxl">SDXL</option>
+                  <option value="z_image_turbo">Z-Image Turbo</option>
                 </select>
               </label>
             )}

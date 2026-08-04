@@ -593,7 +593,8 @@ export const useNodeManagement = (
   }, [updateNode]);
 
   const handleImagePipelineChange = useCallback((event: React.ChangeEvent<HTMLSelectElement>, nodeId: string) => {
-    updateNode(nodeId, { imagePipeline: event.target.value === 'sdxl' ? 'sdxl' : 'sdxl', pollinationsApiError: undefined });
+    const nextPipeline = event.target.value === 'z_image_turbo' ? 'z_image_turbo' : 'sdxl';
+    updateNode(nodeId, { imagePipeline: nextPipeline, pollinationsApiError: undefined });
   }, [updateNode]);
 
   const handleSceneCountChange = useCallback((event: React.ChangeEvent<HTMLInputElement>, nodeId: string) => {
@@ -1195,7 +1196,7 @@ export const useNodeManagement = (
         loadingProvider: generationSettings.mode,
         error: undefined,
         pollinationsApiError: undefined,
-        statusMessage: 'Определяем локацию сцены и собираем SDXL prompt...',
+        statusMessage: 'Определяем локацию сцены и собираем image prompt...',
       });
 
       const locationPrompt = await generateText({
@@ -1278,7 +1279,7 @@ export const useNodeManagement = (
         loadingProvider: generationSettings.mode,
         error: undefined,
         pollinationsApiError: undefined,
-        statusMessage: 'Выбираем героев сцены и собираем SDXL prompt...',
+        statusMessage: 'Выбираем героев сцены и собираем image prompt...',
       });
 
       const characterPrompt = await generateText({
@@ -1513,7 +1514,7 @@ export const useNodeManagement = (
         loadingProvider: generationSettings.mode,
         error: undefined,
         pollinationsApiError: undefined,
-        statusMessage: 'Собираем SDXL prompt для location sheet...',
+        statusMessage: 'Собираем image prompt для location sheet...',
       });
 
       const assetPrompt = await generateText({

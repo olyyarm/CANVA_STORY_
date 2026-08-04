@@ -1366,13 +1366,16 @@ export const useNodeManagement = (
       referenceNodes.length > 1
         ? `Use the second reference image as a character reference board. It contains these character references in reading order: ${referenceSummary}.`
         : `Use the second reference image as the character identity reference for ${referenceSummary}.`,
-      'Create one coherent story frame: place the character naturally inside the location, matching perspective, scale, light direction, shadows, color palette, and painterly style.',
+      'Create one coherent cinematic story frame inside the location, not a collage and not a reference sheet.',
       referenceNodes.length > 1
-        ? 'Preserve the identity, clothing, body type, and face of each listed character from the reference board. Include the characters required by the scene action; do not invent extra main characters.'
-        : 'Preserve the character identity, clothing, body type, and face from the character reference.',
-      'Preserve the architecture and mood from the location reference.',
+        ? 'Use the character reference board only as an identity guide. Select the characters required by the scene action from the listed references, place each required character naturally in the same environment, and keep their relative scale believable. Do not render the reference board itself.'
+        : 'Place the referenced character naturally inside the location.',
+      referenceNodes.length > 1
+        ? 'For every included character, preserve the matching identity, clothing, body type, face, age, and role from its numbered reference. Do not merge characters, swap identities, clone faces, or invent extra main characters.'
+        : 'Preserve the character identity, clothing, body type, face, age, and role from the character reference.',
+      'Match perspective, scale, light direction, shadows, color palette, and painterly style to the location plate. Preserve the architecture and mood from the location reference.',
       `Scene action: ${sceneDescription}`,
-      'Do not create a character sheet, turnaround, lineup, text, watermark, UI, border, split-screen, or collage.',
+      'Compose the action with clear staging: foreground, midground, and background should read as one continuous scene. Do not create a character sheet, turnaround, lineup, text, watermark, UI, border, split-screen, or collage.',
     ].join(' ');
     const promptContext = [
       `Сцена: ${sceneNode.label}`,

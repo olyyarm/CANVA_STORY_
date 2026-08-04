@@ -1124,6 +1124,9 @@ export const useNodeManagement = (
       if (existing?.[1].imageUrl?.startsWith('blob:')) URL.revokeObjectURL(existing[1].imageUrl);
       const imageNodeId = existing?.[0] ?? generateNodeId();
       const parentWidth = parentNode.width ?? 320;
+      const defaultImageSize = isCharacterAsset
+        ? { width: 320, height: 520 }
+        : { width: 360, height: 360 };
       return {
         ...previousNodes,
         [parentNodeId]: {
@@ -1136,9 +1139,9 @@ export const useNodeManagement = (
           nodeType: 'pollinations_image',
           label: `${labelPrefix} · ${parentNode.label}`,
           x: existing?.[1].x ?? parentNode.x + parentWidth + 36,
-          y: existing?.[1].y ?? parentNode.y + offsetIndex * 250,
-          width: existing?.[1].width ?? 320,
-          height: existing?.[1].height ?? 220,
+          y: existing?.[1].y ?? parentNode.y + offsetIndex * (defaultImageSize.height + 36),
+          width: existing?.[1].width ?? defaultImageSize.width,
+          height: existing?.[1].height ?? defaultImageSize.height,
           parentId: parentNodeId,
           imageUrl,
           masterPrompt: imagePrompt,

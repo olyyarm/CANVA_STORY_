@@ -130,7 +130,7 @@ const NodeRenderer: React.FC<NodeRendererProps> = ({
     ? node.metadata.promptContext.trim()
     : '';
   const promptBundle = [
-    imagePrompt ? `SDXL prompt:\n${imagePrompt}` : '',
+    imagePrompt ? `Image prompt:\n${imagePrompt}` : '',
     promptContext ? `\nРусский контекст:\n${promptContext}` : '',
   ].filter(Boolean).join('\n');
   const isReferenceImage = node.nodeType === 'pollinations_image' && isDefaultReferenceImage(node);
@@ -603,7 +603,7 @@ const NodeRenderer: React.FC<NodeRendererProps> = ({
             {imagePrompt && isImagePromptOpen && (
               <div className="generated-prompt-panel">
                 <div className="generated-prompt-section">
-                  <div className="generated-prompt-section__title">SDXL prompt</div>
+                  <div className="generated-prompt-section__title">Image prompt</div>
                   <div className="generated-prompt-section__text">{imagePrompt}</div>
                 </div>
                 {promptContext && (

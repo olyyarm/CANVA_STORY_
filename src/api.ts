@@ -378,6 +378,9 @@ const SDXL_NEGATIVE_PROMPTS: Record<ImagePromptKind, string> = {
 
 const buildComfySdxlWorkflow = (prompt: string, checkpoint: string, promptKind: ImagePromptKind) => {
   const seed = Math.floor(Math.random() * 1_000_000_000);
+  const isCharacterAsset = promptKind === 'character_asset';
+  const width = isCharacterAsset ? 832 : 1024;
+  const height = isCharacterAsset ? 1216 : 1024;
   return {
     '3': {
       class_type: 'KSampler',
@@ -404,8 +407,8 @@ const buildComfySdxlWorkflow = (prompt: string, checkpoint: string, promptKind: 
       class_type: 'EmptyLatentImage',
       inputs: {
         batch_size: 1,
-        height: 1024,
-        width: 1024,
+        height,
+        width,
       },
     },
     '6': {

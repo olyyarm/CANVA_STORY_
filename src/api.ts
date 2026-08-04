@@ -582,7 +582,7 @@ const buildComfyOmniVoiceDesignWorkflow = (
     '1': {
       class_type: 'OmniVoiceVoiceDesignTTS',
       inputs: {
-        model: 'OmniVoice (auto download)',
+        model: 'OmniVoice-bf16',
         text,
         voice_instruct: voiceInstruct,
         steps: 32,

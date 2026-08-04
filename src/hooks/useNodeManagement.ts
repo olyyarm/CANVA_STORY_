@@ -267,10 +267,13 @@ const getSceneHeroScope = (heroesText: string, sceneLabel: string) => {
 };
 
 const getCharacterName = (description: string, index: number) => {
-  const firstPart = description.split(/[;.\n]/)[0]?.trim() || '';
-  const normalized = firstPart
+  const firstLine = description.split(/\n/)[0]?.trim() || '';
+  const normalized = firstLine
+    .replace(/^\d+[.)]\s*/u, '')
     .replace(/^ID\/Имя или роль\s*[—-]\s*/iu, '')
     .replace(/^ID\/Имя или роль\s*—\s*/iu, '')
+    .split(/\s*[—–-]\s*/u)[0]
+    ?.replace(/[;:,.]+$/u, '')
     .trim();
   return (normalized || `Персонаж ${index + 1}`).slice(0, 48);
 };
@@ -308,6 +311,52 @@ const getReferenceLabel = (node: NodeData) =>
   typeof node.metadata?.promptContext === 'string'
     ? getCharacterName(node.metadata.promptContext, 0)
     : node.label;
+
+const getReferenceDescription = (node: NodeData) =>
+  [
+    node.label,
+    typeof node.metadata?.promptContext === 'string' ? node.metadata.promptContext : '',
+    typeof node.metadata?.referenceContext === 'string' ? node.metadata.referenceContext : '',
+  ].join('\n');
+
+const getReferenceMatchScore = (node: NodeData, sceneLabel: string, sceneDescription: string, fallbackIndex: number) => {
+  const sceneNumber = getSceneNumber(sceneLabel);
+  const referenceText = getReferenceDescription(node);
+  const referenceTextLower = referenceText.toLocaleLowerCase('ru');
+  const sceneTextLower = `${sceneLabel}\n${sceneDescription}`.toLocaleLowerCase('ru');
+  const sceneNumbers = getReferencedSceneNumbers(referenceText);
+  let score = Math.max(0, 12 - fallbackIndex);
+
+  if (sceneNumber && sceneNumbers?.has(sceneNumber)) score += 50;
+  if (sceneNumber && sceneNumbers && !sceneNumbers.has(sceneNumber)) score -= 80;
+  if (!sceneNumbers && /(все[х\s]+сцен|каждой сцен|all scenes)/iu.test(referenceText)) score += 45;
+
+  const referenceLabel = getReferenceLabel(node).toLocaleLowerCase('ru');
+  const nameTokens = referenceLabel
+    .split(/[^\p{L}\p{N}]+/gu)
+    .filter((token) => token.length >= 3 && !/^(ассет|герой|персонаж|мужчин|женщин)$/iu.test(token));
+  nameTokens.forEach((token) => {
+    if (sceneTextLower.includes(token)) score += 70;
+  });
+
+  if (/(главн|алекс|протагонист)/iu.test(referenceTextLower) && /(герой|алекс|он\b|его\b|ему\b)/iu.test(sceneTextLower)) {
+    score += 55;
+  }
+  if (/(женск|женщина|девушк)/iu.test(referenceTextLower) && /(женщина|девушка|она\b|её\b|ей\b)/iu.test(sceneTextLower)) {
+    score += 70;
+  }
+  if (/(управляющ)/iu.test(referenceTextLower) && /управляющ/iu.test(sceneTextLower)) score += 70;
+  if (/(торговец|торговк)/iu.test(referenceTextLower) && /торгов/iu.test(sceneTextLower)) score += 70;
+  if (/(стражник|страж)/iu.test(referenceTextLower) && /страж/iu.test(sceneTextLower)) score += 70;
+  if (/(прохож|наблюдател)/iu.test(referenceTextLower) && /(прохож|наблюдател|толп)/iu.test(sceneTextLower)) score += 60;
+
+  return score;
+};
+
+const selectBestCharacterReference = (nodes: NodeData[], sceneLabel: string, sceneDescription: string) =>
+  nodes
+    .map((node, index) => ({ node, score: getReferenceMatchScore(node, sceneLabel, sceneDescription, index) }))
+    .sort((left, right) => right.score - left.score)[0]?.node;
 
 const upsertScenarioGraph = (
   previousNodes: NodesState,
@@ -1227,6 +1276,7 @@ export const useNodeManagement = (
     const sceneNode = currentNodes[sceneNodeId];
     if (!sceneNode || sceneNode.nodeType !== 'scene' || sceneNode.isLoading || sceneNode.isLoadingImage) return;
 
+    const sceneDescription = sceneNode.sceneText || sceneNode.inputValue || sceneNode.label;
     const locationNode = Object.values(currentNodes).find((node) =>
       node.parentId === sceneNodeId
       && node.nodeType === 'pollinations_image'
@@ -1236,7 +1286,8 @@ export const useNodeManagement = (
       node.nodeType === 'pollinations_image'
       && getAssetKind(node).startsWith('character_asset')
       && Boolean(node.imageUrl));
-    const referenceNode = characterAssets.find(isCharacterReferenceNode) ?? characterAssets[0];
+    const activeCharacterReferences = characterAssets.filter(isCharacterReferenceNode);
+    const referenceNode = selectBestCharacterReference(activeCharacterReferences, sceneNode.label, sceneDescription);
 
     if (!locationNode?.imageUrl) {
       updateNode(sceneNodeId, { pollinationsApiError: 'Сначала сгенерируйте локацию этой сцены.' });
@@ -1253,7 +1304,6 @@ export const useNodeManagement = (
     const controller = new AbortController();
     activeRequests.current.set(requestId, controller);
 
-    const sceneDescription = sceneNode.sceneText || sceneNode.inputValue || sceneNode.label;
     const referenceLabel = getReferenceLabel(referenceNode);
     const composePrompt = [
       `Use the first reference image as the background location plate for ${sceneNode.label}.`,
@@ -1268,6 +1318,7 @@ export const useNodeManagement = (
       `Описание сцены:\n${sceneDescription}`,
       `Локация-референс: ${locationNode.label}`,
       `Персонаж-референс: ${referenceNode.label}`,
+      `Имя персонажа-референса: ${referenceLabel}`,
     ].join('\n\n');
 
     try {

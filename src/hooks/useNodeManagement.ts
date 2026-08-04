@@ -9,6 +9,7 @@ import {
 import {
   Flux2CharacterReference,
   generateComfyFlux2ComposeImage,
+  generateComfyOmniVoiceDesignAudio,
   generateImage,
   generateText,
   GenerationSettings,
@@ -83,6 +84,7 @@ interface UseNodeManagementReturn {
   handlePrepareNarrationTts: (detailNodeId: string) => Promise<void>;
   handleSpeakNarration: (detailNodeId: string) => void;
   handleStopSpeech: () => void;
+  handleGenerateOmniVoiceNarration: (detailNodeId: string) => Promise<void>;
   handleCopyToClipboard: (textToCopy: string) => Promise<void>;
   handleGeneratePollinationsImage: (nodeId: string) => Promise<void>;
   handleRegenerateImageNode: (nodeId: string) => Promise<void>;
@@ -1864,6 +1866,82 @@ export const useNodeManagement = (
     speakChunk(0);
   }, [showNotice, updateNode]);
 
+  const handleGenerateOmniVoiceNarration = useCallback(async (detailNodeId: string) => {
+    const detailNode = nodesRef.current[detailNodeId];
+    const rawText = detailNode?.inputValue?.trim();
+    if (!detailNode || detailNode.nodeType !== 'script_detail') return;
+    if (!rawText) {
+      updateNode(detailNodeId, { error: 'В этой ноде нет текста для озвучки.' });
+      return;
+    }
+
+    const text = cleanupBrowserSpeechText(rawText);
+    if (!text) {
+      updateNode(detailNodeId, { error: 'После очистки не осталось текста для озвучки.' });
+      return;
+    }
+
+    const requestId = `tts:${detailNodeId}`;
+    if (activeRequests.current.has(requestId)) return;
+    const controller = new AbortController();
+    activeRequests.current.set(requestId, controller);
+
+    try {
+      updateNode(detailNodeId, {
+        isLoadingAudio: true,
+        loadingProvider: 'comfyui',
+        error: undefined,
+        pollinationsApiError: undefined,
+        statusMessage: 'OmniVoice поставлен в очередь ComfyUI и готовит озвучку...',
+      });
+
+      const audioUrl = await generateComfyOmniVoiceDesignAudio(
+        text,
+        'female, low pitch, russian accent',
+        imageGenerationSettings,
+        controller.signal,
+      );
+
+      setNodes((previousNodes) => {
+        const currentNode = previousNodes[detailNodeId];
+        if (!currentNode) return previousNodes;
+        if (currentNode.audioUrl?.startsWith('blob:')) URL.revokeObjectURL(currentNode.audioUrl);
+        return {
+          ...previousNodes,
+          [detailNodeId]: {
+            ...currentNode,
+            audioUrl,
+            isLoadingAudio: false,
+            loadingProvider: undefined,
+            statusMessage: 'OmniVoice озвучка готова.',
+            metadata: {
+              ...currentNode.metadata,
+              ttsProvider: 'omnivoice',
+              voiceInstruct: 'female, low pitch, russian accent',
+              ttsGeneratedAt: new Date().toISOString(),
+            },
+          },
+        };
+      });
+      showNotice('success', 'OmniVoice озвучка готова.');
+    } catch (error) {
+      if (isAbortError(error)) {
+        showNotice('info', 'OmniVoice озвучка отменена.');
+      } else {
+        const message = errorMessage(error);
+        updateNode(detailNodeId, { error: message });
+        showNotice('error', message);
+      }
+    } finally {
+      activeRequests.current.delete(requestId);
+      updateNode(detailNodeId, {
+        isLoadingAudio: false,
+        loadingProvider: undefined,
+        statusMessage: undefined,
+      });
+    }
+  }, [imageGenerationSettings, setNodes, showNotice, updateNode]);
+
   const handleGeneratePollinationsImage = useCallback(async (parentNodeId: string) => {
     const parentNode = nodesRef.current[parentNodeId];
     if (!parentNode?.masterPrompt || parentNode.isLoadingImage) return;
@@ -2024,6 +2102,7 @@ export const useNodeManagement = (
     activeRequests.current.get(`scene-location:${nodeId}`)?.abort();
     activeRequests.current.get(`scene-characters:${nodeId}`)?.abort();
     activeRequests.current.get(`detail-asset:${nodeId}`)?.abort();
+    activeRequests.current.get(`tts:${nodeId}`)?.abort();
     if (speakingNodeIdRef.current === nodeId) {
       window.speechSynthesis.cancel();
       speechUtteranceRef.current = null;
@@ -2032,6 +2111,7 @@ export const useNodeManagement = (
     updateNode(nodeId, {
       isLoading: false,
       isLoadingImage: false,
+      isLoadingAudio: false,
       isSpeaking: false,
       loadingProvider: undefined,
       statusMessage: undefined,
@@ -2066,6 +2146,7 @@ export const useNodeManagement = (
     handlePrepareNarrationTts,
     handleSpeakNarration,
     handleStopSpeech,
+    handleGenerateOmniVoiceNarration,
     handleCopyToClipboard,
     handleGeneratePollinationsImage,
     handleRegenerateImageNode,

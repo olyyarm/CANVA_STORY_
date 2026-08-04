@@ -12,6 +12,7 @@ const FLUX2_VAE = 'flux2-vae.safetensors';
 const FLUX2_TURBO_LORA = 'Flux_2-Turbo-LoRA_comfyui.safetensors';
 const COMFY_SDXL_TIMEOUT_MS = 4 * 60 * 1000;
 const COMFY_FLUX2_TIMEOUT_MS = 6 * 60 * 60 * 1000;
+const COMFY_TTS_TIMEOUT_MS = 45 * 60 * 1000;
 
 export type GenerationMode = 'mock' | 'mistral' | 'lmstudio';
 export type ImageProvider = 'pollinations' | 'comfyui';
@@ -448,6 +449,12 @@ interface ComfyImageRef {
   type?: string;
 }
 
+interface ComfyAudioRef {
+  filename: string;
+  subfolder?: string;
+  type?: string;
+}
+
 interface ComfyUploadResponse {
   name?: string;
   subfolder?: string;
@@ -455,7 +462,7 @@ interface ComfyUploadResponse {
 }
 
 interface ComfyHistoryEntry {
-  outputs?: Record<string, { images?: ComfyImageRef[] }>;
+  outputs?: Record<string, { images?: ComfyImageRef[]; audio?: ComfyAudioRef[]; audios?: ComfyAudioRef[] }>;
   status?: {
     status_str?: string;
     completed?: boolean;
@@ -471,6 +478,19 @@ const getImageFromComfyHistory = (value: unknown): ComfyImageRef | null => {
     for (const output of outputs) {
       const image = output.images?.[0];
       if (image?.filename) return image;
+    }
+  }
+  return null;
+};
+
+const getAudioFromComfyHistory = (value: unknown): ComfyAudioRef | null => {
+  if (!value || typeof value !== 'object') return null;
+  const entries = Object.values(value as Record<string, ComfyHistoryEntry>);
+  for (const entry of entries) {
+    const outputs = entry.outputs ? Object.values(entry.outputs) : [];
+    for (const output of outputs) {
+      const audio = output.audio?.[0] ?? output.audios?.[0];
+      if (audio?.filename) return audio;
     }
   }
   return null;
@@ -519,6 +539,26 @@ const waitForComfyImage = async (
   return null;
 };
 
+const waitForComfyAudio = async (
+  baseUrl: string,
+  promptId: string,
+  timeoutMs: number,
+  signal?: AbortSignal,
+) => {
+  const startedAt = Date.now();
+  while (Date.now() - startedAt < timeoutMs) {
+    await wait(2000, signal);
+    const historyResponse = await fetch(`${baseUrl}/history/${promptId}`, { signal });
+    if (!historyResponse.ok) continue;
+    const history: unknown = await historyResponse.json();
+    const audio = getAudioFromComfyHistory(history);
+    if (audio) return audio;
+    const failure = getComfyExecutionFailure(history);
+    if (failure) throw new Error(failure);
+  }
+  return null;
+};
+
 const freeComfyModels = async (baseUrl: string, signal?: AbortSignal) => {
   const response = await fetch(`${baseUrl}/free`, {
     method: 'POST',
@@ -531,6 +571,93 @@ const freeComfyModels = async (baseUrl: string, signal?: AbortSignal) => {
 
 export const unloadComfyModels = async (settings: ImageGenerationSettings, signal?: AbortSignal) => {
   await freeComfyModels(getComfyBaseUrl(settings.comfyEndpoint), signal);
+};
+
+const buildComfyOmniVoiceDesignWorkflow = (
+  text: string,
+  voiceInstruct: string,
+) => {
+  const seed = Math.floor(Math.random() * 2_000_000_000);
+  return {
+    '1': {
+      class_type: 'OmniVoiceVoiceDesignTTS',
+      inputs: {
+        model: 'OmniVoice (auto download)',
+        text,
+        voice_instruct: voiceInstruct,
+        steps: 32,
+        guidance_scale: 2,
+        t_shift: 0.1,
+        speed: 1,
+        duration: 0,
+        device: 'auto',
+        dtype: 'auto',
+        attention: 'auto',
+        seed,
+        position_temperature: 5,
+        class_temperature: 0,
+        layer_penalty_factor: 5,
+        denoise: true,
+        postprocess_output: true,
+        keep_model_loaded: true,
+      },
+    },
+    '2': {
+      class_type: 'PreviewAudio',
+      inputs: {
+        audio: ['1', 0],
+      },
+    },
+  };
+};
+
+export const generateComfyOmniVoiceDesignAudio = async (
+  text: string,
+  voiceInstruct: string,
+  settings: ImageGenerationSettings,
+  signal?: AbortSignal,
+) => {
+  const baseUrl = getComfyBaseUrl(settings.comfyEndpoint);
+  try {
+    if (settings.provider !== 'comfyui') throw new Error('OmniVoice работает только через ComfyUI.');
+    const workflow = buildComfyOmniVoiceDesignWorkflow(text, voiceInstruct);
+    const clientId = typeof crypto.randomUUID === 'function'
+      ? crypto.randomUUID()
+      : `canva-story-omnivoice-${Date.now()}`;
+
+    const promptResponse = await fetch(`${baseUrl}/prompt`, {
+      method: 'POST',
+      signal,
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ client_id: clientId, prompt: workflow }),
+    });
+    if (!promptResponse.ok) {
+      throw new Error(getComfyError('ComfyUI не принял OmniVoice workflow', promptResponse, await readResponseDetails(promptResponse)));
+    }
+    const promptData: ComfyPromptResponse = await promptResponse.json();
+    if (!promptData.prompt_id) throw new Error('ComfyUI не вернул prompt_id для OmniVoice workflow.');
+
+    const audio = await waitForComfyAudio(baseUrl, promptData.prompt_id, COMFY_TTS_TIMEOUT_MS, signal);
+    if (!audio) throw new Error('OmniVoice не вернул аудио за 45 минут. ComfyUI может ещё считать озвучку, проверьте его окно.');
+
+    const params = new URLSearchParams({
+      filename: audio.filename,
+      subfolder: audio.subfolder ?? '',
+      type: audio.type ?? 'temp',
+    });
+    const viewResponse = await fetch(`${baseUrl}/view?${params.toString()}`, { signal });
+    if (!viewResponse.ok) {
+      throw new Error(getComfyError('ComfyUI не отдал готовое OmniVoice аудио', viewResponse, await readResponseDetails(viewResponse)));
+    }
+
+    return URL.createObjectURL(await viewResponse.blob());
+  } catch (error) {
+    if (error instanceof DOMException && error.name === 'AbortError') throw error;
+    if (error instanceof TypeError) {
+      throw new Error(`Не удалось подключиться к ComfyUI по адресу ${baseUrl}. Проверьте ComfyUI, OmniVoice-ноды и CORS.`);
+    }
+    throw error;
+  }
 };
 
 interface LmStudioModelEntry {

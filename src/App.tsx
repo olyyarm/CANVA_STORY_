@@ -149,6 +149,7 @@ const App = () => {
     handlePrepareNarrationTts,
     handleSpeakNarration,
     handleStopSpeech,
+    handleGenerateOmniVoiceNarration,
     handleCopyToClipboard,
     handleRegenerateImageNode,
     handleToggleReferenceImage,
@@ -648,6 +649,7 @@ const App = () => {
               onPrepareNarrationTts={handlePrepareNarrationTts}
               onSpeakNarration={handleSpeakNarration}
               onStopSpeech={handleStopSpeech}
+              onGenerateOmniVoiceNarration={handleGenerateOmniVoiceNarration}
               onCopyToClipboard={handleCopyToClipboard}
               onRegenerateImageNode={handleRegenerateImageNode}
               onToggleReferenceImage={handleToggleReferenceImage}

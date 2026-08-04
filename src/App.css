@@ -711,6 +711,21 @@
   margin-top: 8px;
 }
 
+.node-segmented-actions--voice {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  margin-top: 8px;
+}
+
+.node-audio-player {
+  margin-top: 10px;
+}
+
+.node-audio-player audio {
+  display: block;
+  width: 100%;
+  height: 34px;
+}
+
 .node-output {
   position: relative;
   display: flex;

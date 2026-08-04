@@ -28,6 +28,7 @@ interface NodeRendererProps {
   onPrepareNarrationTts: (nodeId: string) => Promise<void>;
   onSpeakNarration: (nodeId: string) => void;
   onStopSpeech: () => void;
+  onGenerateOmniVoiceNarration: (nodeId: string) => Promise<void>;
   onCopyToClipboard: (text: string) => void;
   onRegenerateImageNode: (nodeId: string) => Promise<void>;
   onToggleReferenceImage: (nodeId: string) => void;
@@ -78,6 +79,7 @@ const NodeRenderer: React.FC<NodeRendererProps> = ({
   onPrepareNarrationTts,
   onSpeakNarration,
   onStopSpeech,
+  onGenerateOmniVoiceNarration,
   onCopyToClipboard,
   onRegenerateImageNode,
   onToggleReferenceImage,
@@ -106,10 +108,12 @@ const NodeRenderer: React.FC<NodeRendererProps> = ({
       || node.metadata?.sourceKind === 'chapter_material'
     );
   const detailRowCount = countDetailRows(node.inputValue);
-  const isBusy = Boolean(node.isLoading || node.isLoadingImage || node.isSpeaking);
+  const isBusy = Boolean(node.isLoading || node.isLoadingImage || node.isLoadingAudio || node.isSpeaking);
   const loadingLabel = node.isSpeaking
     ? 'Озвучиваем закадр...'
-    : node.isLoadingImage
+    : node.isLoadingAudio
+      ? 'OmniVoice готовит озвучку в ComfyUI...'
+      : node.isLoadingImage
       ? node.loadingProvider === 'comfyui'
         ? 'ComfyUI загружает модель или рендерит кадр...'
         : 'Pollinations создаёт кадр...'
@@ -429,10 +433,26 @@ const NodeRenderer: React.FC<NodeRendererProps> = ({
               onClick={(event) => runWithoutDrag(event, () => node.isSpeaking
                 ? onStopSpeech()
                 : onSpeakNarration(id))}
-              disabled={Boolean(node.isLoading || node.isLoadingImage)}
+              disabled={Boolean(node.isLoading || node.isLoadingImage || node.isLoadingAudio)}
             >
               {node.isSpeaking ? 'Стоп' : 'Озвучить'}
             </button>
+            <button
+              type="button"
+              onMouseDown={stopMouseDown}
+              onClick={(event) => runWithoutDrag(event, () => node.isLoadingAudio
+                ? onCancelGeneration(id)
+                : void onGenerateOmniVoiceNarration(id))}
+              disabled={Boolean(node.isLoading || node.isLoadingImage || node.isSpeaking)}
+            >
+              {node.isLoadingAudio ? 'Отменить OmniVoice' : 'OmniVoice'}
+            </button>
+          </div>
+        )}
+
+        {node.nodeType === 'script_detail' && node.audioUrl && (
+          <div className="node-audio-player" onMouseDown={stopMouseDown}>
+            <audio controls src={node.audioUrl} />
           </div>
         )}
 

@@ -45,7 +45,9 @@ export interface NodeData {
   masterPrompt?: string;
   assetPrompt?: string;
   isLoadingImage?: boolean;
+  isLoadingAudio?: boolean;
   imageUrl?: string;
+  audioUrl?: string;
   imagePipeline?: ImagePipeline;
   error?: string;
   statusMessage?: string;

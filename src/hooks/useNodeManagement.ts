@@ -482,6 +482,23 @@ const getCharacterDescriptions = (heroesText: string) =>
     .map((line) => line.trim())
     .filter((line) => line.length > 0);
 
+const getLocationDescriptions = (locationsText: string) =>
+  locationsText
+    .split(/\n+/)
+    .map((line) => line.trim())
+    .filter((line) => line.length > 0);
+
+const getLocationName = (description: string, index: number) => {
+  const firstLine = description.split(/\n/)[0]?.trim() || '';
+  const normalized = firstLine
+    .replace(/^\d+[.)]\s*/u, '')
+    .replace(/^Локация\s*\d+\s*[—–-]\s*/iu, '')
+    .split(/\s*[—–-]\s*/u)[0]
+    ?.replace(/[;:,.]+$/u, '')
+    .trim();
+  return (normalized || `Локация ${index + 1}`).slice(0, 48);
+};
+
 const imagePromptKinds = new Set<ImagePromptKind>([
   'default',
   'scene_location',
@@ -1769,47 +1786,70 @@ export const useNodeManagement = (
         return;
       }
 
-      updateNode(detailNodeId, {
-        isLoading: true,
-        loadingProvider: generationSettings.mode,
-        error: undefined,
-        pollinationsApiError: undefined,
-        statusMessage: 'Собираем image prompt для location sheet...',
+      const locationDescriptions = getLocationDescriptions(description);
+      setNodes((previousNodes) => {
+        const nextNodes = { ...previousNodes };
+        Object.entries(previousNodes).forEach(([nodeId, node]) => {
+          const assetKind = typeof node.metadata?.assetKind === 'string' ? node.metadata.assetKind : '';
+          if (
+            node.parentId === detailNodeId
+            && node.nodeType === 'pollinations_image'
+            && assetKind.startsWith('location_asset')
+          ) {
+            if (node.imageUrl?.startsWith('blob:')) URL.revokeObjectURL(node.imageUrl);
+            delete nextNodes[nodeId];
+          }
+        });
+        return nextNodes;
       });
 
-      const assetPrompt = await generateText({
-        operation: 'location_asset_prompt',
-        prompt: withProjectVisualStyle(description, nodesRef.current),
-        systemPrompt: LOCATION_ASSET_PROMPT_SYSTEM_PROMPT,
-        model: detailNode.selectedModel || MISTRAL_MODELS[0],
-      }, controller.signal, generationSettings);
-      const styledAssetPrompt = appendProjectVisualStyleToImagePrompt(assetPrompt, nodesRef.current);
+      const generatedPrompts: string[] = [];
+      for (let index = 0; index < locationDescriptions.length; index += 1) {
+        const locationDescription = locationDescriptions[index];
+        const locationName = getLocationName(locationDescription, index);
+        updateNode(detailNodeId, {
+          isLoading: true,
+          loadingProvider: generationSettings.mode,
+          error: undefined,
+          pollinationsApiError: undefined,
+          statusMessage: `Собираем prompt локации ${index + 1}/${locationDescriptions.length}: ${locationName}`,
+        });
 
-      updateNode(detailNodeId, {
-        isLoading: false,
-        isLoadingImage: true,
-        loadingProvider: imageGenerationSettings.provider,
-        assetPrompt: styledAssetPrompt,
-        statusMessage: 'Генерируем лист локаций...',
-      });
+        const assetPrompt = await generateText({
+          operation: 'location_asset_prompt',
+          prompt: withProjectVisualStyle(locationDescription, nodesRef.current),
+          systemPrompt: LOCATION_ASSET_PROMPT_SYSTEM_PROMPT,
+          model: detailNode.selectedModel || MISTRAL_MODELS[0],
+        }, controller.signal, generationSettings);
+        const styledAssetPrompt = appendProjectVisualStyleToImagePrompt(assetPrompt, nodesRef.current);
+        generatedPrompts.push(`${locationName}\n${styledAssetPrompt}`);
 
-      const imageUrl = await generateImage(
-        styledAssetPrompt,
-        detailNode.imagePipeline ?? 'sdxl',
-        imageGenerationSettings,
-        'location_asset',
-        controller.signal,
-      );
-      upsertImageNode(
-        detailNodeId,
-        imageUrl,
-        'Ассет',
-        'location_asset',
-        0,
-        styledAssetPrompt,
-        withProjectVisualStyle(description, nodesRef.current),
-      );
-      showNotice('success', 'Ассет локаций создан.');
+        updateNode(detailNodeId, {
+          isLoading: false,
+          isLoadingImage: true,
+          loadingProvider: imageGenerationSettings.provider,
+          assetPrompt: generatedPrompts.join('\n\n'),
+          statusMessage: `Генерируем локацию ${index + 1}/${locationDescriptions.length}: ${locationName}`,
+        });
+
+        const imageUrl = await generateImage(
+          styledAssetPrompt,
+          detailNode.imagePipeline ?? 'sdxl',
+          imageGenerationSettings,
+          'location_asset',
+          controller.signal,
+        );
+        upsertImageNode(
+          detailNodeId,
+          imageUrl,
+          `Ассет ${index + 1} · ${locationName}`,
+          `location_asset:${index}`,
+          index,
+          styledAssetPrompt,
+          withProjectVisualStyle(locationDescription, nodesRef.current),
+        );
+      }
+      showNotice('success', `Создано референсов локаций: ${locationDescriptions.length}.`);
     } catch (error) {
       if (isAbortError(error)) {
         showNotice('info', 'Генерация ассета отменена.');

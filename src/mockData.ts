@@ -179,7 +179,7 @@ const createCharacterAssetPrompt = (request: GenerationRequest) =>
   `single vertical character reference, one described character, full-body straight front view, looking directly forward, head-to-toe visible, centered in frame, arms relaxed at the sides, stable gender, age, face, hair, silhouette, outfit, proportions, and distinctive details, reusable visual anchor phrase, neutral light studio background for clean cutout, tight useful margins, consistent scale, clear readable silhouette, single coherent semi-realistic illustrated production concept art style, complete full-body reference, source description: ${request.prompt}`;
 
 const createLocationAssetPrompt = (request: GenerationRequest) =>
-  `location sheet, all described locations shown as separate wide establishing-view panels, clear unobstructed background plates, clear architecture and props, coherent lighting and palette, production background concept art, clean unlabeled frame, source descriptions: ${request.prompt}`;
+  `single canonical location reference asset, one wide establishing background plate, clear readable architecture and props, coherent lighting and palette, natural open space for future characters, production background concept art, clean unlabeled frame, source description: ${request.prompt}`;
 
 export const createMockCompletion = async (request: GenerationRequest, signal?: AbortSignal) => {
   await wait(450, signal);

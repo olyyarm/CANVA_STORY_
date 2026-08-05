@@ -1367,9 +1367,9 @@ export const useNodeManagement = (
         && node.label === 'Системные вставки'
         && (!scenarioEntry?.[0] || node.parentId === scenarioEntry[0]));
       const timelineItemCount = sceneCount + countSystemInsertBlocks(systemInsertDetail?.inputValue);
-      const timelineRows = Math.max(1, Math.ceil(Math.max(timelineItemCount, 1) / 5));
+      const timelineRows = Math.max(1, Math.ceil(Math.max(timelineItemCount, 1) / 4));
       const preferredWidth = 1260;
-      const preferredHeight = Math.min(1680, Math.max(640, 118 + timelineRows * 306));
+      const preferredHeight = Math.min(3200, Math.max(720, 140 + timelineRows * 390));
 
       return {
         ...previousNodes,

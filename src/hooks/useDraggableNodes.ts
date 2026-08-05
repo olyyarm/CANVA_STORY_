@@ -88,14 +88,17 @@ export const useDraggableNodes = ({ nodes, setNodes, zoom, onSelect }: UseDragga
             },
           };
         }
-        const minWidth = node.nodeType === 'pollinations_image' ? 220 : 260;
-        const minHeight = node.nodeType === 'pollinations_image' ? 160 : 180;
+        const isChapterTimeline = node.nodeType === 'chapter_timeline';
+        const minWidth = node.nodeType === 'pollinations_image' ? 220 : isChapterTimeline ? 760 : 260;
+        const minHeight = node.nodeType === 'pollinations_image' ? 160 : isChapterTimeline ? 420 : 180;
+        const maxWidth = isChapterTimeline ? 2400 : 920;
+        const maxHeight = isChapterTimeline ? 2400 : 760;
         return {
           ...previousNodes,
           [interaction.nodeId]: {
             ...node,
-            width: Math.round(Math.min(920, Math.max(minWidth, interaction.startWidth + deltaX))),
-            height: Math.round(Math.min(760, Math.max(minHeight, interaction.startHeight + deltaY))),
+            width: Math.round(Math.min(maxWidth, Math.max(minWidth, interaction.startWidth + deltaX))),
+            height: Math.round(Math.min(maxHeight, Math.max(minHeight, interaction.startHeight + deltaY))),
           },
         };
       });

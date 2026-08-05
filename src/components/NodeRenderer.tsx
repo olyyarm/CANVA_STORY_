@@ -882,7 +882,7 @@ const NodeRenderer: React.FC<NodeRendererProps> = ({
                             <span>{systemInsert}</span>
                           </div>
                           <div className="chapter-timeline__system-frame">
-                            <span>{systemInsert}</span>
+                            <span>Кадр системной вставки</span>
                           </div>
                           <div className="chapter-timeline__badges">
                             {renderTimelineBadge('Текст', true, systemInsert)}

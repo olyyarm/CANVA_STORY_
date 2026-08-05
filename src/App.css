@@ -579,6 +579,28 @@
   color: #69727e;
 }
 
+.node-file-control {
+  display: grid;
+  gap: 7px;
+  flex: 0 0 auto;
+  padding: 10px;
+  border: 1px dashed #38414c;
+  border-radius: 8px;
+  color: var(--text-muted);
+  background: #15191e;
+  font-size: 11px;
+  font-weight: 750;
+}
+
+.node-file-control input {
+  min-height: 0;
+  padding: 0;
+  border: 0;
+  color: var(--text-faint);
+  background: transparent;
+  font-size: 11px;
+}
+
 .node-field {
   display: flex;
   min-height: 0;

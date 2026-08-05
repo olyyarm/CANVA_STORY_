@@ -185,7 +185,8 @@ const operationRoleAliases: Record<string, string[]> = {
   scenario: ['scenario', 'writer', 'draft', 'chapter'],
   editor: ['editor', 'edit', 'revision', 'narration_edit', 'brief_revision'],
   narration: ['narration', 'voice', 'tts', 'tts_cleanup'],
-  memory: ['memory', 'summary', 'chapter_summary', 'season_memory'],
+  memory: ['memory', 'summary', 'chapter_summary', 'season_memory', 'chapter_facts'],
+  research: ['research', 'topic', 'knowledge', 'chapter_topic', 'chapter_knowledge', 'chapter_material'],
   details: ['details', 'heroes', 'locations', 'mood', 'system'],
   image_prompt: ['image_prompt', 'prompt', 'visual'],
 };
@@ -194,7 +195,8 @@ const getOperationRole = (operation: GenerationRequest['operation']) => {
   if (operation === 'scenario') return 'scenario';
   if (operation === 'narration_edit' || operation === 'brief_revision') return 'editor';
   if (operation === 'narration' || operation === 'tts_cleanup') return 'narration';
-  if (operation === 'chapter_summary' || operation === 'season_memory_update') return 'memory';
+  if (operation === 'chapter_topic' || operation === 'chapter_knowledge' || operation === 'chapter_material') return 'research';
+  if (operation === 'chapter_summary' || operation === 'season_memory_update' || operation === 'chapter_facts') return 'memory';
   if (operation === 'heroes' || operation === 'locations' || operation === 'mood' || operation === 'system_inserts') return 'details';
   if (operation.endsWith('_prompt')) return 'image_prompt';
   return 'default';

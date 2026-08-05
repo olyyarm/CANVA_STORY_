@@ -18,10 +18,17 @@ import {
 import {
   ASSOCIATE_SYSTEM_PROMPT,
   CHARACTER_ASSET_PROMPT_SYSTEM_PROMPT,
+  CHAPTER_FACTS_SYSTEM_PROMPT,
+  CHAPTER_KNOWLEDGE_SYSTEM_PROMPT,
+  CHAPTER_MATERIAL_SYSTEM_PROMPT,
   CHAPTER_SUMMARY_SYSTEM_PROMPT,
+  CHAPTER_TOPIC_SYSTEM_PROMPT,
   DEFAULT_CHAPTER_MATERIAL,
+  DEFAULT_CHAPTER_KNOWLEDGE,
+  DEFAULT_CHAPTER_TOPIC,
   DEFAULT_FORMAT_BIBLE,
   DEFAULT_KNOWLEDGE_BASE,
+  DEFAULT_PDF_SOURCE,
   DEFAULT_SEASON_MEMORY,
   HERO_DETAIL_SYSTEM_PROMPT,
   LOCATION_ASSET_PROMPT_SYSTEM_PROMPT,
@@ -49,6 +56,7 @@ import {
   NodeData,
   NodesState,
 } from '../types';
+import { extractTextFromDocumentFile } from '../pdfImport';
 import {
   calculateTextWidth,
   clampSceneCount,
@@ -71,6 +79,10 @@ interface UseNodeManagementReturn {
   handleContinueAssociation: (sourceNodeId: string) => Promise<void>;
   handleScriptVisualization: (sourceNodeId: string) => Promise<void>;
   handleBuildScenarioFromBrief: (briefNodeId: string) => Promise<void>;
+  handleImportReferenceFile: (nodeId: string, file: File) => Promise<void>;
+  handleExtractChapterTopic: (sourceNodeId: string) => Promise<void>;
+  handleBuildChapterKnowledge: (topicNodeId: string) => Promise<void>;
+  handleBuildChapterMaterial: (knowledgeNodeId: string) => Promise<void>;
   handleAutoBuildChapter: (chapterMaterialNodeId: string) => Promise<void>;
   handleEnsureStoryReferenceNodes: () => void;
   handleEnsureChapterTimeline: () => void;
@@ -113,7 +125,7 @@ const detailConfig: Record<DetailType, {
 const getExistingChild = (nodes: NodesState, parentId: string, predicate: (node: NodeData) => boolean) =>
   Object.entries(nodes).find(([, node]) => node.parentId === parentId && predicate(node));
 
-const referenceSourceKinds = new Set(['format_bible', 'knowledge_base', 'season_memory']);
+const referenceSourceKinds = new Set(['format_bible', 'knowledge_base', 'chapter_knowledge', 'season_memory']);
 
 const getSourceKind = (node?: NodeData) =>
   typeof node?.metadata?.sourceKind === 'string' ? node.metadata.sourceKind : '';
@@ -144,6 +156,31 @@ const withStoryReferenceContext = (prompt: string, nodes: NodesState) => {
     'Справочные базы проекта. Используй как ориентир для структуры, фактуры, профессий, лазеек и эмоционального тона. Не копируй дословно, если это пример или шаблон.',
     context,
   ].join('\n\n');
+};
+
+const buildReferenceExcerpt = (text: string, maxChars = 18000) => {
+  const normalized = text.replace(/\r\n?/gu, '\n').replace(/\n{3,}/gu, '\n\n').trim();
+  if (normalized.length <= maxChars) return normalized;
+
+  const lines = normalized
+    .split(/\n+/u)
+    .map((line) => line.trim())
+    .filter(Boolean);
+  const headingLikeLines = lines
+    .filter((line) =>
+      line.length >= 8
+      && line.length <= 120
+      && !/[.!?…]$/u.test(line)
+      && !/^https?:/iu.test(line))
+    .slice(0, 80)
+    .join('\n');
+  const firstPart = normalized.slice(0, Math.floor(maxChars * 0.55));
+  const lastPart = normalized.slice(-Math.floor(maxChars * 0.25));
+  return [
+    firstPart,
+    headingLikeLines ? `\n\nКарта разделов источника:\n${headingLikeLines}` : '',
+    `\n\nФинальные фрагменты источника:\n${lastPart}`,
+  ].join('').slice(0, maxChars);
 };
 
 const getProjectVisualStyle = (nodes: NodesState) =>
@@ -1245,108 +1282,119 @@ export const useNodeManagement = (
 
   const handleEnsureStoryReferenceNodes = useCallback(() => {
     setNodes((previousNodes) => {
-      const existingFormatBible = Object.values(previousNodes).some(
-        (node) => node.nodeType === 'script_detail' && node.metadata?.sourceKind === 'format_bible',
-      );
-      const existingKnowledgeBase = Object.values(previousNodes).some(
-        (node) => node.nodeType === 'script_detail' && node.metadata?.sourceKind === 'knowledge_base',
-      );
-      const existingSeasonMemory = Object.values(previousNodes).some(
-        (node) => node.nodeType === 'script_detail' && node.metadata?.sourceKind === 'season_memory',
-      );
-      const existingChapterMaterial = Object.values(previousNodes).some(
-        (node) => node.nodeType === 'script_detail' && node.metadata?.sourceKind === 'chapter_material',
-      );
-      if (existingFormatBible && existingKnowledgeBase && existingSeasonMemory && existingChapterMaterial) {
-        showNotice('info', 'Базы и материалы уже есть на канве.');
-        return previousNodes;
-      }
-
       const anchor = Object.values(previousNodes).find((node) => node.nodeType === 'script_input')
         ?? Object.values(previousNodes)[0];
       const anchorX = anchor?.x ?? 40;
       const anchorY = anchor?.y ?? 40;
       const nextNodes = { ...previousNodes };
 
-      if (!existingFormatBible) {
-        nextNodes[generateNodeId()] = {
+      const ensureReferenceNode = (
+        sourceKind: string,
+        config: {
+          label: string;
+          x: number;
+          y: number;
+          width: number;
+          height: number;
+          inputValue: string;
+          parentId?: string;
+          sceneCount?: number;
+        },
+      ) => {
+        const existing = findNodeBySourceKind(nextNodes, sourceKind);
+        const nodeId = existing?.[0] ?? generateNodeId();
+        nextNodes[nodeId] = {
+          ...existing?.[1],
           nodeType: 'script_detail',
-          x: anchorX + 450,
-          y: anchorY,
-          label: 'Библия формата',
-          width: 420,
-          height: 300,
+          x: existing?.[1].x ?? config.x,
+          y: existing?.[1].y ?? config.y,
+          label: existing?.[1].label ?? config.label,
+          width: existing?.[1].width ?? config.width,
+          height: existing?.[1].height ?? config.height,
           isGenerated: true,
           level: anchor?.level ?? 0,
-          inputValue: DEFAULT_FORMAT_BIBLE,
+          parentId: config.parentId,
+          inputValue: existing?.[1].inputValue ?? config.inputValue,
+          selectedModel: existing?.[1].selectedModel || anchor?.selectedModel || MISTRAL_MODELS[0],
+          sceneCount: existing?.[1].sceneCount ?? config.sceneCount,
           error: undefined,
           metadata: {
-            sourceKind: 'format_bible',
+            ...existing?.[1].metadata,
+            sourceKind,
           },
         };
-      }
+        return nodeId;
+      };
 
-      if (!existingKnowledgeBase) {
-        nextNodes[generateNodeId()] = {
-          nodeType: 'script_detail',
-          x: anchorX + 890,
-          y: anchorY,
-          label: 'База знаний',
-          width: 430,
-          height: 300,
-          isGenerated: true,
-          level: anchor?.level ?? 0,
-          inputValue: DEFAULT_KNOWLEDGE_BASE,
-          error: undefined,
-          metadata: {
-            sourceKind: 'knowledge_base',
-          },
-        };
-      }
+      const formatBibleId = ensureReferenceNode('format_bible', {
+        label: 'Библия формата',
+        x: anchorX + 450,
+        y: anchorY,
+        width: 420,
+        height: 300,
+        inputValue: DEFAULT_FORMAT_BIBLE,
+        parentId: anchor ? Object.entries(previousNodes).find(([, node]) => node === anchor)?.[0] : undefined,
+      });
+      const knowledgeBaseId = ensureReferenceNode('knowledge_base', {
+        label: 'База знаний',
+        x: anchorX + 890,
+        y: anchorY,
+        width: 430,
+        height: 300,
+        inputValue: DEFAULT_KNOWLEDGE_BASE,
+        parentId: formatBibleId,
+      });
+      ensureReferenceNode('season_memory', {
+        label: 'Сезонная память',
+        x: anchorX + 450,
+        y: anchorY + 330,
+        width: 420,
+        height: 300,
+        inputValue: DEFAULT_SEASON_MEMORY,
+        parentId: knowledgeBaseId,
+      });
+      const pdfSourceId = ensureReferenceNode('pdf_source', {
+        label: 'PDF / сырьё сезона',
+        x: anchorX + 890,
+        y: anchorY + 330,
+        width: 430,
+        height: 360,
+        inputValue: DEFAULT_PDF_SOURCE,
+        parentId: knowledgeBaseId,
+      });
+      const chapterTopicId = ensureReferenceNode('chapter_topic', {
+        label: 'Тема главы',
+        x: anchorX + 1340,
+        y: anchorY + 330,
+        width: 430,
+        height: 340,
+        inputValue: DEFAULT_CHAPTER_TOPIC,
+        parentId: pdfSourceId,
+      });
+      const chapterKnowledgeId = ensureReferenceNode('chapter_knowledge', {
+        label: 'База главы',
+        x: anchorX + 1790,
+        y: anchorY + 330,
+        width: 440,
+        height: 420,
+        inputValue: DEFAULT_CHAPTER_KNOWLEDGE,
+        parentId: chapterTopicId,
+      });
+      ensureReferenceNode('chapter_material', {
+        label: 'Материал главы',
+        x: anchorX + 2250,
+        y: anchorY + 330,
+        width: 430,
+        height: 360,
+        inputValue: DEFAULT_CHAPTER_MATERIAL,
+        parentId: chapterKnowledgeId,
+        sceneCount: 8,
+      });
 
-      if (!existingSeasonMemory) {
-        nextNodes[generateNodeId()] = {
-          nodeType: 'script_detail',
-          x: anchorX + 450,
-          y: anchorY + 330,
-          label: 'Сезонная память',
-          width: 420,
-          height: 300,
-          isGenerated: true,
-          level: anchor?.level ?? 0,
-          inputValue: DEFAULT_SEASON_MEMORY,
-          error: undefined,
-          metadata: {
-            sourceKind: 'season_memory',
-          },
-        };
-      }
-
-      if (!existingChapterMaterial) {
-        nextNodes[generateNodeId()] = {
-          nodeType: 'script_detail',
-          x: anchorX + 890,
-          y: anchorY + 330,
-          label: 'Материал главы',
-          width: 430,
-          height: 360,
-          isGenerated: true,
-          level: anchor?.level ?? 0,
-          inputValue: DEFAULT_CHAPTER_MATERIAL,
-          selectedModel: anchor?.selectedModel || MISTRAL_MODELS[0],
-          sceneCount: 8,
-          error: undefined,
-          metadata: {
-            sourceKind: 'chapter_material',
-          },
-        };
-      }
-
-      showNotice('success', 'Базы, сезонная память и материал главы готовы.');
+      showNotice('success', 'Конвейер базы готов: PDF → тема → база главы → материал главы → сценарий.');
       return nextNodes;
     });
   }, [setNodes, showNotice]);
-
   const handleEnsureChapterTimeline = useCallback(() => {
     setNodes((previousNodes) => {
       const existing = Object.entries(previousNodes).find(
@@ -1433,6 +1481,212 @@ export const useNodeManagement = (
     showNotice('success', `Сценарий пересобран из редакторской заявки: ${parseSceneBlocks(result, sceneCount).length} сцен.`);
   }, [requestText, setNodes, showNotice, updateNode]);
 
+  const handleImportReferenceFile = useCallback(async (nodeId: string, file: File) => {
+    const node = nodesRef.current[nodeId];
+    if (!node || node.nodeType !== 'script_detail' || getSourceKind(node) !== 'pdf_source') return;
+    updateNode(nodeId, {
+      isLoading: true,
+      error: undefined,
+      statusMessage: `Читаем файл: ${file.name}...`,
+    });
+    try {
+      const text = await extractTextFromDocumentFile(file);
+      if (!text.trim()) throw new Error('Не удалось извлечь текст из файла.');
+      updateNode(nodeId, {
+        inputValue: text,
+        isLoading: false,
+        error: undefined,
+        statusMessage: `Файл загружен: ${file.name}. Извлечено ${text.length.toLocaleString('ru-RU')} знаков.`,
+        metadata: {
+          ...node.metadata,
+          sourceKind: 'pdf_source',
+          fileName: file.name,
+          fileSize: file.size,
+          importedAt: new Date().toISOString(),
+        },
+      });
+      showNotice('success', `PDF/материал загружен: ${file.name}`);
+    } catch (error) {
+      updateNode(nodeId, {
+        isLoading: false,
+        error: errorMessage(error),
+        statusMessage: undefined,
+      });
+      showNotice('error', errorMessage(error));
+    }
+  }, [showNotice, updateNode]);
+
+  const handleExtractChapterTopic = useCallback(async (sourceNodeId: string) => {
+    const sourceNode = nodesRef.current[sourceNodeId];
+    const sourceText = sourceNode?.inputValue?.trim();
+    if (!sourceNode || sourceNode.nodeType !== 'script_detail' || getSourceKind(sourceNode) !== 'pdf_source') return;
+    if (!sourceText) {
+      updateNode(sourceNodeId, { error: 'Сначала загрузите PDF или вставьте сырьё сезона.' });
+      return;
+    }
+
+    const result = await requestText(sourceNodeId, {
+      operation: 'chapter_topic',
+      prompt: withStoryReferenceContext([
+        'Большой источник для выбора темы ближайшей главы:',
+        buildReferenceExcerpt(sourceText, 18000),
+        'Задача: выбери одну тему ближайшей главы. Остальные темы оставь на потом.',
+      ].join('\n\n'), nodesRef.current),
+      systemPrompt: CHAPTER_TOPIC_SYSTEM_PROMPT,
+      model: sourceNode.selectedModel || MISTRAL_MODELS[0],
+      sceneCount: sourceNode.sceneCount,
+    }, 'Извлекаем тему главы из PDF/сырья...');
+    if (!result) return;
+
+    setNodes((previousNodes) => {
+      const existing = findNodeBySourceKind(previousNodes, 'chapter_topic');
+      const currentSource = previousNodes[sourceNodeId] ?? sourceNode;
+      const nodeId = existing?.[0] ?? generateNodeId();
+      return {
+        ...previousNodes,
+        [nodeId]: {
+          ...existing?.[1],
+          nodeType: 'script_detail',
+          x: existing?.[1].x ?? currentSource.x + (currentSource.width ?? 430) + 28,
+          y: existing?.[1].y ?? currentSource.y,
+          label: existing?.[1].label ?? 'Тема главы',
+          width: existing?.[1].width ?? 430,
+          height: existing?.[1].height ?? 340,
+          isGenerated: true,
+          level: currentSource.level ?? 0,
+          parentId: sourceNodeId,
+          inputValue: result,
+          selectedModel: existing?.[1].selectedModel || sourceNode.selectedModel || MISTRAL_MODELS[0],
+          error: undefined,
+          statusMessage: 'Тема главы извлечена. Теперь соберите короткую базу главы.',
+          metadata: {
+            ...existing?.[1].metadata,
+            sourceKind: 'chapter_topic',
+            sourcePdfId: sourceNodeId,
+          },
+        },
+      };
+    });
+    showNotice('success', 'Тема главы готова.');
+  }, [requestText, setNodes, showNotice, updateNode]);
+
+  const handleBuildChapterKnowledge = useCallback(async (topicNodeId: string) => {
+    const topicNode = nodesRef.current[topicNodeId];
+    const topic = topicNode?.inputValue?.trim();
+    if (!topicNode || topicNode.nodeType !== 'script_detail' || getSourceKind(topicNode) !== 'chapter_topic') return;
+    if (!topic) {
+      updateNode(topicNodeId, { error: 'Сначала извлеките или впишите тему главы.' });
+      return;
+    }
+    const pdfNode = topicNode.parentId ? nodesRef.current[topicNode.parentId] : findNodeBySourceKind(nodesRef.current, 'pdf_source')?.[1];
+    const sourceText = pdfNode?.inputValue?.trim() || '';
+    if (!sourceText) {
+      updateNode(topicNodeId, { error: 'Не найден PDF/сырьё сезона для сборки базы главы.' });
+      return;
+    }
+
+    const result = await requestText(topicNodeId, {
+      operation: 'chapter_knowledge',
+      prompt: withStoryReferenceContext([
+        `Тема главы:\n${topic}`,
+        `Выдержка из PDF/сырья:\n${buildReferenceExcerpt(sourceText, 18000)}`,
+        'Задача: собрать короткую базу только для этой главы.',
+      ].join('\n\n'), nodesRef.current),
+      systemPrompt: CHAPTER_KNOWLEDGE_SYSTEM_PROMPT,
+      model: topicNode.selectedModel || MISTRAL_MODELS[0],
+      sceneCount: topicNode.sceneCount,
+    }, 'Собираем короткую базу главы...');
+    if (!result) return;
+
+    setNodes((previousNodes) => {
+      const existing = findNodeBySourceKind(previousNodes, 'chapter_knowledge');
+      const currentTopic = previousNodes[topicNodeId] ?? topicNode;
+      const nodeId = existing?.[0] ?? generateNodeId();
+      return {
+        ...previousNodes,
+        [nodeId]: {
+          ...existing?.[1],
+          nodeType: 'script_detail',
+          x: existing?.[1].x ?? currentTopic.x + (currentTopic.width ?? 430) + 28,
+          y: existing?.[1].y ?? currentTopic.y,
+          label: existing?.[1].label ?? 'База главы',
+          width: existing?.[1].width ?? 440,
+          height: existing?.[1].height ?? 420,
+          isGenerated: true,
+          level: currentTopic.level ?? 0,
+          parentId: topicNodeId,
+          inputValue: result,
+          selectedModel: existing?.[1].selectedModel || topicNode.selectedModel || MISTRAL_MODELS[0],
+          error: undefined,
+          statusMessage: 'Короткая база главы готова. Теперь соберите материал главы.',
+          metadata: {
+            ...existing?.[1].metadata,
+            sourceKind: 'chapter_knowledge',
+            sourceTopicId: topicNodeId,
+          },
+        },
+      };
+    });
+    showNotice('success', 'База главы готова.');
+  }, [requestText, setNodes, showNotice, updateNode]);
+
+  const handleBuildChapterMaterial = useCallback(async (knowledgeNodeId: string) => {
+    const knowledgeNode = nodesRef.current[knowledgeNodeId];
+    const knowledge = knowledgeNode?.inputValue?.trim();
+    if (!knowledgeNode || knowledgeNode.nodeType !== 'script_detail' || getSourceKind(knowledgeNode) !== 'chapter_knowledge') return;
+    if (!knowledge) {
+      updateNode(knowledgeNodeId, { error: 'Сначала соберите короткую базу главы.' });
+      return;
+    }
+    const topicNode = knowledgeNode.parentId ? nodesRef.current[knowledgeNode.parentId] : findNodeBySourceKind(nodesRef.current, 'chapter_topic')?.[1];
+    const seasonMemory = findNodeBySourceKind(nodesRef.current, 'season_memory')?.[1].inputValue?.trim() || DEFAULT_SEASON_MEMORY;
+
+    const result = await requestText(knowledgeNodeId, {
+      operation: 'chapter_material',
+      prompt: [
+        `Тема главы:\n${topicNode?.inputValue?.trim() || DEFAULT_CHAPTER_TOPIC}`,
+        `База главы:\n${knowledge}`,
+        `Сезонная память:\n${seasonMemory}`,
+      ].join('\n\n'),
+      systemPrompt: CHAPTER_MATERIAL_SYSTEM_PROMPT,
+      model: knowledgeNode.selectedModel || MISTRAL_MODELS[0],
+      sceneCount: knowledgeNode.sceneCount,
+    }, 'Собираем материал главы из короткой базы...');
+    if (!result) return;
+
+    setNodes((previousNodes) => {
+      const existing = findNodeBySourceKind(previousNodes, 'chapter_material');
+      const currentKnowledge = previousNodes[knowledgeNodeId] ?? knowledgeNode;
+      const nodeId = existing?.[0] ?? generateNodeId();
+      return {
+        ...previousNodes,
+        [nodeId]: {
+          ...existing?.[1],
+          nodeType: 'script_detail',
+          x: existing?.[1].x ?? currentKnowledge.x + (currentKnowledge.width ?? 440) + 28,
+          y: existing?.[1].y ?? currentKnowledge.y,
+          label: existing?.[1].label ?? 'Материал главы',
+          width: existing?.[1].width ?? 430,
+          height: existing?.[1].height ?? 360,
+          isGenerated: true,
+          level: currentKnowledge.level ?? 0,
+          parentId: knowledgeNodeId,
+          inputValue: result,
+          selectedModel: existing?.[1].selectedModel || knowledgeNode.selectedModel || MISTRAL_MODELS[0],
+          sceneCount: existing?.[1].sceneCount ?? knowledgeNode.sceneCount ?? 8,
+          error: undefined,
+          statusMessage: 'Материал главы готов. Можно запускать автосборку.',
+          metadata: {
+            ...existing?.[1].metadata,
+            sourceKind: 'chapter_material',
+            sourceKnowledgeId: knowledgeNodeId,
+          },
+        },
+      };
+    });
+    showNotice('success', 'Материал главы готов.');
+  }, [requestText, setNodes, showNotice, updateNode]);
+
   const handleAutoBuildChapter = useCallback(async (chapterMaterialNodeId: string) => {
     const materialNode = nodesRef.current[chapterMaterialNodeId];
     const material = materialNode?.inputValue?.trim();
@@ -1515,11 +1769,40 @@ export const useNodeManagement = (
       }));
     }
 
+    const chapterFactsPrompt = withStoryReferenceContext([
+      `Материал главы:\n${material}`,
+      `Сценарий главы:\n${scenario}`,
+      ...detailResults.map((detail) => `${detail.label}:\n${detail.text}`),
+      'Задача: вычленить только факты, правила и обещания, которые нужно помнить дальше.',
+    ].join('\n\n'), nodesRef.current);
+    setChapterAutoStatus('Автосборка: вычленяем факты главы...');
+    const chapterFacts = await requestText(outputNodeId, {
+      operation: 'chapter_facts',
+      prompt: chapterFactsPrompt,
+      systemPrompt: CHAPTER_FACTS_SYSTEM_PROMPT,
+      model,
+      sceneCount,
+    }, 'Автосборка: вычленяем факты главы...', true);
+    if (!chapterFacts) {
+      updateNode(chapterMaterialNodeId, { error: 'Автосборка остановилась на вычленении фактов главы.' });
+      return;
+    }
+
+    setNodes((previousNodes) => upsertScriptDetailNode(previousNodes, outputNodeId, 'Факты главы', chapterFacts, {
+      column: 5,
+      width: 360,
+      height: 280,
+      metadata: {
+        sourceKind: 'chapter_facts',
+      },
+    }));
+
     const chapterSummaryPrompt = withStoryReferenceContext([
       'Ниже входные материалы готовой главы. Не оценивай их качество и не комментируй, хорошо ли они написаны. Извлеки только факты истории для сезонной памяти.',
       `Материал главы:\n${material}`,
       `Сценарий главы:\n${scenario}`,
       ...detailResults.map((detail) => `${detail.label}:\n${detail.text}`),
+      `Факты главы:\n${chapterFacts}`,
       'Выход: заполни шаблон резюме из system prompt. Начни строго со строки "Глава:".',
     ].join('\n\n'), nodesRef.current);
     setChapterAutoStatus('Автосборка: делаем резюме главы...');
@@ -1572,6 +1855,7 @@ export const useNodeManagement = (
       prompt: [
         `Старая сезонная память:\n${oldSeasonMemory}`,
         `Новое резюме главы:\n${chapterSummary}`,
+        `Факты главы:\n${chapterFacts}`,
         'Задача: обновить сезонную память для следующей главы.',
       ].join('\n\n'),
       systemPrompt: SEASON_MEMORY_UPDATE_SYSTEM_PROMPT,
@@ -3008,6 +3292,10 @@ export const useNodeManagement = (
     handleContinueAssociation,
     handleScriptVisualization,
     handleBuildScenarioFromBrief,
+    handleImportReferenceFile,
+    handleExtractChapterTopic,
+    handleBuildChapterKnowledge,
+    handleBuildChapterMaterial,
     handleAutoBuildChapter,
     handleEnsureStoryReferenceNodes,
     handleEnsureChapterTimeline,

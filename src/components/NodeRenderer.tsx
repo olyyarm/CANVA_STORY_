@@ -18,6 +18,10 @@ interface NodeRendererProps {
   onContinueAssociation: (nodeId: string) => void;
   onScriptVisualize: (nodeId: string) => void;
   onBuildScenarioFromBrief: (nodeId: string) => Promise<void>;
+  onImportReferenceFile: (nodeId: string, file: File) => Promise<void>;
+  onExtractChapterTopic: (nodeId: string) => Promise<void>;
+  onBuildChapterKnowledge: (nodeId: string) => Promise<void>;
+  onBuildChapterMaterial: (nodeId: string) => Promise<void>;
   onAutoBuildChapter: (nodeId: string) => Promise<void>;
   onEnsureChapterTimeline: () => void;
   onScenarioDetailClick: (nodeId: string, detailType: DetailType) => void;
@@ -237,6 +241,10 @@ const NodeRenderer: React.FC<NodeRendererProps> = ({
   onContinueAssociation,
   onScriptVisualize,
   onBuildScenarioFromBrief,
+  onImportReferenceFile,
+  onExtractChapterTopic,
+  onBuildChapterKnowledge,
+  onBuildChapterMaterial,
   onAutoBuildChapter,
   onEnsureChapterTimeline,
   onScenarioDetailClick,
@@ -270,6 +278,11 @@ const NodeRenderer: React.FC<NodeRendererProps> = ({
   const isTextOutput = node.nodeType === 'script_output' || node.nodeType === 'script_detail';
   const canGenerateDetailAsset = node.nodeType === 'script_detail' && (node.label === 'Герои' || node.label === 'Локации');
   const canBuildScenarioFromBrief = node.nodeType === 'script_detail' && node.metadata?.sourceKind === 'brief_revision';
+  const sourceKind = typeof node.metadata?.sourceKind === 'string' ? node.metadata.sourceKind : '';
+  const canImportReferenceFile = node.nodeType === 'script_detail' && sourceKind === 'pdf_source';
+  const canExtractChapterTopic = node.nodeType === 'script_detail' && sourceKind === 'pdf_source';
+  const canBuildChapterKnowledge = node.nodeType === 'script_detail' && sourceKind === 'chapter_topic';
+  const canBuildChapterMaterial = node.nodeType === 'script_detail' && sourceKind === 'chapter_knowledge';
   const canAutoBuildChapter = node.nodeType === 'script_detail' && node.metadata?.sourceKind === 'chapter_material';
   const canSpeakNarration = node.nodeType === 'script_detail'
     && (node.label === 'Закадр' || node.metadata?.sourceKind === 'tts_cleanup');
@@ -278,7 +291,11 @@ const NodeRenderer: React.FC<NodeRendererProps> = ({
       node.metadata?.sourceKind === 'format_bible'
       || node.metadata?.sourceKind === 'knowledge_base'
       || node.metadata?.sourceKind === 'season_memory'
+      || node.metadata?.sourceKind === 'pdf_source'
+      || node.metadata?.sourceKind === 'chapter_topic'
+      || node.metadata?.sourceKind === 'chapter_knowledge'
       || node.metadata?.sourceKind === 'chapter_material'
+      || node.metadata?.sourceKind === 'chapter_facts'
     );
   const detailRowCount = countDetailRows(node.inputValue);
   const isBusy = Boolean(node.isLoading || node.isLoadingImage || node.isLoadingAudio || node.isLoadingVideo || node.isSpeaking);
@@ -498,6 +515,21 @@ const NodeRenderer: React.FC<NodeRendererProps> = ({
                 disabled={node.isLoading}
               />
             </label>
+            {canImportReferenceFile && (
+              <label className="node-file-control" onMouseDown={stopMouseDown}>
+                <span>Загрузить PDF / TXT / MD</span>
+                <input
+                  type="file"
+                  accept=".pdf,.txt,.md,text/plain,application/pdf"
+                  disabled={node.isLoading}
+                  onChange={(event) => {
+                    const file = event.currentTarget.files?.[0];
+                    event.currentTarget.value = '';
+                    if (file) void onImportReferenceFile(id, file);
+                  }}
+                />
+              </label>
+            )}
             {canAutoBuildChapter && (
               <div className="node-field-grid">
                 <label className="node-field">
@@ -528,6 +560,48 @@ const NodeRenderer: React.FC<NodeRendererProps> = ({
               </div>
             )}
           </>
+        )}
+
+        {canExtractChapterTopic && (
+          <button
+            type="button"
+            className={`node-secondary-button${node.isLoading ? ' node-secondary-button--cancel' : ''}`}
+            onMouseDown={stopMouseDown}
+            onClick={(event) => runWithoutDrag(event, () => node.isLoading
+              ? onCancelGeneration(id)
+              : void onExtractChapterTopic(id))}
+            disabled={Boolean(node.isLoadingImage)}
+          >
+            {node.isLoading ? 'Отменить извлечение' : 'Извлечь тему главы'}
+          </button>
+        )}
+
+        {canBuildChapterKnowledge && (
+          <button
+            type="button"
+            className={`node-secondary-button${node.isLoading ? ' node-secondary-button--cancel' : ''}`}
+            onMouseDown={stopMouseDown}
+            onClick={(event) => runWithoutDrag(event, () => node.isLoading
+              ? onCancelGeneration(id)
+              : void onBuildChapterKnowledge(id))}
+            disabled={Boolean(node.isLoadingImage)}
+          >
+            {node.isLoading ? 'Отменить базу главы' : 'Собрать базу главы'}
+          </button>
+        )}
+
+        {canBuildChapterMaterial && (
+          <button
+            type="button"
+            className={`node-primary-button${node.isLoading ? ' node-primary-button--cancel' : ''}`}
+            onMouseDown={stopMouseDown}
+            onClick={(event) => runWithoutDrag(event, () => node.isLoading
+              ? onCancelGeneration(id)
+              : void onBuildChapterMaterial(id))}
+            disabled={Boolean(node.isLoadingImage)}
+          >
+            {node.isLoading ? 'Отменить материал' : 'Собрать материал главы'}
+          </button>
         )}
 
         {node.nodeType === 'script_detail' && node.label === 'Закадр' && (

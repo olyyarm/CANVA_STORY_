@@ -137,6 +137,10 @@ const App = () => {
     handleContinueAssociation,
     handleScriptVisualization,
     handleBuildScenarioFromBrief,
+    handleImportReferenceFile,
+    handleExtractChapterTopic,
+    handleBuildChapterKnowledge,
+    handleBuildChapterMaterial,
     handleAutoBuildChapter,
     handleEnsureStoryReferenceNodes,
     handleEnsureChapterTimeline,
@@ -526,9 +530,9 @@ const App = () => {
                   className="generation-model-input"
                   value={generationSettings.lmStudioModel}
                   onChange={handleLmStudioModelChange}
-                  placeholder="default=local-model; scenario=writer; editor=ernie"
+                  placeholder="default=local-model; research=fast; scenario=writer; editor=ernie"
                   aria-label="Модель или роли LM Studio"
-                  title="Можно указать одну модель или роли: scenario=..., editor=..., narration=..., memory=..., details=..., image_prompt=..., default=..."
+                  title="Можно указать одну модель или роли: research=..., scenario=..., editor=..., narration=..., memory=..., details=..., image_prompt=..., default=..."
                 />
               </>
             )}
@@ -645,6 +649,10 @@ const App = () => {
               onContinueAssociation={handleContinueAssociation}
               onScriptVisualize={handleScriptVisualization}
               onBuildScenarioFromBrief={handleBuildScenarioFromBrief}
+              onImportReferenceFile={handleImportReferenceFile}
+              onExtractChapterTopic={handleExtractChapterTopic}
+              onBuildChapterKnowledge={handleBuildChapterKnowledge}
+              onBuildChapterMaterial={handleBuildChapterMaterial}
               onAutoBuildChapter={handleAutoBuildChapter}
               onEnsureChapterTimeline={handleEnsureChapterTimeline}
               onScenarioDetailClick={handleScenarioDetailClick}

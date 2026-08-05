@@ -819,46 +819,62 @@ const NodeRenderer: React.FC<NodeRendererProps> = ({
               <div className="chapter-timeline__rail" onMouseDown={stopMouseDown}>
                 {timelineScenes.map(({ sceneId, scene, location, characters, frame }) => {
                   const sceneText = scene.sceneText || scene.inputValue || '';
-                  const systemInsert = timelineSystemInserts.get(getSceneNumberFromLabel(scene.label));
+                  const sceneNumber = getSceneNumberFromLabel(scene.label);
+                  const systemInsert = timelineSystemInserts.get(sceneNumber);
                   const qaStatus = typeof frame?.metadata?.visionStatus === 'string'
                     ? frame.metadata.visionStatus
                     : 'ожидает';
                   return (
-                    <article key={sceneId} className="chapter-timeline__scene">
-                      <header className="chapter-timeline__scene-header">
-                        <strong>{scene.label}</strong>
-                        <span>{scene.productionStatus ?? 'draft'}</span>
-                      </header>
-                      <p className="chapter-timeline__scene-text">{sceneText}</p>
+                    <React.Fragment key={sceneId}>
+                      <article className="chapter-timeline__scene">
+                        <header className="chapter-timeline__scene-header">
+                          <strong>{scene.label}</strong>
+                          <span>{scene.productionStatus ?? 'draft'}</span>
+                        </header>
+                        <p className="chapter-timeline__scene-text">{sceneText}</p>
+                        <div className="chapter-timeline__thumb-grid">
+                          <div className="chapter-timeline__thumb">
+                            {location?.imageUrl
+                              ? <img src={location.imageUrl} alt={`Локация ${scene.label}`} draggable={false} />
+                              : <span>Локация</span>}
+                          </div>
+                          <div className="chapter-timeline__thumb">
+                            {frame?.imageUrl
+                              ? <img src={frame.imageUrl} alt={`Кадр ${scene.label}`} draggable={false} />
+                              : <span>Кадр</span>}
+                          </div>
+                        </div>
+                        <div className="chapter-timeline__badges">
+                          {renderTimelineBadge('Текст', Boolean(sceneText), 'Описание сцены')}
+                          {renderTimelineBadge('Локация', Boolean(location?.imageUrl), location?.label)}
+                          {renderTimelineBadge('Герои', Boolean(characters?.imageUrl), characters?.label)}
+                          {renderTimelineBadge('Кадр', Boolean(frame?.imageUrl), frame?.label)}
+                          {renderTimelineBadge('Аудио', Boolean(scene.audioUrl), 'Озвучка сцены')}
+                          {renderTimelineBadge('Клип', Boolean(scene.videoUrl), '16:9 фрагмент')}
+                          {renderTimelineBadge('Вставка', Boolean(systemInsert), systemInsert)}
+                          {renderTimelineBadge('QA', qaStatus !== 'ожидает', `Vision: ${qaStatus}`)}
+                        </div>
+                      </article>
                       {systemInsert && (
-                        <div className="chapter-timeline__insert">
-                          <strong>Системная вставка</strong>
-                          <span>{systemInsert}</span>
-                        </div>
+                        <article className="chapter-timeline__scene chapter-timeline__scene--system">
+                          <header className="chapter-timeline__scene-header">
+                            <strong>СЦЕНА {sceneNumber}.5</strong>
+                            <span>system</span>
+                          </header>
+                          <div className="chapter-timeline__insert">
+                            <strong>Системная вставка</strong>
+                            <span>{systemInsert}</span>
+                          </div>
+                          <div className="chapter-timeline__system-frame">
+                            <span>{systemInsert}</span>
+                          </div>
+                          <div className="chapter-timeline__badges">
+                            {renderTimelineBadge('Текст', true, systemInsert)}
+                            {renderTimelineBadge('Кадр', false, 'Ожидает генерацию системной картинки')}
+                          </div>
+                        </article>
                       )}
-                      <div className="chapter-timeline__thumb-grid">
-                        <div className="chapter-timeline__thumb">
-                          {location?.imageUrl
-                            ? <img src={location.imageUrl} alt={`Локация ${scene.label}`} draggable={false} />
-                            : <span>Локация</span>}
-                        </div>
-                        <div className="chapter-timeline__thumb">
-                          {frame?.imageUrl
-                            ? <img src={frame.imageUrl} alt={`Кадр ${scene.label}`} draggable={false} />
-                            : <span>Кадр</span>}
-                        </div>
-                      </div>
-                      <div className="chapter-timeline__badges">
-                        {renderTimelineBadge('Текст', Boolean(sceneText), 'Описание сцены')}
-                        {renderTimelineBadge('Локация', Boolean(location?.imageUrl), location?.label)}
-                        {renderTimelineBadge('Герои', Boolean(characters?.imageUrl), characters?.label)}
-                        {renderTimelineBadge('Кадр', Boolean(frame?.imageUrl), frame?.label)}
-                        {renderTimelineBadge('Аудио', Boolean(scene.audioUrl), 'Озвучка сцены')}
-                        {renderTimelineBadge('Клип', Boolean(scene.videoUrl), '16:9 фрагмент')}
-                        {renderTimelineBadge('Вставка', Boolean(systemInsert), systemInsert)}
-                        {renderTimelineBadge('QA', qaStatus !== 'ожидает', `Vision: ${qaStatus}`)}
-                      </div>
-                    </article>
+                    </React.Fragment>
                   );
                 })}
               </div>

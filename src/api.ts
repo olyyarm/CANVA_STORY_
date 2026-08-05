@@ -17,6 +17,8 @@ const COMFY_SDXL_TIMEOUT_MS = 4 * 60 * 1000;
 const COMFY_Z_IMAGE_TIMEOUT_MS = 45 * 60 * 1000;
 const COMFY_FLUX2_TIMEOUT_MS = 6 * 60 * 60 * 1000;
 const COMFY_TTS_TIMEOUT_MS = 45 * 60 * 1000;
+const WIDE_FRAME_WIDTH = 1344;
+const WIDE_FRAME_HEIGHT = 768;
 
 export type GenerationMode = 'mock' | 'mistral' | 'lmstudio';
 export type ImageProvider = 'pollinations' | 'comfyui';
@@ -398,8 +400,8 @@ const buildComfySdxlWorkflow = (prompt: string, checkpoint: string, promptKind: 
   const seed = Math.floor(Math.random() * 1_000_000_000);
   const normalizedPromptKind = normalizeImagePromptKind(promptKind);
   const isCharacterAsset = normalizedPromptKind === 'character_asset';
-  const width = isCharacterAsset ? 832 : 1344;
-  const height = isCharacterAsset ? 1216 : 768;
+  const width = isCharacterAsset ? 832 : WIDE_FRAME_WIDTH;
+  const height = isCharacterAsset ? 1216 : WIDE_FRAME_HEIGHT;
   return {
     '3': {
       class_type: 'KSampler',
@@ -465,8 +467,8 @@ const buildComfyZImageTurboWorkflow = (prompt: string, promptKind: ImagePromptKi
   const seed = Math.floor(Math.random() * 1_000_000_000);
   const normalizedPromptKind = normalizeImagePromptKind(promptKind);
   const isCharacterAsset = normalizedPromptKind === 'character_asset';
-  const width = isCharacterAsset ? 832 : 1344;
-  const height = isCharacterAsset ? 1216 : 768;
+  const width = isCharacterAsset ? 832 : WIDE_FRAME_WIDTH;
+  const height = isCharacterAsset ? 1216 : WIDE_FRAME_HEIGHT;
   return {
     '3': {
       class_type: 'KSampler',
@@ -904,41 +906,103 @@ const loadCanvasImage = async (imageUrl: string, signal?: AbortSignal) => {
   return { image, objectUrl };
 };
 
+const getTrimmedImageBounds = (
+  context: CanvasRenderingContext2D,
+  width: number,
+  height: number,
+) => {
+  const data = context.getImageData(0, 0, width, height).data;
+  const sample = (x: number, y: number) => {
+    const offset = (y * width + x) * 4;
+    return [data[offset], data[offset + 1], data[offset + 2]] as const;
+  };
+  const corners = [
+    sample(0, 0),
+    sample(width - 1, 0),
+    sample(0, height - 1),
+    sample(width - 1, height - 1),
+  ];
+  const isBackground = (x: number, y: number) => {
+    const [red, green, blue] = sample(x, y);
+    return corners.some(([cornerRed, cornerGreen, cornerBlue]) =>
+      Math.abs(red - cornerRed) + Math.abs(green - cornerGreen) + Math.abs(blue - cornerBlue) < 54);
+  };
+
+  let minX = width;
+  let minY = height;
+  let maxX = -1;
+  let maxY = -1;
+  for (let y = 0; y < height; y += 1) {
+    for (let x = 0; x < width; x += 1) {
+      if (!isBackground(x, y)) {
+        minX = Math.min(minX, x);
+        minY = Math.min(minY, y);
+        maxX = Math.max(maxX, x);
+        maxY = Math.max(maxY, y);
+      }
+    }
+  }
+
+  if (maxX < minX || maxY < minY) return { x: 0, y: 0, width, height };
+  const margin = Math.round(Math.min(width, height) * 0.025);
+  const x = Math.max(0, minX - margin);
+  const y = Math.max(0, minY - margin);
+  const right = Math.min(width, maxX + margin);
+  const bottom = Math.min(height, maxY + margin);
+  return { x, y, width: right - x + 1, height: bottom - y + 1 };
+};
+
+const getImageDrawSource = (image: HTMLImageElement) => {
+  const canvas = document.createElement('canvas');
+  const width = image.naturalWidth || image.width;
+  const height = image.naturalHeight || image.height;
+  canvas.width = width;
+  canvas.height = height;
+  const context = canvas.getContext('2d', { willReadFrequently: true });
+  if (!context) return { source: image, sx: 0, sy: 0, sw: width, sh: height };
+  context.drawImage(image, 0, 0);
+  const bounds = getTrimmedImageBounds(context, width, height);
+  return { source: image, sx: bounds.x, sy: bounds.y, sw: bounds.width, sh: bounds.height };
+};
+
 const createCharacterReferenceBoard = async (
   references: Flux2CharacterReference[],
   signal?: AbortSignal,
 ) => {
   const loadedImages = await Promise.all(references.map((reference) => loadCanvasImage(reference.imageUrl, signal)));
-  const size = 1024;
   const count = loadedImages.length;
-  const columns = count <= 2 ? count : Math.ceil(Math.sqrt(count));
+  const columns = count <= 3 ? count : Math.ceil(Math.sqrt(count));
   const rows = Math.ceil(count / columns);
   const canvas = document.createElement('canvas');
-  canvas.width = size;
-  canvas.height = size;
+  canvas.width = WIDE_FRAME_WIDTH;
+  canvas.height = WIDE_FRAME_HEIGHT;
   const context = canvas.getContext('2d');
   if (!context) throw new Error('Браузер не смог собрать reference-board для Flux2.');
 
   context.fillStyle = '#d8d4ca';
-  context.fillRect(0, 0, size, size);
-  const cellWidth = size / columns;
-  const cellHeight = size / rows;
-  const padding = Math.max(18, Math.min(cellWidth, cellHeight) * 0.06);
+  context.fillRect(0, 0, canvas.width, canvas.height);
+  const outerPadding = 18;
+  const gutter = 14;
+  const cellWidth = (canvas.width - outerPadding * 2 - gutter * (columns - 1)) / columns;
+  const cellHeight = (canvas.height - outerPadding * 2 - gutter * (rows - 1)) / rows;
 
   loadedImages.forEach(({ image }, index) => {
     const column = index % columns;
     const row = Math.floor(index / columns);
-    const targetX = column * cellWidth + padding;
-    const targetY = row * cellHeight + padding;
-    const targetWidth = cellWidth - padding * 2;
-    const targetHeight = cellHeight - padding * 2;
-    const scale = Math.min(targetWidth / image.width, targetHeight / image.height);
-    const drawWidth = image.width * scale;
-    const drawHeight = image.height * scale;
+    const targetX = outerPadding + column * (cellWidth + gutter);
+    const targetY = outerPadding + row * (cellHeight + gutter);
+    const { source, sx, sy, sw, sh } = getImageDrawSource(image);
+    const scale = Math.min(cellWidth / sw, cellHeight / sh);
+    const drawWidth = sw * scale;
+    const drawHeight = sh * scale;
     context.drawImage(
-      image,
-      targetX + (targetWidth - drawWidth) / 2,
-      targetY + (targetHeight - drawHeight) / 2,
+      source,
+      sx,
+      sy,
+      sw,
+      sh,
+      targetX + (cellWidth - drawWidth) / 2,
+      targetY + (cellHeight - drawHeight) / 2,
       drawWidth,
       drawHeight,
     );
@@ -1103,8 +1167,8 @@ const buildComfyFlux2ComposeWorkflow = (
     '47': {
       class_type: 'EmptyFlux2LatentImage',
       inputs: {
-        width: 1024,
-        height: 1024,
+        width: WIDE_FRAME_WIDTH,
+        height: WIDE_FRAME_HEIGHT,
         batch_size: 1,
       },
     },
@@ -1112,8 +1176,8 @@ const buildComfyFlux2ComposeWorkflow = (
       class_type: 'Flux2Scheduler',
       inputs: {
         steps,
-        width: 1024,
-        height: 1024,
+        width: WIDE_FRAME_WIDTH,
+        height: WIDE_FRAME_HEIGHT,
       },
     },
     ...(isTurbo

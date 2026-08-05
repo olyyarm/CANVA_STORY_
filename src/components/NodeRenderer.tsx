@@ -29,6 +29,8 @@ interface NodeRendererProps {
   onSpeakNarration: (nodeId: string) => void;
   onStopSpeech: () => void;
   onGenerateOmniVoiceNarration: (nodeId: string) => Promise<void>;
+  onGenerateSceneOmniVoiceNarration: (nodeId: string) => Promise<void>;
+  onBuildSceneVideoClip: (nodeId: string) => Promise<void>;
   onCopyToClipboard: (text: string) => void;
   onRegenerateImageNode: (nodeId: string) => Promise<void>;
   onToggleReferenceImage: (nodeId: string) => void;
@@ -80,6 +82,8 @@ const NodeRenderer: React.FC<NodeRendererProps> = ({
   onSpeakNarration,
   onStopSpeech,
   onGenerateOmniVoiceNarration,
+  onGenerateSceneOmniVoiceNarration,
+  onBuildSceneVideoClip,
   onCopyToClipboard,
   onRegenerateImageNode,
   onToggleReferenceImage,
@@ -108,7 +112,7 @@ const NodeRenderer: React.FC<NodeRendererProps> = ({
       || node.metadata?.sourceKind === 'chapter_material'
     );
   const detailRowCount = countDetailRows(node.inputValue);
-  const isBusy = Boolean(node.isLoading || node.isLoadingImage || node.isLoadingAudio || node.isSpeaking);
+  const isBusy = Boolean(node.isLoading || node.isLoadingImage || node.isLoadingAudio || node.isLoadingVideo || node.isSpeaking);
   const loadingLabel = node.isSpeaking
     ? 'Озвучиваем закадр...'
     : node.isLoadingAudio
@@ -134,6 +138,7 @@ const NodeRenderer: React.FC<NodeRendererProps> = ({
     promptContext ? `\nРусский контекст:\n${promptContext}` : '',
   ].filter(Boolean).join('\n');
   const isReferenceImage = node.nodeType === 'pollinations_image' && isDefaultReferenceImage(node);
+  const safeDownloadName = `${node.label.replace(/[^\p{L}\p{N}_-]+/gu, '-').replace(/^-+|-+$/gu, '') || 'scene'}.webm`;
 
   const renderCopyButton = (text: string) => (
     <button
@@ -561,6 +566,41 @@ const NodeRenderer: React.FC<NodeRendererProps> = ({
                   {isBusy ? 'Отменить Turbo' : 'Собрать кадр Flux2 Turbo'}
                 </button>
               </>
+            )}
+            {imageProvider === 'comfyui' && (
+              <div className="node-segmented-actions node-segmented-actions--voice">
+                <button
+                  type="button"
+                  onMouseDown={stopMouseDown}
+                  onClick={(event) => runWithoutDrag(event, () => node.isLoadingAudio
+                    ? onCancelGeneration(id)
+                    : void onGenerateSceneOmniVoiceNarration(id))}
+                  disabled={Boolean(node.isLoading || node.isLoadingImage || node.isLoadingVideo)}
+                >
+                  {node.isLoadingAudio ? 'Отменить озвучку' : 'Озвучить сцену'}
+                </button>
+                <button
+                  type="button"
+                  onMouseDown={stopMouseDown}
+                  onClick={(event) => runWithoutDrag(event, () => node.isLoadingVideo
+                    ? onCancelGeneration(id)
+                    : void onBuildSceneVideoClip(id))}
+                  disabled={Boolean(node.isLoading || node.isLoadingImage || node.isLoadingAudio)}
+                >
+                  {node.isLoadingVideo ? 'Отменить клип' : 'Клип 16:9'}
+                </button>
+              </div>
+            )}
+            {node.audioUrl && (
+              <div className="node-audio-player" onMouseDown={stopMouseDown}>
+                <audio controls src={node.audioUrl} />
+              </div>
+            )}
+            {node.videoUrl && (
+              <div className="node-video-player" onMouseDown={stopMouseDown}>
+                <video controls src={node.videoUrl} />
+                <a className="node-download-link" href={node.videoUrl} download={safeDownloadName}>Скачать WebM</a>
+              </div>
             )}
           </>
         )}

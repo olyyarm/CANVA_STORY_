@@ -85,6 +85,8 @@ interface UseNodeManagementReturn {
   handleSpeakNarration: (detailNodeId: string) => void;
   handleStopSpeech: () => void;
   handleGenerateOmniVoiceNarration: (detailNodeId: string) => Promise<void>;
+  handleGenerateSceneOmniVoiceNarration: (sceneNodeId: string) => Promise<void>;
+  handleBuildSceneVideoClip: (sceneNodeId: string) => Promise<void>;
   handleCopyToClipboard: (textToCopy: string) => Promise<void>;
   handleGeneratePollinationsImage: (nodeId: string) => Promise<void>;
   handleRegenerateImageNode: (nodeId: string) => Promise<void>;
@@ -193,6 +195,142 @@ const splitSpeechText = (text: string) => {
   return chunks;
 };
 
+const OMNIVOICE_NARRATOR_VOICE =
+  'adult male voice, slightly tired, low pitch, calm Russian narrator voice, natural pacing, restrained emotion';
+
+const getSceneNumber = (label: string) => {
+  const match = label.match(/\d+/u);
+  return match ? Number(match[0]) : null;
+};
+
+const extractSceneNarration = (narration: string, sceneLabel: string) => {
+  const sceneNumber = getSceneNumber(sceneLabel);
+  if (!sceneNumber) return cleanupBrowserSpeechText(narration);
+
+  const normalized = narration.replace(/\r\n/g, '\n');
+  const sceneMatch = new RegExp(`(?:^|\\n)\\s*Сцена\\s*${sceneNumber}\\s*[:.\\-–—]?`, 'iu').exec(normalized);
+  if (!sceneMatch) return '';
+
+  const blockStart = sceneMatch.index + sceneMatch[0].length;
+  const rest = normalized.slice(blockStart);
+  const nextSceneMatch = /\n\s*Сцена\s*\d+\s*[:.\-–—]?/iu.exec(rest);
+  return cleanupBrowserSpeechText(rest.slice(0, nextSceneMatch?.index ?? undefined));
+};
+
+const loadImageElement = (imageUrl: string) =>
+  new Promise<HTMLImageElement>((resolve, reject) => {
+    const image = new Image();
+    image.crossOrigin = 'anonymous';
+    image.onload = () => resolve(image);
+    image.onerror = () => reject(new Error('Не удалось загрузить картинку для 16:9 клипа.'));
+    image.src = imageUrl;
+  });
+
+const pickSupportedVideoMimeType = () => {
+  const candidates = [
+    'video/webm;codecs=vp9,opus',
+    'video/webm;codecs=vp8,opus',
+    'video/webm',
+  ];
+  return candidates.find((mimeType) => MediaRecorder.isTypeSupported(mimeType)) ?? '';
+};
+
+const drawCoverImage = (
+  context: CanvasRenderingContext2D,
+  image: HTMLImageElement,
+  width: number,
+  height: number,
+) => {
+  const scale = Math.max(width / image.naturalWidth, height / image.naturalHeight);
+  const drawWidth = image.naturalWidth * scale;
+  const drawHeight = image.naturalHeight * scale;
+  context.fillStyle = '#101318';
+  context.fillRect(0, 0, width, height);
+  context.drawImage(
+    image,
+    (width - drawWidth) / 2,
+    (height - drawHeight) / 2,
+    drawWidth,
+    drawHeight,
+  );
+};
+
+const buildStillImageVideoClip = async (
+  imageUrl: string,
+  audioUrl: string,
+  signal?: AbortSignal,
+) => {
+  if (typeof MediaRecorder === 'undefined') {
+    throw new Error('Браузер не поддерживает MediaRecorder, поэтому не может собрать клип.');
+  }
+
+  const [image, audioResponse] = await Promise.all([
+    loadImageElement(imageUrl),
+    fetch(audioUrl, { signal }),
+  ]);
+  if (!audioResponse.ok) throw new Error(`Не удалось прочитать аудио для клипа: ${audioResponse.status}.`);
+
+  const audioBuffer = await audioResponse.arrayBuffer();
+  const audioContext = new AudioContext();
+  const decodedAudio = await audioContext.decodeAudioData(audioBuffer.slice(0));
+  const audioSource = audioContext.createBufferSource();
+  audioSource.buffer = decodedAudio;
+  const audioDestination = audioContext.createMediaStreamDestination();
+  audioSource.connect(audioDestination);
+
+  const canvas = document.createElement('canvas');
+  canvas.width = 1920;
+  canvas.height = 1080;
+  const context = canvas.getContext('2d');
+  if (!context) throw new Error('Браузер не смог подготовить canvas для 16:9 клипа.');
+  drawCoverImage(context, image, canvas.width, canvas.height);
+
+  const canvasStream = canvas.captureStream(30);
+  const stream = new MediaStream([
+    ...canvasStream.getVideoTracks(),
+    ...audioDestination.stream.getAudioTracks(),
+  ]);
+  const mimeType = pickSupportedVideoMimeType();
+  const recorder = new MediaRecorder(stream, mimeType ? { mimeType } : undefined);
+  const chunks: Blob[] = [];
+  recorder.ondataavailable = (event) => {
+    if (event.data.size > 0) chunks.push(event.data);
+  };
+
+  let frameId = 0;
+  const paintFrame = () => {
+    drawCoverImage(context, image, canvas.width, canvas.height);
+    frameId = requestAnimationFrame(paintFrame);
+  };
+
+  const finished = new Promise<Blob>((resolve, reject) => {
+    recorder.onerror = () => reject(new Error('Браузер остановил запись клипа из-за ошибки.'));
+    recorder.onstop = () => {
+      resolve(new Blob(chunks, { type: recorder.mimeType || 'video/webm' }));
+    };
+    audioSource.onended = () => {
+      recorder.stop();
+    };
+  });
+
+  await audioContext.resume();
+  recorder.start(500);
+  paintFrame();
+  audioSource.start();
+  if (signal) {
+    signal.addEventListener('abort', () => {
+      audioSource.stop();
+      if (recorder.state !== 'inactive') recorder.stop();
+    }, { once: true });
+  }
+
+  const blob = await finished;
+  cancelAnimationFrame(frameId);
+  stream.getTracks().forEach((track) => track.stop());
+  await audioContext.close();
+  return URL.createObjectURL(blob);
+};
+
 const upsertScriptDetailNode = (
   previousNodes: NodesState,
   parentId: string,
@@ -236,11 +374,6 @@ const upsertScriptDetailNode = (
     ...previousNodes,
     [nodeId]: nextNode,
   };
-};
-
-const getSceneNumber = (label: string) => {
-  const match = label.match(/сцена\s*(\d+)/iu);
-  return match ? Number(match[1]) : null;
 };
 
 const getReferencedSceneNumbers = (text: string) => {
@@ -331,6 +464,19 @@ const getCharacterAssetIndex = (node: NodeData) => {
 const isCharacterReferenceNode = (node: NodeData) =>
   node.metadata?.isReference === true
   || (getAssetKind(node).startsWith('character_asset') && node.metadata?.isReference !== false);
+
+const findBestSceneFrameNode = (nodes: NodesState, sceneNodeId: string) => {
+  const priorityByAssetKind: Record<string, number> = {
+    scene_flux2_frame: 4,
+    scene_frame: 3,
+    scene_location: 2,
+  };
+  const candidates = Object.values(nodes)
+    .filter((node) => node.parentId === sceneNodeId && node.nodeType === 'pollinations_image' && Boolean(node.imageUrl))
+    .sort((first, second) =>
+      (priorityByAssetKind[getAssetKind(second)] ?? 1) - (priorityByAssetKind[getAssetKind(first)] ?? 1));
+  return candidates[0];
+};
 
 const getReferenceLabel = (node: NodeData) =>
   typeof node.metadata?.promptContext === 'string'
@@ -1921,7 +2067,7 @@ export const useNodeManagement = (
 
       const audioUrl = await generateComfyOmniVoiceDesignAudio(
         text,
-        'female, low pitch, russian accent',
+        OMNIVOICE_NARRATOR_VOICE,
         imageGenerationSettings,
         controller.signal,
       );
@@ -1941,7 +2087,7 @@ export const useNodeManagement = (
             metadata: {
               ...currentNode.metadata,
               ttsProvider: 'omnivoice',
-              voiceInstruct: 'female, low pitch, russian accent',
+              voiceInstruct: OMNIVOICE_NARRATOR_VOICE,
               ttsGeneratedAt: new Date().toISOString(),
             },
           },
@@ -1965,6 +2111,153 @@ export const useNodeManagement = (
       });
     }
   }, [imageGenerationSettings, setNodes, showNotice, updateNode]);
+
+  const handleGenerateSceneOmniVoiceNarration = useCallback(async (sceneNodeId: string) => {
+    const currentNodes = nodesRef.current;
+    const sceneNode = currentNodes[sceneNodeId];
+    const outputNode = sceneNode?.parentId ? currentNodes[sceneNode.parentId] : undefined;
+    if (!sceneNode || sceneNode.nodeType !== 'scene' || sceneNode.isLoadingAudio) return;
+
+    const narrationNode = Object.values(currentNodes).find(
+      (node) => node.parentId === sceneNode.parentId && node.nodeType === 'script_detail' && node.label === 'Закадр',
+    );
+    const sceneNarration = narrationNode?.inputValue
+      ? extractSceneNarration(narrationNode.inputValue, sceneNode.label)
+      : '';
+    const fallbackText = cleanupBrowserSpeechText(sceneNode.sceneText || sceneNode.inputValue || outputNode?.inputValue || '');
+    const text = sceneNarration || fallbackText;
+    if (!text) {
+      updateNode(sceneNodeId, { pollinationsApiError: 'Не найден закадровый текст для этой сцены. Сначала создайте или подготовьте ноду «Закадр».' });
+      return;
+    }
+
+    const requestId = `tts-scene:${sceneNodeId}`;
+    if (activeRequests.current.has(requestId)) return;
+    const controller = new AbortController();
+    activeRequests.current.set(requestId, controller);
+
+    try {
+      updateNode(sceneNodeId, {
+        isLoadingAudio: true,
+        loadingProvider: 'comfyui',
+        pollinationsApiError: undefined,
+        statusMessage: 'OmniVoice озвучивает эту сцену мужским голосом...',
+      });
+
+      const audioUrl = await generateComfyOmniVoiceDesignAudio(
+        text,
+        OMNIVOICE_NARRATOR_VOICE,
+        imageGenerationSettings,
+        controller.signal,
+      );
+
+      setNodes((previousNodes) => {
+        const currentNode = previousNodes[sceneNodeId];
+        if (!currentNode) return previousNodes;
+        if (currentNode.audioUrl?.startsWith('blob:')) URL.revokeObjectURL(currentNode.audioUrl);
+        return {
+          ...previousNodes,
+          [sceneNodeId]: {
+            ...currentNode,
+            audioUrl,
+            isLoadingAudio: false,
+            loadingProvider: undefined,
+            statusMessage: 'Озвучка сцены готова.',
+            metadata: {
+              ...currentNode.metadata,
+              ttsProvider: 'omnivoice',
+              voiceInstruct: OMNIVOICE_NARRATOR_VOICE,
+              sceneNarrationText: text,
+              ttsGeneratedAt: new Date().toISOString(),
+            },
+          },
+        };
+      });
+      showNotice('success', `Озвучка для «${sceneNode.label}» готова.`);
+    } catch (error) {
+      if (isAbortError(error)) {
+        showNotice('info', 'Озвучка сцены отменена.');
+      } else {
+        const message = errorMessage(error);
+        updateNode(sceneNodeId, { pollinationsApiError: message });
+        showNotice('error', message);
+      }
+    } finally {
+      activeRequests.current.delete(requestId);
+      updateNode(sceneNodeId, {
+        isLoadingAudio: false,
+        loadingProvider: undefined,
+        statusMessage: undefined,
+      });
+    }
+  }, [imageGenerationSettings, setNodes, showNotice, updateNode]);
+
+  const handleBuildSceneVideoClip = useCallback(async (sceneNodeId: string) => {
+    const currentNodes = nodesRef.current;
+    const sceneNode = currentNodes[sceneNodeId];
+    if (!sceneNode || sceneNode.nodeType !== 'scene' || sceneNode.isLoadingVideo) return;
+    if (!sceneNode.audioUrl) {
+      updateNode(sceneNodeId, { pollinationsApiError: 'Сначала озвучьте эту сцену OmniVoice.' });
+      return;
+    }
+    const frameNode = findBestSceneFrameNode(currentNodes, sceneNodeId);
+    if (!frameNode?.imageUrl) {
+      updateNode(sceneNodeId, { pollinationsApiError: 'Сначала соберите или сгенерируйте кадр для этой сцены.' });
+      return;
+    }
+
+    const requestId = `scene-video:${sceneNodeId}`;
+    if (activeRequests.current.has(requestId)) return;
+    const controller = new AbortController();
+    activeRequests.current.set(requestId, controller);
+
+    try {
+      updateNode(sceneNodeId, {
+        isLoadingVideo: true,
+        pollinationsApiError: undefined,
+        statusMessage: 'Собираем 16:9 WebM клип из кадра и озвучки...',
+      });
+
+      const videoUrl = await buildStillImageVideoClip(frameNode.imageUrl, sceneNode.audioUrl, controller.signal);
+
+      setNodes((previousNodes) => {
+        const currentNode = previousNodes[sceneNodeId];
+        if (!currentNode) return previousNodes;
+        if (currentNode.videoUrl?.startsWith('blob:')) URL.revokeObjectURL(currentNode.videoUrl);
+        return {
+          ...previousNodes,
+          [sceneNodeId]: {
+            ...currentNode,
+            videoUrl,
+            isLoadingVideo: false,
+            statusMessage: 'Клип 16:9 готов.',
+            metadata: {
+              ...currentNode.metadata,
+              videoFormat: 'webm',
+              videoAspectRatio: '16:9',
+              videoFrameSource: frameNode.label,
+              videoGeneratedAt: new Date().toISOString(),
+            },
+          },
+        };
+      });
+      showNotice('success', `Клип 16:9 для «${sceneNode.label}» готов.`);
+    } catch (error) {
+      if (isAbortError(error)) {
+        showNotice('info', 'Сборка клипа отменена.');
+      } else {
+        const message = errorMessage(error);
+        updateNode(sceneNodeId, { pollinationsApiError: message });
+        showNotice('error', message);
+      }
+    } finally {
+      activeRequests.current.delete(requestId);
+      updateNode(sceneNodeId, {
+        isLoadingVideo: false,
+        statusMessage: undefined,
+      });
+    }
+  }, [setNodes, showNotice, updateNode]);
 
   const handleGeneratePollinationsImage = useCallback(async (parentNodeId: string) => {
     const parentNode = nodesRef.current[parentNodeId];
@@ -2127,6 +2420,8 @@ export const useNodeManagement = (
     activeRequests.current.get(`scene-characters:${nodeId}`)?.abort();
     activeRequests.current.get(`detail-asset:${nodeId}`)?.abort();
     activeRequests.current.get(`tts:${nodeId}`)?.abort();
+    activeRequests.current.get(`tts-scene:${nodeId}`)?.abort();
+    activeRequests.current.get(`scene-video:${nodeId}`)?.abort();
     if (speakingNodeIdRef.current === nodeId) {
       window.speechSynthesis.cancel();
       speechUtteranceRef.current = null;
@@ -2136,6 +2431,7 @@ export const useNodeManagement = (
       isLoading: false,
       isLoadingImage: false,
       isLoadingAudio: false,
+      isLoadingVideo: false,
       isSpeaking: false,
       loadingProvider: undefined,
       statusMessage: undefined,
@@ -2171,6 +2467,8 @@ export const useNodeManagement = (
     handleSpeakNarration,
     handleStopSpeech,
     handleGenerateOmniVoiceNarration,
+    handleGenerateSceneOmniVoiceNarration,
+    handleBuildSceneVideoClip,
     handleCopyToClipboard,
     handleGeneratePollinationsImage,
     handleRegenerateImageNode,

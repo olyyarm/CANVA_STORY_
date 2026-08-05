@@ -150,6 +150,8 @@ const App = () => {
     handleSpeakNarration,
     handleStopSpeech,
     handleGenerateOmniVoiceNarration,
+    handleGenerateSceneOmniVoiceNarration,
+    handleBuildSceneVideoClip,
     handleCopyToClipboard,
     handleRegenerateImageNode,
     handleToggleReferenceImage,
@@ -650,6 +652,8 @@ const App = () => {
               onSpeakNarration={handleSpeakNarration}
               onStopSpeech={handleStopSpeech}
               onGenerateOmniVoiceNarration={handleGenerateOmniVoiceNarration}
+              onGenerateSceneOmniVoiceNarration={handleGenerateSceneOmniVoiceNarration}
+              onBuildSceneVideoClip={handleBuildSceneVideoClip}
               onCopyToClipboard={handleCopyToClipboard}
               onRegenerateImageNode={handleRegenerateImageNode}
               onToggleReferenceImage={handleToggleReferenceImage}

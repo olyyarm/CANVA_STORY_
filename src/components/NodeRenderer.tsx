@@ -33,6 +33,7 @@ interface NodeRendererProps {
   onGenerateOmniVoiceNarration: (nodeId: string) => Promise<void>;
   onGenerateSceneOmniVoiceNarration: (nodeId: string) => Promise<void>;
   onBuildSceneVideoClip: (nodeId: string) => Promise<void>;
+  onBuildChapterVideo: (nodeId: string) => Promise<void>;
   onCopyToClipboard: (text: string) => void;
   onRegenerateImageNode: (nodeId: string) => Promise<void>;
   onToggleReferenceImage: (nodeId: string) => void;
@@ -251,6 +252,7 @@ const NodeRenderer: React.FC<NodeRendererProps> = ({
   onGenerateOmniVoiceNarration,
   onGenerateSceneOmniVoiceNarration,
   onBuildSceneVideoClip,
+  onBuildChapterVideo,
   onCopyToClipboard,
   onRegenerateImageNode,
   onToggleReferenceImage,
@@ -804,6 +806,17 @@ const NodeRenderer: React.FC<NodeRendererProps> = ({
               <span><strong>{timelineStats.inserts}</strong> вставок</span>
               <button
                 type="button"
+                className={`node-secondary-button chapter-timeline__refresh${node.isLoadingVideo ? ' node-secondary-button--cancel' : ''}`}
+                onMouseDown={stopMouseDown}
+                onClick={(event) => runWithoutDrag(event, () => node.isLoadingVideo
+                  ? onCancelGeneration(id)
+                  : void onBuildChapterVideo(id))}
+                disabled={Boolean(node.isLoading || node.isLoadingImage || node.isLoadingAudio || timelineStats.clips === 0)}
+              >
+                {node.isLoadingVideo ? 'Отменить ролик' : 'Собрать ролик'}
+              </button>
+              <button
+                type="button"
                 className="node-secondary-button chapter-timeline__refresh"
                 onMouseDown={stopMouseDown}
                 onClick={(event) => runWithoutDrag(event, onEnsureChapterTimeline)}
@@ -811,6 +824,15 @@ const NodeRenderer: React.FC<NodeRendererProps> = ({
                 Обновить
               </button>
             </div>
+            {node.pollinationsApiError && (
+              <div className="node-message node-message--error" role="alert">{node.pollinationsApiError}</div>
+            )}
+            {node.videoUrl && (
+              <div className="node-video-player" onMouseDown={stopMouseDown}>
+                <video controls src={node.videoUrl} />
+                <a className="node-download-link" href={node.videoUrl} download={safeDownloadName}>Скачать общий WebM</a>
+              </div>
+            )}
             {timelineScenes.length === 0 ? (
               <div className="chapter-timeline__empty">
                 Сцен пока нет. Сначала соберите сценарий, затем нажмите «Создать/обновить сцены».

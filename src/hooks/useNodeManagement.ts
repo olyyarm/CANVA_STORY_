@@ -89,6 +89,7 @@ interface UseNodeManagementReturn {
   handleGenerateOmniVoiceNarration: (detailNodeId: string) => Promise<void>;
   handleGenerateSceneOmniVoiceNarration: (sceneNodeId: string) => Promise<void>;
   handleBuildSceneVideoClip: (sceneNodeId: string) => Promise<void>;
+  handleBuildChapterVideo: (timelineNodeId: string) => Promise<void>;
   handleCopyToClipboard: (textToCopy: string) => Promise<void>;
   handleGeneratePollinationsImage: (nodeId: string) => Promise<void>;
   handleRegenerateImageNode: (nodeId: string) => Promise<void>;
@@ -422,6 +423,128 @@ const buildStillImageVideoClip = async (
   stream.getTracks().forEach((track) => track.stop());
   await audioContext.close();
   return URL.createObjectURL(blob);
+};
+
+const createVideoElement = (videoUrl: string) =>
+  new Promise<HTMLVideoElement>((resolve, reject) => {
+    const video = document.createElement('video');
+    video.crossOrigin = 'anonymous';
+    video.playsInline = true;
+    video.preload = 'auto';
+    video.src = videoUrl;
+    video.onloadedmetadata = () => resolve(video);
+    video.onerror = () => reject(new Error('Не удалось загрузить один из клипов главы для сборки ролика.'));
+  });
+
+const drawVideoCoverFrame = (
+  context: CanvasRenderingContext2D,
+  video: HTMLVideoElement,
+  width: number,
+  height: number,
+) => {
+  const sourceWidth = video.videoWidth || width;
+  const sourceHeight = video.videoHeight || height;
+  const scale = Math.max(width / sourceWidth, height / sourceHeight);
+  const drawWidth = sourceWidth * scale;
+  const drawHeight = sourceHeight * scale;
+  context.fillStyle = '#101318';
+  context.fillRect(0, 0, width, height);
+  context.drawImage(video, (width - drawWidth) / 2, (height - drawHeight) / 2, drawWidth, drawHeight);
+};
+
+const waitForVideoEnd = (video: HTMLVideoElement, signal?: AbortSignal) =>
+  new Promise<void>((resolve, reject) => {
+    const cleanup = () => {
+      video.onended = null;
+      video.onerror = null;
+    };
+    video.onended = () => {
+      cleanup();
+      resolve();
+    };
+    video.onerror = () => {
+      cleanup();
+      reject(new Error('Браузер остановил воспроизведение одного из клипов главы.'));
+    };
+    signal?.addEventListener('abort', () => {
+      cleanup();
+      video.pause();
+      reject(new DOMException('Aborted', 'AbortError'));
+    }, { once: true });
+  });
+
+const buildChapterVideoFromClips = async (
+  clipUrls: string[],
+  signal?: AbortSignal,
+) => {
+  if (typeof MediaRecorder === 'undefined') {
+    throw new Error('Браузер не поддерживает MediaRecorder, поэтому не может собрать общий ролик.');
+  }
+  if (clipUrls.length === 0) {
+    throw new Error('Нет готовых клипов для сборки общего ролика.');
+  }
+
+  const canvas = document.createElement('canvas');
+  canvas.width = 1920;
+  canvas.height = 1080;
+  const context = canvas.getContext('2d');
+  if (!context) throw new Error('Браузер не смог подготовить canvas для общего ролика.');
+
+  const audioContext = new AudioContext();
+  const audioDestination = audioContext.createMediaStreamDestination();
+  const canvasStream = canvas.captureStream(30);
+  const stream = new MediaStream([
+    ...canvasStream.getVideoTracks(),
+    ...audioDestination.stream.getAudioTracks(),
+  ]);
+  const mimeType = pickSupportedVideoMimeType();
+  const recorder = new MediaRecorder(stream, mimeType ? { mimeType } : undefined);
+  const chunks: Blob[] = [];
+  recorder.ondataavailable = (event) => {
+    if (event.data.size > 0) chunks.push(event.data);
+  };
+
+  let frameId = 0;
+  let activeVideo: HTMLVideoElement | null = null;
+  const paintFrame = () => {
+    if (activeVideo) drawVideoCoverFrame(context, activeVideo, canvas.width, canvas.height);
+    frameId = requestAnimationFrame(paintFrame);
+  };
+
+  const finished = new Promise<Blob>((resolve, reject) => {
+    recorder.onerror = () => reject(new Error('Браузер остановил запись общего ролика из-за ошибки.'));
+    recorder.onstop = () => resolve(new Blob(chunks, { type: recorder.mimeType || 'video/webm' }));
+  });
+
+  try {
+    await audioContext.resume();
+    recorder.start(500);
+    paintFrame();
+
+    for (const clipUrl of clipUrls) {
+      const video = await createVideoElement(clipUrl);
+      activeVideo = video;
+      const source = audioContext.createMediaElementSource(video);
+      source.connect(audioDestination);
+      drawVideoCoverFrame(context, video, canvas.width, canvas.height);
+      const ended = waitForVideoEnd(video, signal);
+      await video.play();
+      await ended;
+      source.disconnect();
+      video.removeAttribute('src');
+      video.load();
+    }
+
+    if (recorder.state !== 'inactive') recorder.stop();
+    const blob = await finished;
+    return URL.createObjectURL(blob);
+  } finally {
+    cancelAnimationFrame(frameId);
+    stream.getTracks().forEach((track) => track.stop());
+    if (recorder.state !== 'inactive') recorder.stop();
+    activeVideo?.pause();
+    await audioContext.close();
+  }
 };
 
 const upsertScriptDetailNode = (
@@ -2552,6 +2675,91 @@ export const useNodeManagement = (
     }
   }, [setNodes, showNotice, updateNode]);
 
+  const handleBuildChapterVideo = useCallback(async (timelineNodeId: string) => {
+    const currentNodes = nodesRef.current;
+    const timelineNode = currentNodes[timelineNodeId];
+    if (!timelineNode || timelineNode.nodeType !== 'chapter_timeline' || timelineNode.isLoadingVideo) return;
+
+    const sourceScenarioId = typeof timelineNode.metadata?.sourceScenarioId === 'string'
+      ? timelineNode.metadata.sourceScenarioId
+      : timelineNode.parentId;
+    const sceneEntries = Object.entries(currentNodes)
+      .filter(([, candidate]) =>
+        candidate.nodeType === 'scene'
+        && (!sourceScenarioId || candidate.parentId === sourceScenarioId))
+      .sort(([, first], [, second]) =>
+        (getSceneNumber(first.label) ?? 0) - (getSceneNumber(second.label) ?? 0)
+        || first.label.localeCompare(second.label, 'ru', { numeric: true }));
+
+    const missingClipLabels = sceneEntries
+      .filter(([, scene]) => !scene.videoUrl)
+      .map(([, scene]) => scene.label);
+    if (sceneEntries.length === 0) {
+      updateNode(timelineNodeId, { pollinationsApiError: 'Сначала создайте сцены для таймлайна.' });
+      return;
+    }
+    if (missingClipLabels.length > 0) {
+      updateNode(timelineNodeId, {
+        pollinationsApiError: `Сначала соберите клипы для всех сцен. Не хватает: ${missingClipLabels.join(', ')}.`,
+      });
+      return;
+    }
+
+    const clipUrls = sceneEntries
+      .map(([, scene]) => scene.videoUrl)
+      .filter((clipUrl): clipUrl is string => Boolean(clipUrl));
+    const requestId = `chapter-video:${timelineNodeId}`;
+    if (activeRequests.current.has(requestId)) return;
+    const controller = new AbortController();
+    activeRequests.current.set(requestId, controller);
+
+    try {
+      updateNode(timelineNodeId, {
+        isLoadingVideo: true,
+        pollinationsApiError: undefined,
+        statusMessage: `Собираем общий ролик главы из ${clipUrls.length} клипов...`,
+      });
+
+      const videoUrl = await buildChapterVideoFromClips(clipUrls, controller.signal);
+      setNodes((previousNodes) => {
+        const currentNode = previousNodes[timelineNodeId];
+        if (!currentNode) return previousNodes;
+        if (currentNode.videoUrl?.startsWith('blob:')) URL.revokeObjectURL(currentNode.videoUrl);
+        return {
+          ...previousNodes,
+          [timelineNodeId]: {
+            ...currentNode,
+            videoUrl,
+            isLoadingVideo: false,
+            statusMessage: 'Общий ролик главы готов.',
+            metadata: {
+              ...currentNode.metadata,
+              videoFormat: 'webm',
+              videoAspectRatio: '16:9',
+              chapterClipCount: clipUrls.length,
+              videoGeneratedAt: new Date().toISOString(),
+            },
+          },
+        };
+      });
+      showNotice('success', `Общий ролик главы собран из ${clipUrls.length} клипов.`);
+    } catch (error) {
+      if (isAbortError(error)) {
+        showNotice('info', 'Сборка общего ролика отменена.');
+      } else {
+        const message = errorMessage(error);
+        updateNode(timelineNodeId, { pollinationsApiError: message });
+        showNotice('error', message);
+      }
+    } finally {
+      activeRequests.current.delete(requestId);
+      updateNode(timelineNodeId, {
+        isLoadingVideo: false,
+        statusMessage: undefined,
+      });
+    }
+  }, [setNodes, showNotice, updateNode]);
+
   const handleGeneratePollinationsImage = useCallback(async (parentNodeId: string) => {
     const parentNode = nodesRef.current[parentNodeId];
     if (!parentNode?.masterPrompt || parentNode.isLoadingImage) return;
@@ -2717,6 +2925,7 @@ export const useNodeManagement = (
     activeRequests.current.get(`tts:${nodeId}`)?.abort();
     activeRequests.current.get(`tts-scene:${nodeId}`)?.abort();
     activeRequests.current.get(`scene-video:${nodeId}`)?.abort();
+    activeRequests.current.get(`chapter-video:${nodeId}`)?.abort();
     if (speakingNodeIdRef.current === nodeId) {
       window.speechSynthesis.cancel();
       speechUtteranceRef.current = null;
@@ -2765,6 +2974,7 @@ export const useNodeManagement = (
     handleGenerateOmniVoiceNarration,
     handleGenerateSceneOmniVoiceNarration,
     handleBuildSceneVideoClip,
+    handleBuildChapterVideo,
     handleCopyToClipboard,
     handleGeneratePollinationsImage,
     handleRegenerateImageNode,

@@ -153,6 +153,7 @@ const App = () => {
     handleGenerateOmniVoiceNarration,
     handleGenerateSceneOmniVoiceNarration,
     handleBuildSceneVideoClip,
+    handleBuildChapterVideo,
     handleCopyToClipboard,
     handleRegenerateImageNode,
     handleToggleReferenceImage,
@@ -658,6 +659,7 @@ const App = () => {
               onGenerateOmniVoiceNarration={handleGenerateOmniVoiceNarration}
               onGenerateSceneOmniVoiceNarration={handleGenerateSceneOmniVoiceNarration}
               onBuildSceneVideoClip={handleBuildSceneVideoClip}
+              onBuildChapterVideo={handleBuildChapterVideo}
               onCopyToClipboard={handleCopyToClipboard}
               onRegenerateImageNode={handleRegenerateImageNode}
               onToggleReferenceImage={handleToggleReferenceImage}

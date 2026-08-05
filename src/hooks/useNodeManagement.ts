@@ -157,6 +157,18 @@ const withProjectVisualStyle = (prompt: string, nodes: NodesState) => {
   ].join('\n\n');
 };
 
+const appendProjectVisualStyleToImagePrompt = (imagePrompt: string, nodes: NodesState) => {
+  const style = getProjectVisualStyle(nodes);
+  if (!style) return imagePrompt;
+  const normalizedPrompt = imagePrompt.toLocaleLowerCase('en');
+  const normalizedStyle = style.toLocaleLowerCase('en');
+  if (normalizedPrompt.includes(normalizedStyle)) return imagePrompt;
+  return [
+    imagePrompt.trim(),
+    `Visual style: ${style}. Keep this exact rendering language, medium, line quality, realism level, palette logic, and finish consistent with every other project image.`,
+  ].join('\n\n');
+};
+
 const buildChapterPrompt = (material: string, nodes: NodesState) =>
   withStoryReferenceContext([
     'Материал текущей главы:',
@@ -1367,24 +1379,25 @@ export const useNodeManagement = (
         model: sceneNode.selectedModel || outputNode.selectedModel || MISTRAL_MODELS[0],
         sceneLabel: sceneNode.label,
       }, controller.signal, generationSettings);
+      const styledLocationPrompt = appendProjectVisualStyleToImagePrompt(locationPrompt, currentNodes);
 
       updateNode(sceneNodeId, {
         isLoading: false,
         isLoadingImage: true,
         loadingProvider: imageGenerationSettings.provider,
-        assetPrompt: locationPrompt,
+        assetPrompt: styledLocationPrompt,
         productionStatus: 'in_production',
         statusMessage: 'Генерируем фон локации без персонажей...',
       });
 
       const imageUrl = await generateImage(
-        locationPrompt,
+        styledLocationPrompt,
         sceneNode.imagePipeline ?? 'sdxl',
         imageGenerationSettings,
         'scene_location',
         controller.signal,
       );
-      upsertImageNode(sceneNodeId, imageUrl, 'Локация', 'scene_location', 0, locationPrompt, withProjectVisualStyle(prompt, currentNodes));
+      upsertImageNode(sceneNodeId, imageUrl, 'Локация', 'scene_location', 0, styledLocationPrompt, withProjectVisualStyle(prompt, currentNodes));
       showNotice('success', `Локация для «${sceneNode.label}» создана.`);
     } catch (error) {
       if (isAbortError(error)) {
@@ -1450,6 +1463,7 @@ export const useNodeManagement = (
         model: sceneNode.selectedModel || outputNode.selectedModel || MISTRAL_MODELS[0],
         sceneLabel: sceneNode.label,
       }, controller.signal, generationSettings);
+      const styledCharacterPrompt = appendProjectVisualStyleToImagePrompt(characterPrompt, currentNodes);
 
       updateNode(sceneNodeId, {
         isLoading: false,
@@ -1459,13 +1473,13 @@ export const useNodeManagement = (
       });
 
       const imageUrl = await generateImage(
-        characterPrompt,
+        styledCharacterPrompt,
         sceneNode.imagePipeline ?? 'sdxl',
         imageGenerationSettings,
         'scene_characters',
         controller.signal,
       );
-      upsertImageNode(sceneNodeId, imageUrl, 'Персонажи', 'scene_characters', 1, characterPrompt, prompt);
+      upsertImageNode(sceneNodeId, imageUrl, 'Персонажи', 'scene_characters', 1, styledCharacterPrompt, withProjectVisualStyle(prompt, currentNodes));
       showNotice('success', `Персонажи для «${sceneNode.label}» созданы.`);
     } catch (error) {
       if (isAbortError(error)) {
@@ -1643,7 +1657,8 @@ export const useNodeManagement = (
             systemPrompt: CHARACTER_ASSET_PROMPT_SYSTEM_PROMPT,
             model: detailNode.selectedModel || MISTRAL_MODELS[0],
           }, controller.signal, generationSettings);
-          generatedPrompts.push(`${characterName}\n${assetPrompt}`);
+          const styledAssetPrompt = appendProjectVisualStyleToImagePrompt(assetPrompt, nodesRef.current);
+          generatedPrompts.push(`${characterName}\n${styledAssetPrompt}`);
 
           updateNode(detailNodeId, {
             isLoading: false,
@@ -1654,7 +1669,7 @@ export const useNodeManagement = (
           });
 
           const imageUrl = await generateImage(
-            assetPrompt,
+            styledAssetPrompt,
             detailNode.imagePipeline ?? 'sdxl',
             imageGenerationSettings,
             'character_asset',
@@ -1666,7 +1681,7 @@ export const useNodeManagement = (
             `Ассет ${index + 1} · ${characterName}`,
             `character_asset:${index}`,
             index,
-            assetPrompt,
+            styledAssetPrompt,
             withProjectVisualStyle(characterDescription, nodesRef.current),
           );
         }
@@ -1689,17 +1704,18 @@ export const useNodeManagement = (
         systemPrompt: LOCATION_ASSET_PROMPT_SYSTEM_PROMPT,
         model: detailNode.selectedModel || MISTRAL_MODELS[0],
       }, controller.signal, generationSettings);
+      const styledAssetPrompt = appendProjectVisualStyleToImagePrompt(assetPrompt, nodesRef.current);
 
       updateNode(detailNodeId, {
         isLoading: false,
         isLoadingImage: true,
         loadingProvider: imageGenerationSettings.provider,
-        assetPrompt,
+        assetPrompt: styledAssetPrompt,
         statusMessage: 'Генерируем лист локаций...',
       });
 
       const imageUrl = await generateImage(
-        assetPrompt,
+        styledAssetPrompt,
         detailNode.imagePipeline ?? 'sdxl',
         imageGenerationSettings,
         'location_asset',
@@ -1711,7 +1727,7 @@ export const useNodeManagement = (
         'Ассет',
         'location_asset',
         0,
-        assetPrompt,
+        styledAssetPrompt,
         withProjectVisualStyle(description, nodesRef.current),
       );
       showNotice('success', 'Ассет локаций создан.');
@@ -2274,13 +2290,13 @@ export const useNodeManagement = (
 
     try {
       const imageUrl = await generateImage(
-        parentNode.masterPrompt,
+        appendProjectVisualStyleToImagePrompt(parentNode.masterPrompt, nodesRef.current),
         parentNode.imagePipeline ?? 'sdxl',
         imageGenerationSettings,
         'default',
         controller.signal,
       );
-      upsertImageNode(parentNodeId, imageUrl, 'Кадр', 'scene_frame', 0, parentNode.masterPrompt, parentNode.inputValue ?? '');
+      upsertImageNode(parentNodeId, imageUrl, 'Кадр', 'scene_frame', 0, appendProjectVisualStyleToImagePrompt(parentNode.masterPrompt, nodesRef.current), parentNode.inputValue ?? '');
       showNotice('success', 'Кадр создан. Он не включается в localStorage и JSON проекта.');
     } catch (error) {
       if (!isAbortError(error)) {
@@ -2313,6 +2329,7 @@ export const useNodeManagement = (
 
     try {
       const assetKind = getAssetKind(node);
+      const styledPrompt = appendProjectVisualStyleToImagePrompt(prompt, nodesRef.current);
       let imageUrl: string;
       if (assetKind === 'scene_flux2_frame') {
         const backgroundNodeId = typeof node.metadata?.backgroundNodeId === 'string' ? node.metadata.backgroundNodeId : '';
@@ -2329,7 +2346,7 @@ export const useNodeManagement = (
         }
         const composePipeline = node.imagePipeline === 'flux2_turbo_compose' ? 'flux2_turbo_compose' : 'flux2_compose';
         imageUrl = await generateComfyFlux2ComposeImage(
-          prompt,
+          styledPrompt,
           backgroundNode.imageUrl,
           characterNodes.map(toFlux2CharacterReference),
           composePipeline,
@@ -2338,7 +2355,7 @@ export const useNodeManagement = (
         );
       } else {
         imageUrl = await generateImage(
-          withProjectVisualStyle(prompt, nodesRef.current),
+          styledPrompt,
           node.imagePipeline ?? 'sdxl',
           imageGenerationSettings,
           getImagePromptKind(node),
@@ -2355,6 +2372,7 @@ export const useNodeManagement = (
           [nodeId]: {
             ...currentNode,
             imageUrl,
+            masterPrompt: styledPrompt,
             isLoadingImage: false,
             loadingProvider: undefined,
             pollinationsApiError: undefined,
@@ -2366,7 +2384,7 @@ export const useNodeManagement = (
                 ? currentNode.imagePipeline === 'flux2_turbo_compose' ? 'flux2_turbo_compose' : 'flux2_compose'
                 : currentNode.imagePipeline ?? 'sdxl',
               ...(isCharacterReferenceNode(currentNode) ? {
-                referencePrompt: currentNode.masterPrompt ?? '',
+                referencePrompt: styledPrompt,
                 referenceContext: typeof currentNode.metadata?.promptContext === 'string' ? currentNode.metadata.promptContext : '',
               } : {}),
               rerolledAt: new Date().toISOString(),

@@ -282,24 +282,66 @@ const pickSupportedVideoMimeType = () => {
   return candidates.find((mimeType) => MediaRecorder.isTypeSupported(mimeType)) ?? '';
 };
 
-const drawCoverImage = (
+const drawCenteredImage = (
+  context: CanvasRenderingContext2D,
+  image: HTMLImageElement,
+  x: number,
+  y: number,
+  drawWidth: number,
+  drawHeight: number,
+) => {
+  context.drawImage(
+    image,
+    x - drawWidth / 2,
+    y - drawHeight / 2,
+    drawWidth,
+    drawHeight,
+  );
+};
+
+const drawAnimatedStillFrame = (
   context: CanvasRenderingContext2D,
   image: HTMLImageElement,
   width: number,
   height: number,
+  progress: number,
 ) => {
-  const scale = Math.max(width / image.naturalWidth, height / image.naturalHeight);
-  const drawWidth = image.naturalWidth * scale;
-  const drawHeight = image.naturalHeight * scale;
+  const easedProgress = Math.min(1, Math.max(0, progress));
+  const centerX = width / 2;
+  const centerY = height / 2;
+  const coverScale = Math.max(width / image.naturalWidth, height / image.naturalHeight);
+  const backgroundScale = coverScale * 1.5;
+  const backgroundDrift = (easedProgress - 0.5) * 28;
+
   context.fillStyle = '#101318';
   context.fillRect(0, 0, width, height);
-  context.drawImage(
+  context.save();
+  context.filter = 'blur(28px)';
+  drawCenteredImage(
+    context,
     image,
-    (width - drawWidth) / 2,
-    (height - drawHeight) / 2,
-    drawWidth,
-    drawHeight,
+    centerX + backgroundDrift,
+    centerY - backgroundDrift * 0.35,
+    image.naturalWidth * backgroundScale,
+    image.naturalHeight * backgroundScale,
   );
+  context.restore();
+
+  context.fillStyle = 'rgba(0, 0, 0, 0.2)';
+  context.fillRect(0, 0, width, height);
+
+  const containScale = Math.min(width / image.naturalWidth, height / image.naturalHeight);
+  const foregroundScale = containScale * (0.78 - easedProgress * 0.08);
+  const foregroundY = centerY + (easedProgress - 0.5) * 18;
+  const foregroundWidth = image.naturalWidth * foregroundScale;
+  const foregroundHeight = image.naturalHeight * foregroundScale;
+
+  context.save();
+  context.shadowColor = 'rgba(0, 0, 0, 0.35)';
+  context.shadowBlur = 30;
+  context.shadowOffsetY = 16;
+  drawCenteredImage(context, image, centerX, foregroundY, foregroundWidth, foregroundHeight);
+  context.restore();
 };
 
 const buildStillImageVideoClip = async (
@@ -330,7 +372,7 @@ const buildStillImageVideoClip = async (
   canvas.height = 1080;
   const context = canvas.getContext('2d');
   if (!context) throw new Error('Браузер не смог подготовить canvas для 16:9 клипа.');
-  drawCoverImage(context, image, canvas.width, canvas.height);
+  drawAnimatedStillFrame(context, image, canvas.width, canvas.height, 0);
 
   const canvasStream = canvas.captureStream(30);
   const stream = new MediaStream([
@@ -345,8 +387,11 @@ const buildStillImageVideoClip = async (
   };
 
   let frameId = 0;
+  let startedAt = 0;
   const paintFrame = () => {
-    drawCoverImage(context, image, canvas.width, canvas.height);
+    const elapsed = startedAt ? audioContext.currentTime - startedAt : 0;
+    const progress = decodedAudio.duration > 0 ? elapsed / decodedAudio.duration : 0;
+    drawAnimatedStillFrame(context, image, canvas.width, canvas.height, progress);
     frameId = requestAnimationFrame(paintFrame);
   };
 
@@ -362,8 +407,9 @@ const buildStillImageVideoClip = async (
 
   await audioContext.resume();
   recorder.start(500);
-  paintFrame();
+  startedAt = audioContext.currentTime;
   audioSource.start();
+  paintFrame();
   if (signal) {
     signal.addEventListener('abort', () => {
       audioSource.stop();

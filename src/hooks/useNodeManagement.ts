@@ -146,8 +146,39 @@ const getProjectVisualStyle = (nodes: NodesState) =>
   Object.values(nodes).find((node) => node.nodeType === 'script_input' && node.themeInputValue?.trim())
     ?.themeInputValue?.trim() ?? '';
 
+const negativeImagePromptClausePattern =
+  /\b(?:no|not|without|avoid|exclude|never|don't|do not|negative prompt)\b|(?:^|\s)non-[a-z]|(?:^|\s)без\s/iu;
+
+const negativeImagePromptSentenceStartPattern =
+  /^(?:no|not|without|avoid|exclude|never|don't|do not|negative prompt)\b|^(?:без|не)\s/iu;
+
+const sanitizePositiveImagePrompt = (text: string) =>
+  text
+    .split(/\n+/u)
+    .map((paragraph) => {
+      const sentences = paragraph.match(/[^.!?]+[.!?]?/gu) ?? [paragraph];
+      return sentences
+        .map((sentence) => {
+          const trimmed = sentence.trim();
+          if (!trimmed || negativeImagePromptSentenceStartPattern.test(trimmed)) return '';
+          const ending = /[.!?]$/u.test(trimmed) ? trimmed[trimmed.length - 1] : '';
+          const body = ending ? trimmed.slice(0, -1) : trimmed;
+          const clauses = body
+            .split(/[,;]\s*/u)
+            .map((clause) => clause.trim())
+            .filter((clause) => clause && !negativeImagePromptClausePattern.test(clause));
+          if (clauses.length === 0) return '';
+          return `${clauses.join(', ')}${ending || '.'}`;
+        })
+        .filter(Boolean)
+        .join(' ');
+    })
+    .filter(Boolean)
+    .join('\n\n')
+    .trim();
+
 const withProjectVisualStyle = (prompt: string, nodes: NodesState) => {
-  const style = getProjectVisualStyle(nodes);
+  const style = sanitizePositiveImagePrompt(getProjectVisualStyle(nodes));
   if (!style) return prompt;
   return [
     'Project visual style. Apply this style consistently to every generated image in the project:',
@@ -158,15 +189,16 @@ const withProjectVisualStyle = (prompt: string, nodes: NodesState) => {
 };
 
 const appendProjectVisualStyleToImagePrompt = (imagePrompt: string, nodes: NodesState) => {
-  const style = getProjectVisualStyle(nodes);
-  if (!style) return imagePrompt;
-  const normalizedPrompt = imagePrompt.toLocaleLowerCase('en');
+  const cleanImagePrompt = sanitizePositiveImagePrompt(imagePrompt);
+  const style = sanitizePositiveImagePrompt(getProjectVisualStyle(nodes));
+  if (!style) return cleanImagePrompt;
+  const normalizedPrompt = cleanImagePrompt.toLocaleLowerCase('en');
   const normalizedStyle = style.toLocaleLowerCase('en');
-  if (normalizedPrompt.includes(normalizedStyle)) return imagePrompt;
-  return [
-    imagePrompt.trim(),
+  if (normalizedPrompt.includes(normalizedStyle)) return cleanImagePrompt;
+  return sanitizePositiveImagePrompt([
+    cleanImagePrompt,
     `Visual style: ${style}. Keep this exact rendering language, medium, line quality, realism level, palette logic, and finish consistent with every other project image.`,
-  ].join('\n\n');
+  ].join('\n\n'));
 };
 
 const buildChapterPrompt = (material: string, nodes: NodesState) =>
@@ -1536,23 +1568,23 @@ export const useNodeManagement = (
     activeRequests.current.set(requestId, controller);
 
     const referenceSummary = referenceLabels.map((label, index) => `${index + 1}. ${label}`).join('; ');
-    const projectVisualStyle = getProjectVisualStyle(currentNodes);
+    const projectVisualStyle = sanitizePositiveImagePrompt(getProjectVisualStyle(currentNodes));
     const composePrompt = [
       projectVisualStyle ? `Project visual style: ${projectVisualStyle}. Keep this same rendering language, realism level, palette logic, and painterly finish in the final composed frame.` : '',
       `Use the first reference image as the background location plate for ${sceneNode.label}.`,
       referenceNodes.length > 1
         ? `Use the second reference image as a character reference board. It contains these character references in reading order: ${referenceSummary}.`
         : `Use the second reference image as the character identity reference for ${referenceSummary}.`,
-      'Create one coherent cinematic story frame inside the location, not a collage and not a reference sheet.',
+      'Create one coherent cinematic story frame inside the location as a single continuous image.',
       referenceNodes.length > 1
-        ? 'Use the character reference board only as an identity guide. Select the characters required by the scene action from the listed references, place each required character naturally in the same environment, and keep their relative scale believable. Do not render the reference board itself.'
+        ? 'Use the character reference board as an identity guide. Select the characters required by the scene action from the listed references, place each required character naturally in the same environment, and keep their relative scale believable.'
         : 'Place the referenced character naturally inside the location.',
       referenceNodes.length > 1
-        ? 'For every included character, preserve the matching identity, clothing, body type, face, age, and role from its numbered reference. Do not merge characters, swap identities, clone faces, or invent extra main characters.'
+        ? 'For every included character, preserve the matching identity, clothing, body type, face, age, and role from its numbered reference. Keep character identities separate and readable.'
         : 'Preserve the character identity, clothing, body type, face, age, and role from the character reference.',
       'Match perspective, scale, light direction, shadows, color palette, and painterly style to the location plate. Preserve the architecture and mood from the location reference.',
       `Scene action: ${sceneDescription}`,
-      'Compose the action with clear staging: foreground, midground, and background should read as one continuous scene. Do not create a character sheet, turnaround, lineup, text, watermark, UI, border, split-screen, or collage.',
+      'Compose the action with clear staging: foreground, midground, and background should read as one continuous scene.',
     ].filter(Boolean).join(' ');
     const promptContext = [
       `Сцена: ${sceneNode.label}`,

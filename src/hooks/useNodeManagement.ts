@@ -140,6 +140,21 @@ const withStoryReferenceContext = (prompt: string, nodes: NodesState) => {
   ].join('\n\n');
 };
 
+const getProjectVisualStyle = (nodes: NodesState) =>
+  Object.values(nodes).find((node) => node.nodeType === 'script_input' && node.themeInputValue?.trim())
+    ?.themeInputValue?.trim() ?? '';
+
+const withProjectVisualStyle = (prompt: string, nodes: NodesState) => {
+  const style = getProjectVisualStyle(nodes);
+  if (!style) return prompt;
+  return [
+    'Project visual style. Apply this style consistently to every generated image in the project:',
+    style,
+    'Keep the same rendering language, medium, line quality, realism level, palette logic, and finish across all character and location assets.',
+    prompt,
+  ].join('\n\n');
+};
+
 const buildChapterPrompt = (material: string, nodes: NodesState) =>
   withStoryReferenceContext([
     'Материал текущей главы:',
@@ -1201,7 +1216,7 @@ export const useNodeManagement = (
 
       const locationPrompt = await generateText({
         operation: 'scene_location_prompt',
-        prompt,
+        prompt: withProjectVisualStyle(prompt, currentNodes),
         systemPrompt: SCENE_LOCATION_PROMPT_SYSTEM_PROMPT,
         model: sceneNode.selectedModel || outputNode.selectedModel || MISTRAL_MODELS[0],
         sceneLabel: sceneNode.label,
@@ -1223,7 +1238,7 @@ export const useNodeManagement = (
         'scene_location',
         controller.signal,
       );
-      upsertImageNode(sceneNodeId, imageUrl, 'Локация', 'scene_location', 0, locationPrompt, prompt);
+      upsertImageNode(sceneNodeId, imageUrl, 'Локация', 'scene_location', 0, locationPrompt, withProjectVisualStyle(prompt, currentNodes));
       showNotice('success', `Локация для «${sceneNode.label}» создана.`);
     } catch (error) {
       if (isAbortError(error)) {
@@ -1284,7 +1299,7 @@ export const useNodeManagement = (
 
       const characterPrompt = await generateText({
         operation: 'scene_character_layer_prompt',
-        prompt,
+        prompt: withProjectVisualStyle(prompt, currentNodes),
         systemPrompt: SCENE_CHARACTER_LAYER_PROMPT_SYSTEM_PROMPT,
         model: sceneNode.selectedModel || outputNode.selectedModel || MISTRAL_MODELS[0],
         sceneLabel: sceneNode.label,
@@ -1361,7 +1376,9 @@ export const useNodeManagement = (
     activeRequests.current.set(requestId, controller);
 
     const referenceSummary = referenceLabels.map((label, index) => `${index + 1}. ${label}`).join('; ');
+    const projectVisualStyle = getProjectVisualStyle(currentNodes);
     const composePrompt = [
+      projectVisualStyle ? `Project visual style: ${projectVisualStyle}. Keep this same rendering language, realism level, palette logic, and painterly finish in the final composed frame.` : '',
       `Use the first reference image as the background location plate for ${sceneNode.label}.`,
       referenceNodes.length > 1
         ? `Use the second reference image as a character reference board. It contains these character references in reading order: ${referenceSummary}.`
@@ -1376,7 +1393,7 @@ export const useNodeManagement = (
       'Match perspective, scale, light direction, shadows, color palette, and painterly style to the location plate. Preserve the architecture and mood from the location reference.',
       `Scene action: ${sceneDescription}`,
       'Compose the action with clear staging: foreground, midground, and background should read as one continuous scene. Do not create a character sheet, turnaround, lineup, text, watermark, UI, border, split-screen, or collage.',
-    ].join(' ');
+    ].filter(Boolean).join(' ');
     const promptContext = [
       `Сцена: ${sceneNode.label}`,
       `Описание сцены:\n${sceneDescription}`,
@@ -1476,7 +1493,7 @@ export const useNodeManagement = (
 
           const assetPrompt = await generateText({
             operation: 'character_asset_prompt',
-            prompt: characterDescription,
+            prompt: withProjectVisualStyle(characterDescription, nodesRef.current),
             systemPrompt: CHARACTER_ASSET_PROMPT_SYSTEM_PROMPT,
             model: detailNode.selectedModel || MISTRAL_MODELS[0],
           }, controller.signal, generationSettings);
@@ -1504,7 +1521,7 @@ export const useNodeManagement = (
             `character_asset:${index}`,
             index,
             assetPrompt,
-            characterDescription,
+            withProjectVisualStyle(characterDescription, nodesRef.current),
           );
         }
 
@@ -1522,7 +1539,7 @@ export const useNodeManagement = (
 
       const assetPrompt = await generateText({
         operation: 'location_asset_prompt',
-        prompt: description,
+        prompt: withProjectVisualStyle(description, nodesRef.current),
         systemPrompt: LOCATION_ASSET_PROMPT_SYSTEM_PROMPT,
         model: detailNode.selectedModel || MISTRAL_MODELS[0],
       }, controller.signal, generationSettings);
@@ -1549,7 +1566,7 @@ export const useNodeManagement = (
         'location_asset',
         0,
         assetPrompt,
-        description,
+        withProjectVisualStyle(description, nodesRef.current),
       );
       showNotice('success', 'Ассет локаций создан.');
     } catch (error) {
@@ -2028,7 +2045,7 @@ export const useNodeManagement = (
         );
       } else {
         imageUrl = await generateImage(
-          prompt,
+          withProjectVisualStyle(prompt, nodesRef.current),
           node.imagePipeline ?? 'sdxl',
           imageGenerationSettings,
           getImagePromptKind(node),

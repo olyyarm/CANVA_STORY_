@@ -36,6 +36,7 @@ import {
   SCENE_MASTER_PROMPT_SYSTEM_PROMPT,
   SEASON_MEMORY_UPDATE_SYSTEM_PROMPT,
   STORY_BRIEF_REVISION_SYSTEM_PROMPT,
+  SYSTEM_INSERTS_DETAIL_SYSTEM_PROMPT,
   TTS_CLEANUP_SYSTEM_PROMPT,
 } from '../constants';
 import {
@@ -105,6 +106,7 @@ const detailConfig: Record<DetailType, {
   локации: { label: 'Локации', operation: 'locations', systemPrompt: LOCATION_DETAIL_SYSTEM_PROMPT, column: 1 },
   настроение: { label: 'Настроение', operation: 'mood', systemPrompt: MOOD_DETAIL_SYSTEM_PROMPT, column: 2 },
   закадр: { label: 'Закадр', operation: 'narration', systemPrompt: NARRATION_DETAIL_SYSTEM_PROMPT, column: 3 },
+  система: { label: 'Системные вставки', operation: 'system_inserts', systemPrompt: SYSTEM_INSERTS_DETAIL_SYSTEM_PROMPT, column: 4 },
 };
 
 const getExistingChild = (nodes: NodesState, parentId: string, predicate: (node: NodeData) => boolean) =>

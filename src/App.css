@@ -706,7 +706,7 @@
 
 .node-segmented-actions {
   display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
+  grid-template-columns: repeat(5, minmax(0, 1fr));
   gap: 6px;
 }
 
@@ -876,7 +876,7 @@
 
 .chapter-timeline__summary {
   display: grid;
-  grid-template-columns: repeat(6, minmax(76px, 1fr)) minmax(94px, auto);
+  grid-template-columns: repeat(7, minmax(72px, 1fr)) minmax(94px, auto);
   gap: 7px;
   flex: 0 0 auto;
 }
@@ -974,12 +974,44 @@
 
 .chapter-timeline__scene-text {
   display: -webkit-box;
-  min-height: 54px;
+  min-height: 46px;
   margin: 0;
   overflow: hidden;
   color: #cdd3da;
   font-size: 10px;
   line-height: 1.35;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 4;
+}
+
+.chapter-timeline__insert {
+  display: flex;
+  max-height: 74px;
+  flex: 0 0 auto;
+  flex-direction: column;
+  gap: 4px;
+  overflow: hidden;
+  padding: 8px;
+  border: 1px solid rgba(216, 139, 71, 0.34);
+  border-radius: 7px;
+  color: #e0c2a0;
+  background: rgba(216, 139, 71, 0.08);
+}
+
+.chapter-timeline__insert strong {
+  color: #f1b37d;
+  font-size: 9px;
+  font-weight: 800;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.chapter-timeline__insert span {
+  display: -webkit-box;
+  overflow: hidden;
+  font-size: 10px;
+  line-height: 1.35;
+  white-space: pre-wrap;
   -webkit-box-orient: vertical;
   -webkit-line-clamp: 4;
 }

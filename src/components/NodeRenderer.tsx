@@ -47,6 +47,7 @@ const detailButtons: Array<{ type: DetailType; label: string }> = [
   { type: 'локации', label: 'Локации' },
   { type: 'настроение', label: 'Настроение' },
   { type: 'закадр', label: 'Закадр' },
+  { type: 'система', label: 'Система' },
 ];
 
 const countDetailRows = (value?: string) =>
@@ -100,6 +101,27 @@ const getSortedTimelineScenes = (nodes: NodesState, timelineNode: NodeData) =>
       characters: findSceneImageNode(nodes, sceneId, ['scene_characters']),
       frame: findSceneImageNode(nodes, sceneId, ['scene_flux2_frame', 'scene_frame']),
     }));
+
+const getSystemInsertDetail = (nodes: NodesState, timelineNode: NodeData) => {
+  const sourceScenarioId = typeof timelineNode.metadata?.sourceScenarioId === 'string'
+    ? timelineNode.metadata.sourceScenarioId
+    : timelineNode.parentId;
+  return Object.values(nodes).find((candidate) =>
+    candidate.nodeType === 'script_detail'
+    && candidate.label === 'Системные вставки'
+    && (!sourceScenarioId || candidate.parentId === sourceScenarioId));
+};
+
+const parseSystemInsertsByScene = (text = '') => {
+  const inserts = new Map<number, string>();
+  const matches = [...text.matchAll(/(?:^|\n)\s*После\s+сцены\s+(\d+)\s*:\s*([\s\S]*?)(?=\n\s*После\s+сцены\s+\d+\s*:|$)/giu)];
+  matches.forEach((match) => {
+    const sceneNumber = Number(match[1]);
+    const body = match[2]?.trim();
+    if (sceneNumber && body) inserts.set(sceneNumber, body);
+  });
+  return inserts;
+};
 
 const NodeRenderer: React.FC<NodeRendererProps> = ({
   id,
@@ -186,6 +208,9 @@ const NodeRenderer: React.FC<NodeRendererProps> = ({
   const isReferenceImage = node.nodeType === 'pollinations_image' && isDefaultReferenceImage(node);
   const safeDownloadName = `${node.label.replace(/[^\p{L}\p{N}_-]+/gu, '-').replace(/^-+|-+$/gu, '') || 'scene'}.webm`;
   const timelineScenes = node.nodeType === 'chapter_timeline' ? getSortedTimelineScenes(allNodes, node) : [];
+  const timelineSystemInserts = node.nodeType === 'chapter_timeline'
+    ? parseSystemInsertsByScene(getSystemInsertDetail(allNodes, node)?.inputValue)
+    : new Map<number, string>();
   const timelineStats = {
     scenes: timelineScenes.length,
     locations: timelineScenes.filter(({ location }) => Boolean(location?.imageUrl)).length,
@@ -193,6 +218,7 @@ const NodeRenderer: React.FC<NodeRendererProps> = ({
     frames: timelineScenes.filter(({ frame }) => Boolean(frame?.imageUrl)).length,
     audio: timelineScenes.filter(({ scene }) => Boolean(scene.audioUrl)).length,
     clips: timelineScenes.filter(({ scene }) => Boolean(scene.videoUrl)).length,
+    inserts: timelineSystemInserts.size,
   };
 
   const renderCopyButton = (text: string) => (
@@ -676,6 +702,7 @@ const NodeRenderer: React.FC<NodeRendererProps> = ({
               <span><strong>{timelineStats.frames}</strong> кадров</span>
               <span><strong>{timelineStats.audio}</strong> озвучек</span>
               <span><strong>{timelineStats.clips}</strong> клипов</span>
+              <span><strong>{timelineStats.inserts}</strong> вставок</span>
               <button
                 type="button"
                 className="node-secondary-button chapter-timeline__refresh"
@@ -693,6 +720,7 @@ const NodeRenderer: React.FC<NodeRendererProps> = ({
               <div className="chapter-timeline__rail" onMouseDown={stopMouseDown}>
                 {timelineScenes.map(({ sceneId, scene, location, characters, frame }) => {
                   const sceneText = scene.sceneText || scene.inputValue || '';
+                  const systemInsert = timelineSystemInserts.get(getSceneNumberFromLabel(scene.label));
                   const qaStatus = typeof frame?.metadata?.visionStatus === 'string'
                     ? frame.metadata.visionStatus
                     : 'ожидает';
@@ -703,6 +731,12 @@ const NodeRenderer: React.FC<NodeRendererProps> = ({
                         <span>{scene.productionStatus ?? 'draft'}</span>
                       </header>
                       <p className="chapter-timeline__scene-text">{sceneText}</p>
+                      {systemInsert && (
+                        <div className="chapter-timeline__insert">
+                          <strong>Системная вставка</strong>
+                          <span>{systemInsert}</span>
+                        </div>
+                      )}
                       <div className="chapter-timeline__thumb-grid">
                         <div className="chapter-timeline__thumb">
                           {location?.imageUrl
@@ -722,6 +756,7 @@ const NodeRenderer: React.FC<NodeRendererProps> = ({
                         {renderTimelineBadge('Кадр', Boolean(frame?.imageUrl), frame?.label)}
                         {renderTimelineBadge('Аудио', Boolean(scene.audioUrl), 'Озвучка сцены')}
                         {renderTimelineBadge('Клип', Boolean(scene.videoUrl), '16:9 фрагмент')}
+                        {renderTimelineBadge('Вставка', Boolean(systemInsert), systemInsert)}
                         {renderTimelineBadge('QA', qaStatus !== 'ожидает', `Vision: ${qaStatus}`)}
                       </div>
                     </article>

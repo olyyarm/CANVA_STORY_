@@ -109,6 +109,21 @@ const createNarration = (sceneCount: number) =>
     ].join(' '),
   ).join('\n');
 
+const createSystemInserts = (sceneCount: number) =>
+  Array.from({ length: Math.min(4, Math.max(1, sceneCount - 1)) }, (_, index) => {
+    const sceneNumber = Math.min(sceneCount, index * 2 + 1);
+    const types = ['Навык', 'Риск', 'Рынок', 'График'];
+    const titles = ['Профессиональный рефлекс', 'Скрытая цена', 'Рыночное окно', 'Динамика доверия'];
+    return [
+      `После сцены ${sceneNumber}:`,
+      `Тип: ${types[index % types.length]}`,
+      `Заголовок: ${titles[index % titles.length]}`,
+      `Текст окна: Анализ активирован. Вероятность ошибки: ${18 + index * 11}%. Скрытый ресурс найден.`,
+      'Визуал: полупрозрачное янтарное окно в 3/4, тонкие линии графика, маленькая иконка профессии, тёмный чистый фон.',
+      'Смысл: показать, что герой читает ситуацию как систему рисков и возможностей.',
+    ].join('\n');
+  }).join('\n\n');
+
 const cleanNarrationForTts = (text: string) =>
   text
     .replace(/Сцена\s+\d+\s*:\s*/giu, '')
@@ -192,6 +207,8 @@ export const createMockCompletion = async (request: GenerationRequest, signal?: 
       return updateSeasonMemory(request.prompt);
     case 'tts_cleanup':
       return cleanNarrationForTts(request.prompt);
+    case 'system_inserts':
+      return createSystemInserts(request.sceneCount ?? 4);
     case 'scene_prompt':
       return createScenePrompt(request);
     case 'scene_location_prompt':

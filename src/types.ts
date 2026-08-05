@@ -10,7 +10,7 @@ export type NodeType =
   | 'pollinations_image'
   | 'chapter_timeline';
 
-export type DetailType = 'герои' | 'локации' | 'настроение' | 'закадр';
+export type DetailType = 'герои' | 'локации' | 'настроение' | 'закадр' | 'система';
 export type EntityType = 'character' | 'location' | 'episode' | 'scene';
 export type ProductionStatus = 'idea' | 'draft' | 'ready' | 'in_production' | 'done';
 export type ImagePipeline = 'sdxl' | 'z_image_turbo' | 'flux2_compose' | 'flux2_turbo_compose';
@@ -125,6 +125,7 @@ export type GenerationOperation =
   | 'chapter_summary'
   | 'season_memory_update'
   | 'tts_cleanup'
+  | 'system_inserts'
   | 'scene_prompt'
   | 'scene_location_prompt'
   | 'scene_character_layer_prompt'

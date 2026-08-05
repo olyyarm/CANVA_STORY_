@@ -133,6 +133,13 @@ const getSourceKind = (node?: NodeData) =>
 const findNodeBySourceKind = (nodes: NodesState, sourceKind: string) =>
   Object.entries(nodes).find(([, node]) => node.nodeType === 'script_detail' && getSourceKind(node) === sourceKind);
 
+const findPipelineNode = (nodes: NodesState, sourceKind: string, parentId?: string) =>
+  Object.entries(nodes).find(([, node]) =>
+    node.nodeType === 'script_detail'
+    && getSourceKind(node) === sourceKind
+    && (!parentId || node.parentId === parentId))
+  ?? findNodeBySourceKind(nodes, sourceKind);
+
 const getStoryReferenceContext = (nodes: NodesState) => {
   const references = Object.values(nodes)
     .filter((node) =>
@@ -1539,7 +1546,7 @@ export const useNodeManagement = (
     if (!result) return;
 
     setNodes((previousNodes) => {
-      const existing = findNodeBySourceKind(previousNodes, 'chapter_topic');
+      const existing = findPipelineNode(previousNodes, 'chapter_topic', sourceNodeId);
       const currentSource = previousNodes[sourceNodeId] ?? sourceNode;
       const nodeId = existing?.[0] ?? generateNodeId();
       return {
@@ -1599,7 +1606,7 @@ export const useNodeManagement = (
     if (!result) return;
 
     setNodes((previousNodes) => {
-      const existing = findNodeBySourceKind(previousNodes, 'chapter_knowledge');
+      const existing = findPipelineNode(previousNodes, 'chapter_knowledge', topicNodeId);
       const currentTopic = previousNodes[topicNodeId] ?? topicNode;
       const nodeId = existing?.[0] ?? generateNodeId();
       return {
@@ -1655,7 +1662,7 @@ export const useNodeManagement = (
     if (!result) return;
 
     setNodes((previousNodes) => {
-      const existing = findNodeBySourceKind(previousNodes, 'chapter_material');
+      const existing = findPipelineNode(previousNodes, 'chapter_material', knowledgeNodeId);
       const currentKnowledge = previousNodes[knowledgeNodeId] ?? knowledgeNode;
       const nodeId = existing?.[0] ?? generateNodeId();
       return {

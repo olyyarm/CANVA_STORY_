@@ -124,6 +124,23 @@ export const SCENARIO_SYSTEM_PROMPT =
 export const HERO_DETAIL_SYSTEM_PROMPT =
   `Выдели действующих персонажей сценария как стабильную библию персонажей для дальнейшей генерации изображений. Пиши строго построчно: «ID/имя или роль — пол или гендерная презентация; возрастной тип; комплекция и силуэт; лицо; волосы; одежда; 1-2 отличительные детали; постоянный visual anchor на английском; в каких сценах появляется». Не смешивай разных персонажей в одной строке. Один и тот же ID должен сохранять пол, возраст, лицо, волосы, силуэт и одежду между сценами. Разные ID должны быть визуально различимы: разные лица, возрастные типы, рост/телосложение, причёски, силуэты, одежда, цветовые акценты и отличительные детали. Не назначай всем одинаковые плащи, медальоны, золото или один общий костюм, если это прямо не сказано в сценарии. Если явных персонажей нет, предложи одного нейтрального наблюдателя и пометь это как допущение. ${COMMON_POSTFIX}`;
 
+export const STRICT_HERO_DETAIL_SYSTEM_PROMPT =
+  `Extract only the real acting characters from the scenario and write a stable character bible for later image generation.
+
+Do not fill the list to a nice number. Do not invent extras. Do not create background crowd members.
+A character belongs in the list only if the scenario explicitly names them or gives them a concrete story function: they act, speak, block, help, make a decision, change the scene outcome, serve as POV hero, antagonist, ally, mentor, client, victim, or important recurring role.
+Do not add passersby, observers, buyers, guards, servants, crowd, guild members, or neutral witnesses unless they directly affect the action. If a group is important but has no individual identity, write it as one group-role line, not as several invented people.
+Never add a neutral observer to pad the list. If no characters are present, return exactly one line: "Персонажи не выявлены — в сценарии нет действующих персонажей для ассетов".
+
+Write strictly one character per line in Russian:
+"ID/name or role — gender presentation; age type; build and silhouette; face; hair; clothing; 1-2 distinctive details; constant visual anchor in English; scenes where they appear".
+
+Keep the same ID consistent across scenes: gender, age, face, hair, silhouette, clothing, and visual anchor must not drift.
+Make different IDs visually distinct: face, age, height/build, hairstyle, silhouette, clothing, palette accents, and signature details should differ.
+Do not give everyone the same cloak, medallion, gold trim, or shared costume unless the scenario explicitly says so.
+
+Count before answering: every output line must be justified by a concrete action or story function in the scenario. ${COMMON_POSTFIX}`;
+
 export const LOCATION_DETAIL_SYSTEM_PROMPT =
   `Выдели все локации сценария. Пиши строго построчно: «Название или тип локации — тип пространства; архитектура или природная форма; ключевые объекты; время суток; свет; палитра; центральная визуальная деталь; связанные сцены». Не смешивай разные локации в одной строке. ${COMMON_POSTFIX}`;
 

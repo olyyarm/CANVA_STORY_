@@ -30,7 +30,6 @@ import {
   DEFAULT_KNOWLEDGE_BASE,
   DEFAULT_PDF_SOURCE,
   DEFAULT_SEASON_MEMORY,
-  HERO_DETAIL_SYSTEM_PROMPT,
   LOCATION_ASSET_PROMPT_SYSTEM_PROMPT,
   LOCATION_DETAIL_SYSTEM_PROMPT,
   MISTRAL_MODELS,
@@ -43,6 +42,7 @@ import {
   SCENE_MASTER_PROMPT_SYSTEM_PROMPT,
   SEASON_MEMORY_UPDATE_SYSTEM_PROMPT,
   STORY_BRIEF_REVISION_SYSTEM_PROMPT,
+  STRICT_HERO_DETAIL_SYSTEM_PROMPT,
   SYSTEM_INSERTS_DETAIL_SYSTEM_PROMPT,
   TTS_CLEANUP_SYSTEM_PROMPT,
 } from '../constants';
@@ -115,7 +115,7 @@ const detailConfig: Record<DetailType, {
   systemPrompt: string;
   column: number;
 }> = {
-  герои: { label: 'Герои', operation: 'heroes', systemPrompt: HERO_DETAIL_SYSTEM_PROMPT, column: 0 },
+  герои: { label: 'Герои', operation: 'heroes', systemPrompt: STRICT_HERO_DETAIL_SYSTEM_PROMPT, column: 0 },
   локации: { label: 'Локации', operation: 'locations', systemPrompt: LOCATION_DETAIL_SYSTEM_PROMPT, column: 1 },
   настроение: { label: 'Настроение', operation: 'mood', systemPrompt: MOOD_DETAIL_SYSTEM_PROMPT, column: 2 },
   закадр: { label: 'Закадр', operation: 'narration', systemPrompt: NARRATION_DETAIL_SYSTEM_PROMPT, column: 3 },
@@ -740,7 +740,7 @@ const getCharacterDescriptions = (heroesText: string) =>
   heroesText
     .split(/\n+/)
     .map((line) => line.trim())
-    .filter((line) => line.length > 0);
+    .filter((line) => line.length > 0 && !/^персонажи не выявлены\b/iu.test(line));
 
 const getLocationDescriptions = (locationsText: string) =>
   locationsText
@@ -2346,6 +2346,16 @@ export const useNodeManagement = (
     try {
       if (isCharacters) {
         const characterDescriptions = getCharacterDescriptions(description);
+        if (characterDescriptions.length === 0) {
+          updateNode(detailNodeId, {
+            error: 'В описании героев нет действующих персонажей для генерации ассетов.',
+            isLoading: false,
+            isLoadingImage: false,
+            loadingProvider: undefined,
+            statusMessage: undefined,
+          });
+          return;
+        }
         setNodes((previousNodes) => {
           const nextNodes = { ...previousNodes };
           Object.entries(previousNodes).forEach(([nodeId, node]) => {

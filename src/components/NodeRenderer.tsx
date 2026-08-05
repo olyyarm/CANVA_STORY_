@@ -56,7 +56,14 @@ const detailButtons: Array<{ type: DetailType; label: string }> = [
 ];
 
 const countDetailRows = (value?: string) =>
-  value?.split(/\n+/).map((line) => line.trim()).filter(Boolean).length ?? 0;
+  value
+    ?.split(/\n+/)
+    .map((line) => line.trim())
+    .filter((line) =>
+      line.length > 0
+      && !/^(герои|персонажи|список персонажей|итог|вывод)\s*[:.]?$/iu.test(line)
+      && !/^персонажи не выявлены\b/iu.test(line))
+    .length ?? 0;
 
 const getAssetKind = (node: NodeData) =>
   typeof node.metadata?.assetKind === 'string' ? node.metadata.assetKind : '';

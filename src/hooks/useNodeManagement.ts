@@ -18,6 +18,7 @@ import {
 import {
   ASSOCIATE_SYSTEM_PROMPT,
   CHARACTER_ASSET_PROMPT_SYSTEM_PROMPT,
+  CHARACTER_MEMORY_SYSTEM_PROMPT,
   CHAPTER_FACTS_SYSTEM_PROMPT,
   CHAPTER_KNOWLEDGE_SYSTEM_PROMPT,
   CHAPTER_MATERIAL_SYSTEM_PROMPT,
@@ -38,6 +39,7 @@ import {
   NARRATION_EDIT_SYSTEM_PROMPT,
   SCENARIO_SYSTEM_PROMPT,
   SCENE_CHARACTER_LAYER_PROMPT_SYSTEM_PROMPT,
+  SCENE_DIALOGUE_SYSTEM_PROMPT,
   SCENE_LOCATION_PROMPT_SYSTEM_PROMPT,
   SCENE_MASTER_PROMPT_SYSTEM_PROMPT,
   SEASON_MEMORY_UPDATE_SYSTEM_PROMPT,
@@ -88,6 +90,8 @@ interface UseNodeManagementReturn {
   handleEnsureChapterTimeline: () => void;
   handleScenarioDetailClick: (sourceNodeId: string, detailType: DetailType) => Promise<void>;
   handleCreateSceneNodes: (sourceNodeId: string) => void;
+  handleBuildCharacterMemory: (heroesNodeId: string) => Promise<void>;
+  handleBuildSceneDialogue: (sceneNodeId: string) => Promise<void>;
   handleGenerateScenePrompt: (sceneNodeId: string) => Promise<void>;
   handleGenerateSceneLocationAsset: (sceneNodeId: string) => Promise<void>;
   handleGenerateSceneCharacterLayer: (sceneNodeId: string) => Promise<void>;
@@ -125,7 +129,7 @@ const detailConfig: Record<DetailType, {
 const getExistingChild = (nodes: NodesState, parentId: string, predicate: (node: NodeData) => boolean) =>
   Object.entries(nodes).find(([, node]) => node.parentId === parentId && predicate(node));
 
-const referenceSourceKinds = new Set(['format_bible', 'knowledge_base', 'chapter_knowledge', 'season_memory']);
+const referenceSourceKinds = new Set(['format_bible', 'knowledge_base', 'chapter_knowledge', 'season_memory', 'character_memory']);
 
 const getSourceKind = (node?: NodeData) =>
   typeof node?.metadata?.sourceKind === 'string' ? node.metadata.sourceKind : '';
@@ -164,6 +168,19 @@ const withStoryReferenceContext = (prompt: string, nodes: NodesState) => {
     context,
   ].join('\n\n');
 };
+
+const findChildDetail = (nodes: NodesState, parentId: string | undefined, label: string) =>
+  Object.values(nodes).find((node) =>
+    node.nodeType === 'script_detail'
+    && node.parentId === parentId
+    && node.label === label);
+
+const findProjectDetail = (nodes: NodesState, parentId: string | undefined, label: string, sourceKind?: string) =>
+  findChildDetail(nodes, parentId, label)
+  ?? Object.values(nodes).find((node) =>
+    node.nodeType === 'script_detail'
+    && node.label === label
+    && (!sourceKind || getSourceKind(node) === sourceKind));
 
 const buildReferenceExcerpt = (text: string, maxChars = 18000) => {
   const normalized = text.replace(/\r\n?/gu, '\n').replace(/\n{3,}/gu, '\n\n').trim();
@@ -605,6 +622,7 @@ const upsertScriptDetailNode = (
     column?: number;
     width?: number;
     height?: number;
+    selectedModel?: string;
     metadata?: NodeData['metadata'];
   } = {},
 ) => {
@@ -629,6 +647,7 @@ const upsertScriptDetailNode = (
     level: (parentNode.level ?? 0) + 1,
     parentId,
     inputValue,
+    selectedModel: existing?.[1].selectedModel ?? options.selectedModel,
     error: undefined,
     metadata: {
       ...existing?.[1].metadata,
@@ -1934,6 +1953,110 @@ export const useNodeManagement = (
     }));
     showNotice('success', `Раздел «${config.label}» готов.`);
   }, [requestText, setNodes, showNotice]);
+
+  const handleBuildCharacterMemory = useCallback(async (heroesNodeId: string) => {
+    const currentNodes = nodesRef.current;
+    const heroesNode = currentNodes[heroesNodeId];
+    const heroesText = heroesNode?.inputValue?.trim();
+    if (!heroesNode || heroesNode.nodeType !== 'script_detail' || heroesNode.label !== 'Герои' || heroesNode.isLoading) return;
+    if (!heroesText) {
+      updateNode(heroesNodeId, { error: 'Сначала соберите список героев.' });
+      return;
+    }
+
+    const outputNode = heroesNode.parentId ? currentNodes[heroesNode.parentId] : undefined;
+    const parentId = outputNode?.nodeType === 'script_output' ? heroesNode.parentId : undefined;
+    const existingMemory = findProjectDetail(currentNodes, parentId, 'Память персонажей', 'character_memory');
+    const narrationNode = findProjectDetail(currentNodes, parentId, 'Закадр');
+    const factsNode = findProjectDetail(currentNodes, parentId, 'Факты главы', 'chapter_facts');
+    const seasonMemoryNode = findProjectDetail(currentNodes, undefined, 'Сезонная память', 'season_memory');
+    const model = heroesNode.selectedModel || outputNode?.selectedModel || MISTRAL_MODELS[0];
+    const prompt = [
+      `Библия героев:\n${heroesText}`,
+      `Текущий сценарий:\n${outputNode?.inputValue || 'Не задано'}`,
+      existingMemory?.inputValue ? `Старая память персонажей, которую нужно обновить:\n${existingMemory.inputValue}` : '',
+      narrationNode?.inputValue ? `Закадр:\n${narrationNode.inputValue}` : '',
+      factsNode?.inputValue ? `Факты главы:\n${factsNode.inputValue}` : '',
+      seasonMemoryNode?.inputValue ? `Сезонная память:\n${seasonMemoryNode.inputValue}` : '',
+      'Задача: собрать компактную рабочую память персонажей для будущих диалогов.',
+    ].filter(Boolean).join('\n\n');
+
+    const result = await requestText(heroesNodeId, {
+      operation: 'character_memory',
+      prompt: withStoryReferenceContext(prompt, currentNodes),
+      systemPrompt: CHARACTER_MEMORY_SYSTEM_PROMPT,
+      model,
+      sceneCount: heroesNode.sceneCount ?? outputNode?.sceneCount,
+    }, 'Собираем память персонажей...');
+    if (!result || !parentId) return;
+
+    setNodes((previousNodes) => upsertScriptDetailNode(previousNodes, parentId, 'Память персонажей', result, {
+      column: 5,
+      width: 460,
+      height: 420,
+      selectedModel: model,
+      metadata: {
+        sourceKind: 'character_memory',
+        sourceHeroesNodeId: heroesNodeId,
+        updatedAt: new Date().toISOString(),
+      },
+    }));
+    showNotice('success', 'Память персонажей собрана.');
+  }, [requestText, setNodes, showNotice, updateNode]);
+
+  const handleBuildSceneDialogue = useCallback(async (sceneNodeId: string) => {
+    const currentNodes = nodesRef.current;
+    const sceneNode = currentNodes[sceneNodeId];
+    const outputNode = sceneNode?.parentId ? currentNodes[sceneNode.parentId] : undefined;
+    if (!sceneNode || sceneNode.nodeType !== 'scene' || sceneNode.isLoading) return;
+    const sceneText = (sceneNode.sceneText || sceneNode.inputValue || '').trim();
+    if (!sceneText) {
+      updateNode(sceneNodeId, { error: 'В сцене пока нет описания для диалога.' });
+      return;
+    }
+
+    const parentId = outputNode?.nodeType === 'script_output' ? sceneNode.parentId : undefined;
+    const characterMemoryNode = findProjectDetail(currentNodes, parentId, 'Память персонажей', 'character_memory');
+    const heroesNode = findProjectDetail(currentNodes, parentId, 'Герои');
+    const narrationNode = findProjectDetail(currentNodes, parentId, 'Закадр');
+    const factsNode = findProjectDetail(currentNodes, parentId, 'Факты главы', 'chapter_facts');
+    const model = sceneNode.selectedModel || outputNode?.selectedModel || characterMemoryNode?.selectedModel || MISTRAL_MODELS[0];
+    const prompt = [
+      `Нужная сцена:\n${sceneNode.label}`,
+      `Описание сцены:\n${sceneText}`,
+      `Сценарий главы:\n${outputNode?.inputValue || 'Не задано'}`,
+      `Память персонажей:\n${characterMemoryNode?.inputValue || 'Память ещё не собрана. Используй список героев осторожно.'}`,
+      `Библия героев:\n${heroesNode?.inputValue || 'Не задано'}`,
+      narrationNode?.inputValue ? `Закадр главы:\n${narrationNode.inputValue}` : '',
+      factsNode?.inputValue ? `Факты главы:\n${factsNode.inputValue}` : '',
+      'Задача: написать реплики и маленькие действия только для этой сцены.',
+    ].filter(Boolean).join('\n\n');
+
+    const result = await requestText(sceneNodeId, {
+      operation: 'scene_dialogue',
+      prompt: withStoryReferenceContext(prompt, currentNodes),
+      systemPrompt: SCENE_DIALOGUE_SYSTEM_PROMPT,
+      model,
+      sceneCount: sceneNode.sceneCount ?? outputNode?.sceneCount,
+      sceneLabel: sceneNode.label,
+    }, 'Пишем диалог персонажей...');
+    if (!result) return;
+
+    setNodes((previousNodes) => upsertScriptDetailNode(previousNodes, sceneNodeId, `Диалог · ${sceneNode.label}`, result, {
+      width: 420,
+      height: 360,
+      selectedModel: model,
+      metadata: {
+        sourceKind: 'scene_dialogue',
+        sourceSceneId: sceneNodeId,
+        sourceCharacterMemoryNodeId: characterMemoryNode
+          ? Object.entries(currentNodes).find(([, node]) => node === characterMemoryNode)?.[0] ?? null
+          : null,
+        createdAt: new Date().toISOString(),
+      },
+    }));
+    showNotice('success', `Диалог для «${sceneNode.label}» готов.`);
+  }, [requestText, setNodes, showNotice, updateNode]);
 
   const handleCreateSceneNodes = useCallback((sourceNodeId: string) => {
     const sourceNode = nodesRef.current[sourceNodeId];
@@ -3318,6 +3441,8 @@ export const useNodeManagement = (
     handleEnsureChapterTimeline,
     handleScenarioDetailClick,
     handleCreateSceneNodes,
+    handleBuildCharacterMemory,
+    handleBuildSceneDialogue,
     handleGenerateScenePrompt,
     handleGenerateSceneLocationAsset,
     handleGenerateSceneCharacterLayer,

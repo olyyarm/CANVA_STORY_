@@ -160,6 +160,34 @@ const updateSeasonMemory = (prompt: string) =>
     `Последнее обновление: ${prompt.slice(0, 220).replace(/\s+/g, ' ')}...`,
   ].join('\n');
 
+const createCharacterMemory = () =>
+  [
+    'Персонаж: Главный герой.',
+    'Роль в истории: человек из прошлого мира, который решает проблемы через профессиональный рефлекс.',
+    'Что он знает сейчас: он оказался в чужом мире и должен быстро понять правила окружения.',
+    'Чего хочет сейчас: выжить, найти опору и превратить наблюдение в преимущество.',
+    'Чего боится или избегает: потерять контроль, ошибиться в оценке людей, стать должником сильного игрока.',
+    'Что скрывает или может скрывать: растерянность и часть знаний из прошлой жизни.',
+    'Отношения: осторожно проверяет каждого встречного на риск и выгоду.',
+    'Манера речи: коротко, собранно, с паузами перед важным выводом.',
+    'Профессиональная/социальная оптика: замечает цену, спрос, власть, слабое место сделки и поведение людей.',
+    'Запреты continuity: не знает правил мира заранее и не должен говорить как всезнающий наставник.',
+    'Следующий возможный поступок: задать точный вопрос, проверить предмет или предложить маленькую сделку.',
+  ].join('\n');
+
+const createSceneDialogue = (request: GenerationRequest) =>
+  [
+    `Сцена: ${request.sceneLabel || 'Сцена'}.`,
+    'Участники: Главный герой, встречный персонаж.',
+    'Действие перед репликами: Герой задерживает дыхание, прячет дрожащие пальцы и оценивает, кто в комнате держит реальную власть.',
+    'Диалог:',
+    'Главный герой: Если это обычная вещь, почему вы смотрите на неё так, будто она может стоить вам работы?',
+    'Встречный персонаж: Потому что обычные вещи здесь первыми становятся уликами.',
+    'Главный герой: Значит, мне нужен не ответ. Мне нужно правило, по которому вы боитесь.',
+    'Молчаливый beat: Он проводит большим пальцем по краю предмета и замечает след, который остальные приняли за грязь.',
+    'Режиссёрская пометка: Диалог должен звучать как проверка мира на прочность, а не как объяснение правил зрителю.',
+  ].join('\n');
+
 const createScenePrompt = (request: GenerationRequest) => {
   const scene = request.sceneLabel || 'Scene';
   return `${scene}, cinematic visual storytelling, a clear subject performing the described action, grounded contemporary environment, expressive composition, medium-wide camera framing, subtle depth of field, soft directional dawn light, neutral charcoal and cool gray palette with one restrained amber accent, tactile realistic materials, coherent character and location details, quiet atmospheric tension, clean unlabeled frame`;
@@ -213,6 +241,10 @@ export const createMockCompletion = async (request: GenerationRequest, signal?: 
       return createChapterSummary();
     case 'season_memory_update':
       return updateSeasonMemory(request.prompt);
+    case 'character_memory':
+      return createCharacterMemory();
+    case 'scene_dialogue':
+      return createSceneDialogue(request);
     case 'tts_cleanup':
       return cleanNarrationForTts(request.prompt);
     case 'system_inserts':

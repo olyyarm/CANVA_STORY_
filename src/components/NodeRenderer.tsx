@@ -25,6 +25,8 @@ interface NodeRendererProps {
   onEnsureChapterTimeline: () => void;
   onScenarioDetailClick: (nodeId: string, detailType: DetailType) => void;
   onCreateSceneNodes: (nodeId: string) => void;
+  onBuildCharacterMemory: (nodeId: string) => Promise<void>;
+  onBuildSceneDialogue: (nodeId: string) => Promise<void>;
   onGenerateSceneLocationAsset: (nodeId: string) => Promise<void>;
   onComposeSceneFlux2: (nodeId: string, pipeline?: Extract<ImagePipeline, 'flux2_compose' | 'flux2_turbo_compose'>) => Promise<void>;
   onGenerateDetailAsset: (nodeId: string) => Promise<void>;
@@ -261,6 +263,8 @@ const NodeRenderer: React.FC<NodeRendererProps> = ({
   onEnsureChapterTimeline,
   onScenarioDetailClick,
   onCreateSceneNodes,
+  onBuildCharacterMemory,
+  onBuildSceneDialogue,
   onGenerateSceneLocationAsset,
   onComposeSceneFlux2,
   onGenerateDetailAsset,
@@ -290,6 +294,7 @@ const NodeRenderer: React.FC<NodeRendererProps> = ({
   };
   const isTextOutput = node.nodeType === 'script_output' || node.nodeType === 'script_detail';
   const canGenerateDetailAsset = node.nodeType === 'script_detail' && (node.label === 'Герои' || node.label === 'Локации');
+  const canBuildCharacterMemory = node.nodeType === 'script_detail' && node.label === 'Герои';
   const canBuildScenarioFromBrief = node.nodeType === 'script_detail' && node.metadata?.sourceKind === 'brief_revision';
   const sourceKind = typeof node.metadata?.sourceKind === 'string' ? node.metadata.sourceKind : '';
   const canImportReferenceFile = node.nodeType === 'script_detail' && sourceKind === 'pdf_source';
@@ -309,6 +314,8 @@ const NodeRenderer: React.FC<NodeRendererProps> = ({
       || node.metadata?.sourceKind === 'chapter_knowledge'
       || node.metadata?.sourceKind === 'chapter_material'
       || node.metadata?.sourceKind === 'chapter_facts'
+      || node.metadata?.sourceKind === 'character_memory'
+      || node.metadata?.sourceKind === 'scene_dialogue'
     );
   const detailRowCount = countDetailRows(node.inputValue);
   const modelOptions = getModelOptions(textModelOptions);
@@ -696,6 +703,20 @@ const NodeRenderer: React.FC<NodeRendererProps> = ({
           </button>
         )}
 
+        {canBuildCharacterMemory && (
+          <button
+            type="button"
+            className={`node-secondary-button${isBusy ? ' node-secondary-button--cancel' : ''}`}
+            onMouseDown={stopMouseDown}
+            onClick={(event) => runWithoutDrag(event, () => isBusy
+              ? onCancelGeneration(id)
+              : void onBuildCharacterMemory(id))}
+            disabled={Boolean(node.isLoadingImage)}
+          >
+            {isBusy ? 'Отменить память' : 'Память персонажей'}
+          </button>
+        )}
+
         {canBuildScenarioFromBrief && (
           <button
             type="button"
@@ -821,6 +842,17 @@ const NodeRenderer: React.FC<NodeRendererProps> = ({
                 : void onGenerateSceneLocationAsset(id))}
             >
               {isBusy ? 'Отменить локацию' : `Сгенерировать локацию сцены · ${imageProvider === 'comfyui' ? 'ComfyUI' : 'Pollinations'}`}
+            </button>
+            <button
+              type="button"
+              className={`node-secondary-button${isBusy ? ' node-secondary-button--cancel' : ''}`}
+              onMouseDown={stopMouseDown}
+              onClick={(event) => runWithoutDrag(event, () => isBusy
+                ? onCancelGeneration(id)
+                : void onBuildSceneDialogue(id))}
+              disabled={Boolean(node.isLoadingImage || node.isLoadingAudio || node.isLoadingVideo)}
+            >
+              {isBusy ? 'Отменить диалог' : 'Диалог персонажей'}
             </button>
             {imageProvider === 'comfyui' && (
               <>

@@ -129,6 +129,8 @@ export type GenerationOperation =
   | 'chapter_facts'
   | 'chapter_summary'
   | 'season_memory_update'
+  | 'character_memory'
+  | 'scene_dialogue'
   | 'tts_cleanup'
   | 'system_inserts'
   | 'scene_prompt'

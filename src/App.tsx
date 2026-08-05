@@ -166,6 +166,8 @@ const App = () => {
     handleEnsureChapterTimeline,
     handleScenarioDetailClick,
     handleCreateSceneNodes,
+    handleBuildCharacterMemory,
+    handleBuildSceneDialogue,
     handleGenerateSceneLocationAsset,
     handleComposeSceneFlux2,
     handleGenerateDetailAsset,
@@ -806,6 +808,8 @@ const App = () => {
               onEnsureChapterTimeline={handleEnsureChapterTimeline}
               onScenarioDetailClick={handleScenarioDetailClick}
               onCreateSceneNodes={handleCreateSceneNodes}
+              onBuildCharacterMemory={handleBuildCharacterMemory}
+              onBuildSceneDialogue={handleBuildSceneDialogue}
               onGenerateSceneLocationAsset={handleGenerateSceneLocationAsset}
               onComposeSceneFlux2={handleComposeSceneFlux2}
               onGenerateDetailAsset={handleGenerateDetailAsset}

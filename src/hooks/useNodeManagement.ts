@@ -243,7 +243,7 @@ const splitSpeechText = (text: string) => {
 };
 
 const OMNIVOICE_NARRATOR_VOICE =
-  'adult male voice, slightly tired, low pitch, calm Russian narrator voice, natural pacing, restrained emotion';
+  'male, middle-aged, low pitch, russian accent';
 
 const getSceneNumber = (label: string) => {
   const match = label.match(/\d+/u);

@@ -212,14 +212,15 @@
 .generation-controls {
   display: grid;
   min-width: 0;
-  grid-template-columns: 118px minmax(210px, 1fr) minmax(118px, 168px);
+  grid-template-columns: 118px minmax(210px, 1fr) minmax(118px, 168px) auto;
   align-items: center;
   gap: 6px;
 }
 
 .generation-select,
 .generation-endpoint-input,
-.generation-model-input {
+.generation-model-input,
+.generation-refresh-button {
   width: 100%;
   height: 28px;
   min-width: 0;
@@ -232,9 +233,22 @@
   font-weight: 600;
 }
 
+.generation-refresh-button {
+  width: auto;
+  padding: 0 10px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.generation-refresh-button:disabled {
+  cursor: wait;
+  opacity: 0.68;
+}
+
 .generation-select:focus,
 .generation-endpoint-input:focus,
-.generation-model-input:focus {
+.generation-model-input:focus,
+.generation-refresh-button:focus {
   border-color: var(--accent);
   color: var(--text);
   outline: none;
@@ -1509,6 +1523,15 @@
     grid-template-columns: 118px minmax(180px, 1fr);
   }
 
+  .generation-controls .generation-model-input {
+    grid-column: 2;
+  }
+
+  .generation-controls .generation-refresh-button {
+    grid-column: 2;
+    justify-self: start;
+  }
+
   .image-generation-controls {
     grid-template-columns: auto 118px minmax(180px, 1fr);
   }
@@ -1516,10 +1539,6 @@
   .image-generation-controls .generation-model-input,
   .image-generation-controls .generation-toggle {
     grid-column: 3;
-  }
-
-  .generation-model-input {
-    grid-column: 2;
   }
 
   .generation-warning {

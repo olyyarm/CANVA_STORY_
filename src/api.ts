@@ -823,12 +823,55 @@ export const generateComfyOmniVoiceDesignAudio = async (
 
 interface LmStudioModelEntry {
   key?: string;
+  id?: string;
+  model_key?: string;
+  display_name?: string;
   loaded_instances?: { id?: string }[];
 }
 
 interface LmStudioModelsResponse {
   models?: LmStudioModelEntry[];
 }
+
+interface OpenAiModelsResponse {
+  data?: Array<{ id?: string }>;
+}
+
+const uniqueNonEmpty = (values: string[]) =>
+  [...new Set(values.map((value) => value.trim()).filter(Boolean))];
+
+export const listLmStudioModels = async (settings: GenerationSettings, signal?: AbortSignal) => {
+  const baseUrl = getLmStudioBaseUrl(settings.lmStudioEndpoint);
+  const endpoints = [`${baseUrl}/v1/models`, `${baseUrl}/api/v1/models`];
+  let lastError = '';
+
+  for (const endpoint of endpoints) {
+    try {
+      const response = await fetch(endpoint, { signal });
+      if (!response.ok) {
+        lastError = `${response.status}`;
+        continue;
+      }
+
+      const data: OpenAiModelsResponse & LmStudioModelsResponse = await response.json();
+      const openAiIds = (data.data ?? []).map((model) => model.id ?? '');
+      const lmStudioIds = (data.models ?? []).flatMap((model) => [
+        model.id ?? '',
+        model.key ?? '',
+        model.model_key ?? '',
+        model.display_name ?? '',
+      ]);
+      const models = uniqueNonEmpty([...openAiIds, ...lmStudioIds]);
+      if (models.length > 0) return models;
+      lastError = 'empty model list';
+    } catch (error) {
+      if (error instanceof DOMException && error.name === 'AbortError') throw error;
+      lastError = error instanceof Error ? error.message : String(error);
+    }
+  }
+
+  throw new Error(`LM Studio не отдал список моделей${lastError ? `: ${lastError}` : ''}`);
+};
 
 export const unloadLmStudioModels = async (settings: GenerationSettings, signal?: AbortSignal) => {
   const baseUrl = getLmStudioBaseUrl(settings.lmStudioEndpoint);

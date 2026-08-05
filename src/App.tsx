@@ -8,6 +8,7 @@ import {
   COMFYUI_DEFAULT_ENDPOINT,
   getDefaultGenerationSettings,
   getDefaultImageGenerationSettings,
+  listLmStudioModels,
   LM_STUDIO_DEFAULT_ENDPOINT,
   LM_STUDIO_DEFAULT_MODEL,
   unloadComfyModels,
@@ -17,6 +18,7 @@ import NodeRenderer from './components/NodeRenderer';
 import { useCanvasNavigation } from './hooks/useCanvasNavigation';
 import { useDraggableNodes } from './hooks/useDraggableNodes';
 import { useNodeManagement } from './hooks/useNodeManagement';
+import { MISTRAL_MODELS } from './constants';
 import {
   clearSavedProject,
   createProjectDocument,
@@ -122,6 +124,9 @@ const App = () => {
   const [saveStatus, setSaveStatus] = useState<'saved' | 'saving' | 'error'>('saved');
   const [isUnloadingModels, setIsUnloadingModels] = useState(false);
   const [generationSettings, setGenerationSettings] = useState<GenerationSettings>(loadGenerationSettings);
+  const [lmStudioModels, setLmStudioModels] = useState<string[]>([]);
+  const [lmStudioModelsStatus, setLmStudioModelsStatus] = useState<'idle' | 'loading' | 'ready' | 'error'>('idle');
+  const [lmStudioModelsError, setLmStudioModelsError] = useState('');
   const [imageGenerationSettings, setImageGenerationSettings] = useState<ImageGenerationSettings>(loadImageGenerationSettings);
   const [viewport, setViewport] = useState<ViewportState>(bootstrap.project.viewport);
   const {
@@ -192,6 +197,12 @@ const App = () => {
   const selectedNode = selectedNodeId ? nodes[selectedNodeId] : undefined;
   const deleteCandidate = deleteCandidateId ? nodes[deleteCandidateId] : undefined;
   const visibleNotice = projectNotice ?? notice;
+  const textModelOptions = useMemo(
+    () => (generationSettings.mode === 'lmstudio' && lmStudioModels.length > 0
+      ? lmStudioModels
+      : [...MISTRAL_MODELS]),
+    [generationSettings.mode, lmStudioModels],
+  );
   const lmStudioEndpoint = generationSettings.lmStudioEndpoint.trim();
   const comfyEndpoint = imageGenerationSettings.comfyEndpoint.trim();
   const hasLmStudioMixedContentRisk = generationSettings.mode === 'lmstudio'
@@ -212,11 +223,58 @@ const App = () => {
     clearNotice();
   }, [clearNotice]);
 
+  const refreshLmStudioModels = useCallback(async (silent = false, signal?: AbortSignal) => {
+    if (generationSettings.mode !== 'lmstudio') {
+      setLmStudioModelsStatus('idle');
+      setLmStudioModels([]);
+      setLmStudioModelsError('');
+      return;
+    }
+
+    setLmStudioModelsStatus('loading');
+    setLmStudioModelsError('');
+    try {
+      const models = await listLmStudioModels({
+        mode: 'lmstudio',
+        lmStudioEndpoint: generationSettings.lmStudioEndpoint,
+        lmStudioModel: LM_STUDIO_DEFAULT_MODEL,
+      }, signal);
+      setLmStudioModels(models);
+      setLmStudioModelsStatus('ready');
+      if (!silent) showProjectNotice('success', `LM Studio: найдено моделей ${models.length}.`);
+    } catch (error) {
+      if (error instanceof DOMException && error.name === 'AbortError') return;
+      const message = errorMessage(error);
+      setLmStudioModels([]);
+      setLmStudioModelsStatus('error');
+      setLmStudioModelsError(message);
+      if (!silent) showProjectNotice('error', message);
+    }
+  }, [generationSettings.lmStudioEndpoint, generationSettings.mode, showProjectNotice]);
+
   useEffect(() => {
     if (!visibleNotice) return;
     const timer = window.setTimeout(dismissNotice, 3800);
     return () => window.clearTimeout(timer);
   }, [dismissNotice, visibleNotice]);
+
+  useEffect(() => {
+    const controller = new AbortController();
+    if (generationSettings.mode !== 'lmstudio') {
+      setLmStudioModelsStatus('idle');
+      setLmStudioModels([]);
+      setLmStudioModelsError('');
+      return () => controller.abort();
+    }
+
+    const timer = window.setTimeout(() => {
+      void refreshLmStudioModels(true, controller.signal);
+    }, 450);
+    return () => {
+      window.clearTimeout(timer);
+      controller.abort();
+    };
+  }, [generationSettings.mode, generationSettings.lmStudioEndpoint, refreshLmStudioModels]);
 
   useEffect(() => {
     try {
@@ -233,6 +291,25 @@ const App = () => {
       // Image generation settings are local convenience state and can fall back to defaults.
     }
   }, [imageGenerationSettings]);
+
+  useEffect(() => {
+    const modelListIsReady = generationSettings.mode !== 'lmstudio' || lmStudioModels.length > 0;
+    if (!modelListIsReady || textModelOptions.length === 0) return;
+
+    setNodes((previousNodes) => {
+      let changed = false;
+      const nextNodes: NodesState = {};
+      Object.entries(previousNodes).forEach(([nodeId, node]) => {
+        if (node.selectedModel && !textModelOptions.includes(node.selectedModel)) {
+          nextNodes[nodeId] = { ...node, selectedModel: textModelOptions[0] };
+          changed = true;
+        } else {
+          nextNodes[nodeId] = node;
+        }
+      });
+      return changed ? nextNodes : previousNodes;
+    });
+  }, [generationSettings.mode, lmStudioModels.length, setNodes, textModelOptions]);
 
   useEffect(() => {
     setSaveStatus('saving');
@@ -534,6 +611,19 @@ const App = () => {
                   aria-label="Модель или роли LM Studio"
                   title="Можно указать одну модель или роли: research=..., scenario=..., editor=..., narration=..., memory=..., details=..., image_prompt=..., default=..."
                 />
+                <button
+                  type="button"
+                  className="generation-refresh-button"
+                  onClick={() => void refreshLmStudioModels(false)}
+                  disabled={lmStudioModelsStatus === 'loading'}
+                  title={lmStudioModelsError || 'Обновить список моделей LM Studio'}
+                >
+                  {lmStudioModelsStatus === 'loading'
+                    ? 'ищем...'
+                    : lmStudioModels.length > 0
+                      ? `моделей ${lmStudioModels.length}`
+                      : 'модели'}
+                </button>
               </>
             )}
           </div>
@@ -672,6 +762,7 @@ const App = () => {
               onCopyToClipboard={handleCopyToClipboard}
               onRegenerateImageNode={handleRegenerateImageNode}
               onToggleReferenceImage={handleToggleReferenceImage}
+              textModelOptions={textModelOptions}
               imageProvider={imageGenerationSettings.provider}
               onCancelGeneration={handleCancelGeneration}
             />

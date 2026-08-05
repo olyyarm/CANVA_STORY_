@@ -1,6 +1,5 @@
 import React from 'react';
 import { ImageProvider } from '../api';
-import { MISTRAL_MODELS } from '../constants';
 import { DetailType, ImagePipeline, NodeData, NodesState } from '../types';
 import { assetPath, getNodeIcon } from '../utils';
 
@@ -41,6 +40,7 @@ interface NodeRendererProps {
   onCopyToClipboard: (text: string) => void;
   onRegenerateImageNode: (nodeId: string) => Promise<void>;
   onToggleReferenceImage: (nodeId: string) => void;
+  textModelOptions: string[];
   imageProvider: ImageProvider;
   onCancelGeneration: (nodeId: string) => void;
   onDelete?: (nodeId: string) => void;
@@ -64,6 +64,11 @@ const countDetailRows = (value?: string) =>
       && !/^(герои|персонажи|список персонажей|итог|вывод)\s*[:.]?$/iu.test(line)
       && !/^персонажи не выявлены\b/iu.test(line))
     .length ?? 0;
+
+const getModelOptions = (options: string[]) => {
+  const cleanOptions = options.map((model) => model.trim()).filter(Boolean);
+  return cleanOptions.length > 0 ? cleanOptions : ['local-model'];
+};
 
 const getAssetKind = (node: NodeData) =>
   typeof node.metadata?.assetKind === 'string' ? node.metadata.assetKind : '';
@@ -271,6 +276,7 @@ const NodeRenderer: React.FC<NodeRendererProps> = ({
   onCopyToClipboard,
   onRegenerateImageNode,
   onToggleReferenceImage,
+  textModelOptions,
   imageProvider,
   onCancelGeneration,
   onDelete,
@@ -305,7 +311,16 @@ const NodeRenderer: React.FC<NodeRendererProps> = ({
       || node.metadata?.sourceKind === 'chapter_facts'
     );
   const detailRowCount = countDetailRows(node.inputValue);
+  const modelOptions = getModelOptions(textModelOptions);
+  const selectedTextModel = node.selectedModel && modelOptions.includes(node.selectedModel)
+    ? node.selectedModel
+    : modelOptions[0];
   const isBusy = Boolean(node.isLoading || node.isLoadingImage || node.isLoadingAudio || node.isLoadingVideo || node.isSpeaking);
+  const showInlineModelSelect = (
+    node.nodeType === 'script_output'
+    || node.nodeType === 'scene'
+    || node.nodeType === 'script_detail'
+  ) && !canAutoBuildChapter;
   const loadingLabel = node.isSpeaking
     ? 'Озвучиваем закадр...'
     : node.isLoadingAudio
@@ -357,6 +372,22 @@ const NodeRenderer: React.FC<NodeRendererProps> = ({
     >
       <img src={assetPath('copy.svg')} alt="" />
     </button>
+  );
+
+  const renderModelSelect = (compact = true) => (
+    <label className={`node-field${compact ? ' node-field--inline' : ''}`}>
+      <span>Модель</span>
+      <select
+        value={selectedTextModel}
+        onChange={(event) => onModelChange(event, id)}
+        onMouseDown={stopMouseDown}
+        disabled={node.isLoading}
+      >
+        {modelOptions.map((modelName) => (
+          <option key={modelName} value={modelName}>{modelName}</option>
+        ))}
+      </select>
+    </label>
   );
 
   const renderTimelineBadge = (label: string, isReady: boolean, detail?: string) => (
@@ -482,19 +513,7 @@ const NodeRenderer: React.FC<NodeRendererProps> = ({
                   disabled={node.isLoading}
                 />
               </label>
-              <label className="node-field">
-                <span>Модель</span>
-                <select
-                  value={node.selectedModel ?? MISTRAL_MODELS[0]}
-                  onChange={(event) => onModelChange(event, id)}
-                  onMouseDown={stopMouseDown}
-                  disabled={node.isLoading}
-                >
-                  {MISTRAL_MODELS.map((modelName) => (
-                    <option key={modelName} value={modelName}>{modelName}</option>
-                  ))}
-                </select>
-              </label>
+              {renderModelSelect(false)}
             </div>
             {node.statusMessage && <div className="node-message">{node.statusMessage}</div>}
             <button
@@ -551,23 +570,13 @@ const NodeRenderer: React.FC<NodeRendererProps> = ({
                     disabled={node.isLoading}
                   />
                 </label>
-                <label className="node-field">
-                  <span>Модель</span>
-                  <select
-                    value={node.selectedModel ?? MISTRAL_MODELS[0]}
-                    onChange={(event) => onModelChange(event, id)}
-                    onMouseDown={stopMouseDown}
-                    disabled={node.isLoading}
-                  >
-                    {MISTRAL_MODELS.map((modelName) => (
-                      <option key={modelName} value={modelName}>{modelName}</option>
-                    ))}
-                  </select>
-                </label>
+                {renderModelSelect(false)}
               </div>
             )}
           </>
         )}
+
+        {showInlineModelSelect && renderModelSelect()}
 
         {canExtractChapterTopic && (
           <button

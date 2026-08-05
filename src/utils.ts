@@ -30,6 +30,8 @@ export const getNodeIcon = (nodeType?: string, label?: string) => {
       return assetPath('metaprompt.png');
     case 'chapter_timeline':
       return assetPath('scenariy_generated.png');
+    case 'video_output':
+      return assetPath('generated_associacii_.png');
     default:
       return assetPath('metaprompt.png');
   }

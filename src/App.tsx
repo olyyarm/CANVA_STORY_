@@ -526,8 +526,9 @@ const App = () => {
                   className="generation-model-input"
                   value={generationSettings.lmStudioModel}
                   onChange={handleLmStudioModelChange}
-                  placeholder={LM_STUDIO_DEFAULT_MODEL}
-                  aria-label="Модель LM Studio"
+                  placeholder="default=local-model; scenario=writer; editor=ernie"
+                  aria-label="Модель или роли LM Studio"
+                  title="Можно указать одну модель или роли: scenario=..., editor=..., narration=..., memory=..., details=..., image_prompt=..., default=..."
                 />
               </>
             )}

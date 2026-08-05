@@ -27,6 +27,7 @@ const nodeTypes = new Set<NodeType>([
   'script_detail',
   'pollinations_image',
   'chapter_timeline',
+  'video_output',
 ]);
 
 const imagePipelines = new Set<ImagePipeline>(['sdxl', 'z_image_turbo', 'flux2_compose', 'flux2_turbo_compose']);

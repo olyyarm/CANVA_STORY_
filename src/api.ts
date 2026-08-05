@@ -142,6 +142,7 @@ const callLmStudioAPI = async (
   settings: GenerationSettings,
   signal?: AbortSignal,
 ): Promise<string> => {
+  const model = resolveLmStudioModel(settings.lmStudioModel, request);
   const response = await fetch(getLmStudioEndpoint(settings.lmStudioEndpoint), {
     method: 'POST',
     signal,
@@ -150,7 +151,7 @@ const callLmStudioAPI = async (
       'Content-Type': 'application/json',
     },
     body: JSON.stringify({
-      model: settings.lmStudioModel.trim() || LM_STUDIO_DEFAULT_MODEL,
+      model,
       messages: [
         { role: 'system', content: request.systemPrompt },
         { role: 'user', content: request.prompt },
@@ -178,6 +179,52 @@ const callLmStudioAPI = async (
   const normalized = normalizeContent(content);
   if (!normalized) throw new Error('LM Studio вернул ответ без текста.');
   return normalized;
+};
+
+const operationRoleAliases: Record<string, string[]> = {
+  scenario: ['scenario', 'writer', 'draft', 'chapter'],
+  editor: ['editor', 'edit', 'revision', 'narration_edit', 'brief_revision'],
+  narration: ['narration', 'voice', 'tts', 'tts_cleanup'],
+  memory: ['memory', 'summary', 'chapter_summary', 'season_memory'],
+  details: ['details', 'heroes', 'locations', 'mood', 'system'],
+  image_prompt: ['image_prompt', 'prompt', 'visual'],
+};
+
+const getOperationRole = (operation: GenerationRequest['operation']) => {
+  if (operation === 'scenario') return 'scenario';
+  if (operation === 'narration_edit' || operation === 'brief_revision') return 'editor';
+  if (operation === 'narration' || operation === 'tts_cleanup') return 'narration';
+  if (operation === 'chapter_summary' || operation === 'season_memory_update') return 'memory';
+  if (operation === 'heroes' || operation === 'locations' || operation === 'mood' || operation === 'system_inserts') return 'details';
+  if (operation.endsWith('_prompt')) return 'image_prompt';
+  return 'default';
+};
+
+const resolveLmStudioModel = (value: string, request: GenerationRequest) => {
+  const trimmed = value.trim();
+  if (!trimmed) return LM_STUDIO_DEFAULT_MODEL;
+  if (!/[=\n;]/u.test(trimmed)) return trimmed;
+
+  const entries = trimmed
+    .split(/[;\n]+/u)
+    .map((entry) => entry.trim())
+    .filter(Boolean)
+    .map((entry) => {
+      const separatorIndex = entry.indexOf('=');
+      if (separatorIndex < 0) return null;
+      return {
+        key: entry.slice(0, separatorIndex).trim().toLocaleLowerCase('en'),
+        model: entry.slice(separatorIndex + 1).trim(),
+      };
+    })
+    .filter((entry): entry is { key: string; model: string } => Boolean(entry?.key && entry.model));
+
+  const role = getOperationRole(request.operation);
+  const roleMatch = entries.find((entry) =>
+    entry.key === role || operationRoleAliases[role]?.includes(entry.key));
+  const operationMatch = entries.find((entry) => entry.key === request.operation);
+  const defaultMatch = entries.find((entry) => entry.key === 'default');
+  return operationMatch?.model ?? roleMatch?.model ?? defaultMatch?.model ?? request.model ?? LM_STUDIO_DEFAULT_MODEL;
 };
 
 export const generateText = (

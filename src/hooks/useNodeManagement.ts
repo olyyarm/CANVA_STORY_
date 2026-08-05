@@ -253,6 +253,9 @@ const getSceneNumber = (label: string) => {
   return match ? Number(match[0]) : null;
 };
 
+const countSystemInsertBlocks = (text = '') =>
+  [...text.matchAll(/(?:^|\n)\s*После\s+сцены\s+\d+\s*:/giu)].length;
+
 const extractSceneNarration = (narration: string, sceneLabel: string) => {
   const sceneNumber = getSceneNumber(sceneLabel);
   if (!sceneNumber) return cleanupBrowserSpeechText(narration);
@@ -591,6 +594,48 @@ const upsertScriptDetailNode = (
   return {
     ...previousNodes,
     [nodeId]: nextNode,
+  };
+};
+
+const upsertVideoOutputNode = (
+  previousNodes: NodesState,
+  parentId: string,
+  videoUrl: string,
+  label = 'Ролик главы',
+) => {
+  const parentNode = previousNodes[parentId];
+  if (!parentNode) return previousNodes;
+  const existing = getExistingChild(
+    previousNodes,
+    parentId,
+    (node) => node.nodeType === 'video_output' && node.label === label,
+  );
+  const nodeId = existing?.[0] ?? generateNodeId();
+  if (existing?.[1].videoUrl?.startsWith('blob:')) URL.revokeObjectURL(existing[1].videoUrl);
+  return {
+    ...previousNodes,
+    [nodeId]: {
+      ...existing?.[1],
+      nodeType: 'video_output' as const,
+      x: existing?.[1].x ?? parentNode.x + (parentNode.width ?? 1180) + 36,
+      y: existing?.[1].y ?? parentNode.y,
+      label,
+      width: existing?.[1].width ?? 430,
+      height: existing?.[1].height ?? 360,
+      isGenerated: true,
+      level: (parentNode.level ?? 0) + 1,
+      parentId,
+      videoUrl,
+      statusMessage: 'Общий ролик главы готов.',
+      metadata: {
+        ...existing?.[1].metadata,
+        sourceKind: 'chapter_video',
+        sourceTimelineId: parentId,
+        videoFormat: 'webm',
+        videoAspectRatio: '16:9',
+        videoGeneratedAt: new Date().toISOString(),
+      },
+    },
   };
 };
 
@@ -1317,6 +1362,14 @@ export const useNodeManagement = (
       const sceneCount = Object.values(previousNodes).filter((node) => node.nodeType === 'scene').length;
       const x = existing?.[1].x ?? (anchor?.x ?? 40);
       const y = existing?.[1].y ?? ((anchor?.y ?? 40) + (anchor?.height ?? 360) + 52);
+      const systemInsertDetail = Object.values(previousNodes).find((node) =>
+        node.nodeType === 'script_detail'
+        && node.label === 'Системные вставки'
+        && (!scenarioEntry?.[0] || node.parentId === scenarioEntry[0]));
+      const timelineItemCount = sceneCount + countSystemInsertBlocks(systemInsertDetail?.inputValue);
+      const timelineRows = Math.max(1, Math.ceil(Math.max(timelineItemCount, 1) / 5));
+      const preferredWidth = 1260;
+      const preferredHeight = Math.min(1680, Math.max(640, 118 + timelineRows * 306));
 
       return {
         ...previousNodes,
@@ -1326,8 +1379,8 @@ export const useNodeManagement = (
           x,
           y,
           label: 'Таймлайн главы',
-          width: existing?.[1].width ?? 1180,
-          height: existing?.[1].height ?? 540,
+          width: Math.max(existing?.[1].width ?? 0, preferredWidth),
+          height: Math.max(existing?.[1].height ?? 0, preferredHeight),
           isGenerated: true,
           level: 12,
           parentId: scenarioEntry?.[0],
@@ -2726,18 +2779,15 @@ export const useNodeManagement = (
       setNodes((previousNodes) => {
         const currentNode = previousNodes[timelineNodeId];
         if (!currentNode) return previousNodes;
-        if (currentNode.videoUrl?.startsWith('blob:')) URL.revokeObjectURL(currentNode.videoUrl);
+        const withVideoNode = upsertVideoOutputNode(previousNodes, timelineNodeId, videoUrl);
         return {
-          ...previousNodes,
+          ...withVideoNode,
           [timelineNodeId]: {
             ...currentNode,
-            videoUrl,
             isLoadingVideo: false,
             statusMessage: 'Общий ролик главы готов.',
             metadata: {
               ...currentNode.metadata,
-              videoFormat: 'webm',
-              videoAspectRatio: '16:9',
               chapterClipCount: clipUrls.length,
               videoGeneratedAt: new Date().toISOString(),
             },

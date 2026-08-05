@@ -430,6 +430,10 @@
   border-top-color: #d88b47;
 }
 
+.story-node--chapter_timeline .story-node__body {
+  overflow: auto;
+}
+
 .story-node__header {
   display: flex;
   min-height: 48px;
@@ -926,10 +930,9 @@
   display: grid;
   min-height: 0;
   flex: 1;
-  grid-auto-columns: 214px;
-  grid-auto-flow: column;
+  grid-template-columns: repeat(auto-fit, minmax(210px, 1fr));
   gap: 10px;
-  overflow: auto hidden;
+  overflow: visible;
   padding: 2px 2px 10px;
   cursor: default;
   user-select: text;

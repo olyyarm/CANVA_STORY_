@@ -530,6 +530,41 @@ const NodeRenderer: React.FC<NodeRendererProps> = ({
           </>
         )}
 
+        {node.nodeType === 'script_detail' && node.label === 'Закадр' && (
+          <div className="node-segmented-actions node-segmented-actions--narration">
+            <button
+              type="button"
+              onMouseDown={stopMouseDown}
+              onClick={(event) => runWithoutDrag(event, () => node.isLoading
+                ? onCancelGeneration(id)
+                : void onEditNarration(id))}
+              disabled={Boolean(node.isLoadingImage || node.isSpeaking)}
+            >
+              {node.isLoading ? 'Отменить' : 'Редактура закадра'}
+            </button>
+            <button
+              type="button"
+              onMouseDown={stopMouseDown}
+              onClick={(event) => runWithoutDrag(event, () => node.isLoading
+                ? onCancelGeneration(id)
+                : void onPrepareNarrationTts(id))}
+              disabled={Boolean(node.isLoadingImage || node.isSpeaking)}
+            >
+              {node.isLoading ? 'Отменить' : 'Подготовить TTS'}
+            </button>
+            <button
+              type="button"
+              onMouseDown={stopMouseDown}
+              onClick={(event) => runWithoutDrag(event, () => node.isLoading
+                ? onCancelGeneration(id)
+                : void onNarrationEditorialLoop(id))}
+              disabled={Boolean(node.isLoadingImage || node.isSpeaking)}
+            >
+              {node.isLoading ? 'Отменить' : 'Редактура луп'}
+            </button>
+          </div>
+        )}
+
         {isTextOutput && node.inputValue && !isEditableReferenceNode && (
           <div className="node-output">
             <div className="node-output__text">{node.inputValue}</div>
@@ -597,41 +632,6 @@ const NodeRenderer: React.FC<NodeRendererProps> = ({
           >
             {node.isLoading ? 'Отменить автосборку' : 'Автособрать главу'}
           </button>
-        )}
-
-        {node.nodeType === 'script_detail' && node.label === 'Закадр' && (
-          <div className="node-segmented-actions node-segmented-actions--narration">
-            <button
-              type="button"
-              onMouseDown={stopMouseDown}
-              onClick={(event) => runWithoutDrag(event, () => node.isLoading
-                ? onCancelGeneration(id)
-                : void onEditNarration(id))}
-              disabled={Boolean(node.isLoadingImage || node.isSpeaking)}
-            >
-              {node.isLoading ? 'Отменить' : 'Редактура'}
-            </button>
-            <button
-              type="button"
-              onMouseDown={stopMouseDown}
-              onClick={(event) => runWithoutDrag(event, () => node.isLoading
-                ? onCancelGeneration(id)
-                : void onPrepareNarrationTts(id))}
-              disabled={Boolean(node.isLoadingImage || node.isSpeaking)}
-            >
-              {node.isLoading ? 'Отменить' : 'Подготовить TTS'}
-            </button>
-            <button
-              type="button"
-              onMouseDown={stopMouseDown}
-              onClick={(event) => runWithoutDrag(event, () => node.isLoading
-                ? onCancelGeneration(id)
-                : void onNarrationEditorialLoop(id))}
-              disabled={Boolean(node.isLoadingImage || node.isSpeaking)}
-            >
-              {node.isLoading ? 'Отменить' : 'Редактура луп'}
-            </button>
-          </div>
         )}
 
         {canSpeakNarration && (
@@ -827,12 +827,6 @@ const NodeRenderer: React.FC<NodeRendererProps> = ({
             {node.pollinationsApiError && (
               <div className="node-message node-message--error" role="alert">{node.pollinationsApiError}</div>
             )}
-            {node.videoUrl && (
-              <div className="node-video-player" onMouseDown={stopMouseDown}>
-                <video controls src={node.videoUrl} />
-                <a className="node-download-link" href={node.videoUrl} download={safeDownloadName}>Скачать общий WebM</a>
-              </div>
-            )}
             {timelineScenes.length === 0 ? (
               <div className="chapter-timeline__empty">
                 Сцен пока нет. Сначала соберите сценарий, затем нажмите «Создать/обновить сцены».
@@ -902,6 +896,19 @@ const NodeRenderer: React.FC<NodeRendererProps> = ({
               </div>
             )}
           </div>
+        )}
+
+        {node.nodeType === 'video_output' && (
+          <>
+            {node.videoUrl ? (
+              <div className="node-video-player" onMouseDown={stopMouseDown}>
+                <video controls src={node.videoUrl} />
+                <a className="node-download-link" href={node.videoUrl} download={safeDownloadName}>Скачать общий WebM</a>
+              </div>
+            ) : (
+              <div className="chapter-timeline__empty">Ролик пока не собран.</div>
+            )}
+          </>
         )}
 
         {node.nodeType === 'pollinations_image' && (

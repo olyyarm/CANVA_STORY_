@@ -76,6 +76,105 @@ const findSceneImageNode = (nodes: NodesState, sceneId: string, assetKinds: stri
       assetKinds.indexOf(String(first.metadata?.assetKind))
       - assetKinds.indexOf(String(second.metadata?.assetKind)))[0];
 
+const normalizeMatchText = (text: string) =>
+  text.toLocaleLowerCase('ru').replace(/ё/gu, 'е');
+
+const getMeaningfulTokens = (text: string) => {
+  const stopWords = new Set([
+    'сцена',
+    'локация',
+    'ассет',
+    'день',
+    'ночь',
+    'место',
+    'пространство',
+    'открытое',
+    'закрытое',
+    'интерьер',
+    'экстерьер',
+    'помещение',
+    'кадр',
+    'план',
+    'свет',
+    'фон',
+    'scene',
+    'location',
+    'asset',
+    'background',
+    'plate',
+  ]);
+  return [...new Set(normalizeMatchText(text).match(/[\p{L}\p{N}]+/gu) ?? [])]
+    .filter((token) => token.length >= 4 && !stopWords.has(token));
+};
+
+const getLocationAssetIndex = (node: NodeData) => {
+  const match = getAssetKind(node).match(/^location_asset:(\d+)$/u);
+  return match ? Number(match[1]) : null;
+};
+
+const getLocationDescriptions = (locationsText: string) =>
+  locationsText
+    .split(/\n+/)
+    .map((line) => line.trim())
+    .filter((line) => line.length > 0);
+
+const getLocationName = (description: string, index: number) => {
+  const firstLine = description.split(/\n/)[0]?.trim() || '';
+  const normalized = firstLine
+    .replace(/^\d+[.)]\s*/u, '')
+    .replace(/^Локация\s*\d+\s*[—–-]\s*/iu, '')
+    .split(/\s*[—–-]\s*/u)[0]
+    ?.replace(/[;:,.]+$/u, '')
+    .trim();
+  return (normalized || `Локация ${index + 1}`).slice(0, 48);
+};
+
+const scoreLocationReferenceMatch = (node: NodeData, sceneDescription: string, locationDescription: string) => {
+  const sceneText = normalizeMatchText(sceneDescription);
+  const sceneTokens = new Set(getMeaningfulTokens(sceneDescription));
+  const locationName = getLocationName(locationDescription || node.label, 0);
+  let score = 0;
+
+  getMeaningfulTokens(locationName).forEach((token) => {
+    if (sceneText.includes(token)) score += 90;
+  });
+
+  getMeaningfulTokens(locationDescription).forEach((token) => {
+    if (sceneTokens.has(token)) score += 12;
+  });
+
+  getMeaningfulTokens([node.label, node.masterPrompt ?? '', node.assetPrompt ?? ''].join('\n')).forEach((token) => {
+    if (sceneTokens.has(token)) score += 4;
+  });
+
+  return score;
+};
+
+const findTimelineLocationNode = (nodes: NodesState, sceneId: string, scene: NodeData) => {
+  const sceneLocation = findSceneImageNode(nodes, sceneId, ['scene_location']);
+  if (sceneLocation) return sceneLocation;
+
+  const locationAssets = Object.values(nodes).filter((node) =>
+    node.nodeType === 'pollinations_image'
+    && getAssetKind(node).startsWith('location_asset')
+    && Boolean(node.imageUrl)
+    && (!scene.parentId || nodes[node.parentId ?? '']?.parentId === scene.parentId));
+
+  if (locationAssets.length === 1) return locationAssets[0];
+
+  const sceneDescription = scene.sceneText || scene.inputValue || scene.label;
+  return locationAssets
+    .map((node) => {
+      const locationDetail = nodes[node.parentId ?? ''];
+      const locationDescriptions = getLocationDescriptions(locationDetail?.inputValue ?? '');
+      const assetIndex = getLocationAssetIndex(node);
+      const locationDescription = assetIndex === null ? '' : locationDescriptions[assetIndex] ?? '';
+      return { node, score: scoreLocationReferenceMatch(node, sceneDescription, locationDescription) };
+    })
+    .sort((left, right) => right.score - left.score)
+    .find(({ score }) => score >= 20)?.node;
+};
+
 const getTimelineScenes = (nodes: NodesState, timelineNode: NodeData) => {
   const sourceScenarioId = typeof timelineNode.metadata?.sourceScenarioId === 'string'
     ? timelineNode.metadata.sourceScenarioId
@@ -97,7 +196,7 @@ const getSortedTimelineScenes = (nodes: NodesState, timelineNode: NodeData) =>
     .map(([sceneId, scene]) => ({
       sceneId,
       scene,
-      location: findSceneImageNode(nodes, sceneId, ['scene_location']),
+      location: findTimelineLocationNode(nodes, sceneId, scene),
       characters: findSceneImageNode(nodes, sceneId, ['scene_characters']),
       frame: findSceneImageNode(nodes, sceneId, ['scene_flux2_frame', 'scene_frame']),
     }));

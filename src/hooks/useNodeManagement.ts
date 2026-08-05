@@ -518,10 +518,24 @@ const getImagePromptKind = (node: NodeData): ImagePromptKind => {
 const getAssetKind = (node: NodeData) =>
   typeof node.metadata?.assetKind === 'string' ? node.metadata.assetKind : '';
 
+const getImageReferenceText = (node: NodeData) =>
+  [
+    node.label,
+    node.masterPrompt ?? '',
+    node.assetPrompt ?? '',
+    typeof node.metadata?.promptContext === 'string' ? node.metadata.promptContext : '',
+    typeof node.metadata?.referenceContext === 'string' ? node.metadata.referenceContext : '',
+  ].join('\n');
+
 const MAX_SCENE_CHARACTER_REFERENCES = 6;
 
 const getCharacterAssetIndex = (node: NodeData) => {
   const match = getAssetKind(node).match(/^character_asset:(\d+)$/u);
+  return match ? Number(match[1]) : null;
+};
+
+const getLocationAssetIndex = (node: NodeData) => {
+  const match = getAssetKind(node).match(/^location_asset:(\d+)$/u);
   return match ? Number(match[1]) : null;
 };
 
@@ -553,6 +567,104 @@ const getReferenceDescription = (node: NodeData) =>
     typeof node.metadata?.promptContext === 'string' ? node.metadata.promptContext : '',
     typeof node.metadata?.referenceContext === 'string' ? node.metadata.referenceContext : '',
   ].join('\n');
+
+const normalizeMatchText = (text: string) =>
+  text.toLocaleLowerCase('ru').replace(/ё/gu, 'е');
+
+const getMeaningfulTokens = (text: string) => {
+  const stopWords = new Set([
+    'сцена',
+    'локация',
+    'ассет',
+    'день',
+    'ночь',
+    'место',
+    'пространство',
+    'открытое',
+    'закрытое',
+    'интерьер',
+    'экстерьер',
+    'помещение',
+    'кадр',
+    'план',
+    'свет',
+    'цвет',
+    'палитра',
+    'фон',
+    'scene',
+    'location',
+    'asset',
+    'background',
+    'plate',
+  ]);
+  return [...new Set(normalizeMatchText(text).match(/[\p{L}\p{N}]+/gu) ?? [])]
+    .filter((token) => token.length >= 4 && !stopWords.has(token));
+};
+
+const scoreLocationReferenceMatch = (
+  node: NodeData,
+  sceneDescription: string,
+  locationDescription: string,
+) => {
+  const sceneText = normalizeMatchText(sceneDescription);
+  const sceneTokens = new Set(getMeaningfulTokens(sceneDescription));
+  const locationName = getLocationName(locationDescription || node.label, 0);
+  let score = 0;
+
+  getMeaningfulTokens(locationName).forEach((token) => {
+    if (sceneText.includes(token)) score += 90;
+  });
+
+  getMeaningfulTokens(locationDescription).forEach((token) => {
+    if (sceneTokens.has(token)) score += 12;
+  });
+
+  getMeaningfulTokens(getImageReferenceText(node)).forEach((token) => {
+    if (sceneTokens.has(token)) score += 4;
+  });
+
+  return score;
+};
+
+const selectSceneLocationReference = (
+  nodes: NodesState,
+  sceneNodeId: string,
+  sceneNode: NodeData,
+  sceneDescription: string,
+) => {
+  const sceneLocationNode = Object.values(nodes).find((node) =>
+    node.parentId === sceneNodeId
+    && node.nodeType === 'pollinations_image'
+    && getAssetKind(node) === 'scene_location'
+    && Boolean(node.imageUrl));
+  if (sceneLocationNode) return sceneLocationNode;
+
+  const locationDetailEntry = Object.entries(nodes).find(([nodeId, node]) =>
+    node.parentId === sceneNode.parentId
+    && node.nodeType === 'script_detail'
+    && Object.values(nodes).some((candidate) =>
+      candidate.parentId === nodeId
+      && candidate.nodeType === 'pollinations_image'
+      && getAssetKind(candidate).startsWith('location_asset')));
+  const locationDetail = locationDetailEntry?.[1];
+  const locationDescriptions = getLocationDescriptions(locationDetail?.inputValue ?? '');
+  const locationAssets = Object.values(nodes).filter((node) =>
+    node.nodeType === 'pollinations_image'
+    && getAssetKind(node).startsWith('location_asset')
+    && Boolean(node.imageUrl)
+    && (!sceneNode.parentId || nodes[node.parentId ?? '']?.parentId === sceneNode.parentId));
+
+  if (locationAssets.length === 1) return locationAssets[0];
+
+  return locationAssets
+    .map((node) => {
+      const assetIndex = getLocationAssetIndex(node);
+      const locationDescription = assetIndex === null ? '' : locationDescriptions[assetIndex] ?? '';
+      return { node, score: scoreLocationReferenceMatch(node, sceneDescription, locationDescription) };
+    })
+    .sort((left, right) => right.score - left.score)
+    .find(({ score }) => score >= 20)?.node;
+};
 
 const getReferenceMatchScore = (node: NodeData, sceneLabel: string, sceneDescription: string, fallbackIndex: number) => {
   const sceneNumber = getSceneNumber(sceneLabel);
@@ -1609,11 +1721,7 @@ export const useNodeManagement = (
     if (!sceneNode || sceneNode.nodeType !== 'scene' || sceneNode.isLoading || sceneNode.isLoadingImage) return;
 
     const sceneDescription = sceneNode.sceneText || sceneNode.inputValue || sceneNode.label;
-    const locationNode = Object.values(currentNodes).find((node) =>
-      node.parentId === sceneNodeId
-      && node.nodeType === 'pollinations_image'
-      && getAssetKind(node) === 'scene_location'
-      && Boolean(node.imageUrl));
+    const locationNode = selectSceneLocationReference(currentNodes, sceneNodeId, sceneNode, sceneDescription);
     const referenceNodes = selectSceneCharacterReferences(currentNodes, sceneNode, sceneDescription);
     const referenceLabels = referenceNodes.map(getReferenceLabel);
     const referenceNodeIds = referenceNodes.map((referenceNode) =>
@@ -1621,7 +1729,7 @@ export const useNodeManagement = (
     ).filter(Boolean);
 
     if (!locationNode?.imageUrl) {
-      updateNode(sceneNodeId, { pollinationsApiError: 'Сначала сгенерируйте локацию этой сцены.' });
+      updateNode(sceneNodeId, { pollinationsApiError: 'Сначала сгенерируйте локацию этой сцены или общий ассет подходящей локации.' });
       return;
     }
     if (referenceNodes.length === 0 || referenceNodes.some((referenceNode) => !referenceNode.imageUrl)) {

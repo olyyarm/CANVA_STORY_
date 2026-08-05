@@ -7,7 +7,8 @@ export type NodeType =
   | 'script_output'
   | 'association'
   | 'script_detail'
-  | 'pollinations_image';
+  | 'pollinations_image'
+  | 'chapter_timeline';
 
 export type DetailType = 'герои' | 'локации' | 'настроение' | 'закадр';
 export type EntityType = 'character' | 'location' | 'episode' | 'scene';

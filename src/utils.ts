@@ -28,6 +28,8 @@ export const getNodeIcon = (nodeType?: string, label?: string) => {
       if (label === 'Настроение') return assetPath('emotion.png');
       if (label === 'Закадр') return assetPath('text.png');
       return assetPath('metaprompt.png');
+    case 'chapter_timeline':
+      return assetPath('scenariy_generated.png');
     default:
       return assetPath('metaprompt.png');
   }

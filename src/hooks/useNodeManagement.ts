@@ -72,6 +72,7 @@ interface UseNodeManagementReturn {
   handleBuildScenarioFromBrief: (briefNodeId: string) => Promise<void>;
   handleAutoBuildChapter: (chapterMaterialNodeId: string) => Promise<void>;
   handleEnsureStoryReferenceNodes: () => void;
+  handleEnsureChapterTimeline: () => void;
   handleScenarioDetailClick: (sourceNodeId: string, detailType: DetailType) => Promise<void>;
   handleCreateSceneNodes: (sourceNodeId: string) => void;
   handleGenerateScenePrompt: (sceneNodeId: string) => Promise<void>;
@@ -997,6 +998,50 @@ export const useNodeManagement = (
       showNotice('success', 'Базы, сезонная память и материал главы готовы.');
       return nextNodes;
     });
+  }, [setNodes, showNotice]);
+
+  const handleEnsureChapterTimeline = useCallback(() => {
+    setNodes((previousNodes) => {
+      const existing = Object.entries(previousNodes).find(
+        ([, node]) => node.nodeType === 'chapter_timeline',
+      );
+      const scenarioEntry = Object.entries(previousNodes).find(
+        ([, node]) => node.nodeType === 'script_output',
+      );
+      const anchor = scenarioEntry?.[1]
+        ?? Object.values(previousNodes).find((node) => node.nodeType === 'script_input')
+        ?? Object.values(previousNodes)[0];
+      const nodeId = existing?.[0] ?? generateNodeId();
+      const sceneCount = Object.values(previousNodes).filter((node) => node.nodeType === 'scene').length;
+      const x = existing?.[1].x ?? (anchor?.x ?? 40);
+      const y = existing?.[1].y ?? ((anchor?.y ?? 40) + (anchor?.height ?? 360) + 52);
+
+      return {
+        ...previousNodes,
+        [nodeId]: {
+          ...existing?.[1],
+          nodeType: 'chapter_timeline',
+          x,
+          y,
+          label: 'Таймлайн главы',
+          width: existing?.[1].width ?? 1180,
+          height: existing?.[1].height ?? 540,
+          isGenerated: true,
+          level: 12,
+          parentId: scenarioEntry?.[0],
+          productionStatus: sceneCount > 0 ? 'in_production' : 'draft',
+          statusMessage: sceneCount > 0
+            ? `Собрано сцен: ${sceneCount}. Таймлайн обновляется по текущим нодам.`
+            : 'Сначала соберите сценарий и сцены, потом вернитесь к таймлайну.',
+          metadata: {
+            ...existing?.[1].metadata,
+            sourceKind: 'chapter_timeline',
+            sourceScenarioId: scenarioEntry?.[0] ?? '',
+          },
+        },
+      };
+    });
+    showNotice('success', 'Таймлайн главы готов.');
   }, [setNodes, showNotice]);
 
   const handleBuildScenarioFromBrief = useCallback(async (briefNodeId: string) => {
@@ -2504,6 +2549,7 @@ export const useNodeManagement = (
     handleBuildScenarioFromBrief,
     handleAutoBuildChapter,
     handleEnsureStoryReferenceNodes,
+    handleEnsureChapterTimeline,
     handleScenarioDetailClick,
     handleCreateSceneNodes,
     handleGenerateScenePrompt,

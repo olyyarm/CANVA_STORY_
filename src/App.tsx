@@ -139,6 +139,7 @@ const App = () => {
     handleBuildScenarioFromBrief,
     handleAutoBuildChapter,
     handleEnsureStoryReferenceNodes,
+    handleEnsureChapterTimeline,
     handleScenarioDetailClick,
     handleCreateSceneNodes,
     handleGenerateSceneLocationAsset,
@@ -582,6 +583,7 @@ const App = () => {
         <div className="project-actions" aria-label="Действия с проектом">
           <span className="node-count">{nodeEntries.length} нод</span>
           <button type="button" onClick={handleEnsureStoryReferenceNodes}>Базы</button>
+          <button type="button" onClick={handleEnsureChapterTimeline}>Таймлайн</button>
           <button type="button" onClick={handleUnloadLocalModels} disabled={isUnloadingModels}>
             {isUnloadingModels ? 'Выгружаю…' : 'Выгрузить модели'}
           </button>
@@ -628,6 +630,7 @@ const App = () => {
               key={id}
               id={id}
               node={node}
+              allNodes={nodes}
               selected={selectedNodeId === id}
               onMouseDown={handleMouseDown}
               onResizeMouseDown={handleResizeMouseDown}
@@ -641,6 +644,7 @@ const App = () => {
               onScriptVisualize={handleScriptVisualization}
               onBuildScenarioFromBrief={handleBuildScenarioFromBrief}
               onAutoBuildChapter={handleAutoBuildChapter}
+              onEnsureChapterTimeline={handleEnsureChapterTimeline}
               onScenarioDetailClick={handleScenarioDetailClick}
               onCreateSceneNodes={handleCreateSceneNodes}
               onGenerateSceneLocationAsset={handleGenerateSceneLocationAsset}

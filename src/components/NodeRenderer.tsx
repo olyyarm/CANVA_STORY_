@@ -1,12 +1,13 @@
 import React from 'react';
 import { ImageProvider } from '../api';
 import { MISTRAL_MODELS } from '../constants';
-import { DetailType, ImagePipeline, NodeData } from '../types';
+import { DetailType, ImagePipeline, NodeData, NodesState } from '../types';
 import { assetPath, getNodeIcon } from '../utils';
 
 interface NodeRendererProps {
   id: string;
   node: NodeData;
+  allNodes: NodesState;
   selected?: boolean;
   onMouseDown: (event: React.MouseEvent<HTMLDivElement>, nodeId: string) => void;
   onInputChange: (event: React.ChangeEvent<HTMLTextAreaElement>, nodeId: string) => void;
@@ -18,6 +19,7 @@ interface NodeRendererProps {
   onScriptVisualize: (nodeId: string) => void;
   onBuildScenarioFromBrief: (nodeId: string) => Promise<void>;
   onAutoBuildChapter: (nodeId: string) => Promise<void>;
+  onEnsureChapterTimeline: () => void;
   onScenarioDetailClick: (nodeId: string, detailType: DetailType) => void;
   onCreateSceneNodes: (nodeId: string) => void;
   onGenerateSceneLocationAsset: (nodeId: string) => Promise<void>;
@@ -57,9 +59,52 @@ const isDefaultReferenceImage = (node: NodeData) =>
   node.metadata?.isReference === true
   || (getAssetKind(node).startsWith('character_asset') && node.metadata?.isReference !== false);
 
+const getSceneNumberFromLabel = (label: string) => {
+  const match = label.match(/\d+/u);
+  return match ? Number(match[0]) : 0;
+};
+
+const findSceneImageNode = (nodes: NodesState, sceneId: string, assetKinds: string[]) =>
+  Object.values(nodes)
+    .filter((candidate) =>
+      candidate.nodeType === 'pollinations_image'
+      && candidate.parentId === sceneId
+      && typeof candidate.metadata?.assetKind === 'string'
+      && assetKinds.includes(candidate.metadata.assetKind))
+    .sort((first, second) =>
+      assetKinds.indexOf(String(first.metadata?.assetKind))
+      - assetKinds.indexOf(String(second.metadata?.assetKind)))[0];
+
+const getTimelineScenes = (nodes: NodesState, timelineNode: NodeData) => {
+  const sourceScenarioId = typeof timelineNode.metadata?.sourceScenarioId === 'string'
+    ? timelineNode.metadata.sourceScenarioId
+    : timelineNode.parentId;
+  const sceneEntries = Object.entries(nodes)
+    .filter(([, candidate]) =>
+      candidate.nodeType === 'scene'
+      && (!sourceScenarioId || candidate.parentId === sourceScenarioId));
+
+  return sceneEntries
+    .length > 0 ? sceneEntries : Object.entries(nodes).filter(([, candidate]) => candidate.nodeType === 'scene');
+};
+
+const getSortedTimelineScenes = (nodes: NodesState, timelineNode: NodeData) =>
+  getTimelineScenes(nodes, timelineNode)
+    .sort(([, first], [, second]) =>
+      getSceneNumberFromLabel(first.label) - getSceneNumberFromLabel(second.label)
+      || first.label.localeCompare(second.label, 'ru', { numeric: true }))
+    .map(([sceneId, scene]) => ({
+      sceneId,
+      scene,
+      location: findSceneImageNode(nodes, sceneId, ['scene_location']),
+      characters: findSceneImageNode(nodes, sceneId, ['scene_characters']),
+      frame: findSceneImageNode(nodes, sceneId, ['scene_flux2_frame', 'scene_frame']),
+    }));
+
 const NodeRenderer: React.FC<NodeRendererProps> = ({
   id,
   node,
+  allNodes,
   selected = false,
   onMouseDown,
   onInputChange,
@@ -71,6 +116,7 @@ const NodeRenderer: React.FC<NodeRendererProps> = ({
   onScriptVisualize,
   onBuildScenarioFromBrief,
   onAutoBuildChapter,
+  onEnsureChapterTimeline,
   onScenarioDetailClick,
   onCreateSceneNodes,
   onGenerateSceneLocationAsset,
@@ -139,6 +185,15 @@ const NodeRenderer: React.FC<NodeRendererProps> = ({
   ].filter(Boolean).join('\n');
   const isReferenceImage = node.nodeType === 'pollinations_image' && isDefaultReferenceImage(node);
   const safeDownloadName = `${node.label.replace(/[^\p{L}\p{N}_-]+/gu, '-').replace(/^-+|-+$/gu, '') || 'scene'}.webm`;
+  const timelineScenes = node.nodeType === 'chapter_timeline' ? getSortedTimelineScenes(allNodes, node) : [];
+  const timelineStats = {
+    scenes: timelineScenes.length,
+    locations: timelineScenes.filter(({ location }) => Boolean(location?.imageUrl)).length,
+    characters: timelineScenes.filter(({ characters }) => Boolean(characters?.imageUrl)).length,
+    frames: timelineScenes.filter(({ frame }) => Boolean(frame?.imageUrl)).length,
+    audio: timelineScenes.filter(({ scene }) => Boolean(scene.audioUrl)).length,
+    clips: timelineScenes.filter(({ scene }) => Boolean(scene.videoUrl)).length,
+  };
 
   const renderCopyButton = (text: string) => (
     <button
@@ -151,6 +206,13 @@ const NodeRenderer: React.FC<NodeRendererProps> = ({
     >
       <img src={assetPath('copy.svg')} alt="" />
     </button>
+  );
+
+  const renderTimelineBadge = (label: string, isReady: boolean, detail?: string) => (
+    <span className={`chapter-timeline__badge${isReady ? ' chapter-timeline__badge--ready' : ''}`} title={detail}>
+      <span>{label}</span>
+      <strong>{isReady ? '✓' : '·'}</strong>
+    </span>
   );
 
   return (
@@ -605,6 +667,71 @@ const NodeRenderer: React.FC<NodeRendererProps> = ({
           </>
         )}
 
+        {node.nodeType === 'chapter_timeline' && (
+          <div className="chapter-timeline">
+            <div className="chapter-timeline__summary">
+              <span><strong>{timelineStats.scenes}</strong> сцен</span>
+              <span><strong>{timelineStats.locations}</strong> локаций</span>
+              <span><strong>{timelineStats.characters}</strong> героев</span>
+              <span><strong>{timelineStats.frames}</strong> кадров</span>
+              <span><strong>{timelineStats.audio}</strong> озвучек</span>
+              <span><strong>{timelineStats.clips}</strong> клипов</span>
+              <button
+                type="button"
+                className="node-secondary-button chapter-timeline__refresh"
+                onMouseDown={stopMouseDown}
+                onClick={(event) => runWithoutDrag(event, onEnsureChapterTimeline)}
+              >
+                Обновить
+              </button>
+            </div>
+            {timelineScenes.length === 0 ? (
+              <div className="chapter-timeline__empty">
+                Сцен пока нет. Сначала соберите сценарий, затем нажмите «Создать/обновить сцены».
+              </div>
+            ) : (
+              <div className="chapter-timeline__rail" onMouseDown={stopMouseDown}>
+                {timelineScenes.map(({ sceneId, scene, location, characters, frame }) => {
+                  const sceneText = scene.sceneText || scene.inputValue || '';
+                  const qaStatus = typeof frame?.metadata?.visionStatus === 'string'
+                    ? frame.metadata.visionStatus
+                    : 'ожидает';
+                  return (
+                    <article key={sceneId} className="chapter-timeline__scene">
+                      <header className="chapter-timeline__scene-header">
+                        <strong>{scene.label}</strong>
+                        <span>{scene.productionStatus ?? 'draft'}</span>
+                      </header>
+                      <p className="chapter-timeline__scene-text">{sceneText}</p>
+                      <div className="chapter-timeline__thumb-grid">
+                        <div className="chapter-timeline__thumb">
+                          {location?.imageUrl
+                            ? <img src={location.imageUrl} alt={`Локация ${scene.label}`} draggable={false} />
+                            : <span>Локация</span>}
+                        </div>
+                        <div className="chapter-timeline__thumb">
+                          {frame?.imageUrl
+                            ? <img src={frame.imageUrl} alt={`Кадр ${scene.label}`} draggable={false} />
+                            : <span>Кадр</span>}
+                        </div>
+                      </div>
+                      <div className="chapter-timeline__badges">
+                        {renderTimelineBadge('Текст', Boolean(sceneText), 'Описание сцены')}
+                        {renderTimelineBadge('Локация', Boolean(location?.imageUrl), location?.label)}
+                        {renderTimelineBadge('Герои', Boolean(characters?.imageUrl), characters?.label)}
+                        {renderTimelineBadge('Кадр', Boolean(frame?.imageUrl), frame?.label)}
+                        {renderTimelineBadge('Аудио', Boolean(scene.audioUrl), 'Озвучка сцены')}
+                        {renderTimelineBadge('Клип', Boolean(scene.videoUrl), '16:9 фрагмент')}
+                        {renderTimelineBadge('QA', qaStatus !== 'ожидает', `Vision: ${qaStatus}`)}
+                      </div>
+                    </article>
+                  );
+                })}
+              </div>
+            )}
+          </div>
+        )}
+
         {node.nodeType === 'pollinations_image' && (
           <>
             <div className="generated-image">
@@ -673,7 +800,7 @@ const NodeRenderer: React.FC<NodeRendererProps> = ({
           </>
         )}
 
-        {node.statusMessage && node.nodeType !== 'script_input' && (
+        {node.statusMessage && node.nodeType !== 'script_input' && node.nodeType !== 'chapter_timeline' && (
           <div className="node-message node-message--info">{node.statusMessage}</div>
         )}
       </div>

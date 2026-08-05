@@ -1386,6 +1386,7 @@ export const useNodeManagement = (
       const parentNode = previousNodes[parentNodeId];
       if (!parentNode) return previousNodes;
       const isCharacterAsset = assetKind.startsWith('character_asset');
+      const isWideImageAsset = !isCharacterAsset;
       const existing = getExistingChild(
         previousNodes,
         parentNodeId,
@@ -1396,7 +1397,10 @@ export const useNodeManagement = (
       const parentWidth = parentNode.width ?? 320;
       const defaultImageSize = isCharacterAsset
         ? { width: 320, height: 520 }
-        : { width: 360, height: 360 };
+        : { width: 420, height: 300 };
+      const shouldResizeExistingWideImage = isWideImageAsset
+        && existing?.[1].width === 360
+        && existing?.[1].height === 360;
       return {
         ...previousNodes,
         [parentNodeId]: {
@@ -1410,8 +1414,8 @@ export const useNodeManagement = (
           label: `${labelPrefix} · ${parentNode.label}`,
           x: existing?.[1].x ?? parentNode.x + parentWidth + 36,
           y: existing?.[1].y ?? parentNode.y + offsetIndex * (defaultImageSize.height + 36),
-          width: existing?.[1].width ?? defaultImageSize.width,
-          height: existing?.[1].height ?? defaultImageSize.height,
+          width: shouldResizeExistingWideImage ? defaultImageSize.width : existing?.[1].width ?? defaultImageSize.width,
+          height: shouldResizeExistingWideImage ? defaultImageSize.height : existing?.[1].height ?? defaultImageSize.height,
           parentId: parentNodeId,
           imageUrl,
           masterPrompt: imagePrompt,

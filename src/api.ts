@@ -398,8 +398,8 @@ const buildComfySdxlWorkflow = (prompt: string, checkpoint: string, promptKind: 
   const seed = Math.floor(Math.random() * 1_000_000_000);
   const normalizedPromptKind = normalizeImagePromptKind(promptKind);
   const isCharacterAsset = normalizedPromptKind === 'character_asset';
-  const width = isCharacterAsset ? 832 : 1024;
-  const height = isCharacterAsset ? 1216 : 1024;
+  const width = isCharacterAsset ? 832 : 1344;
+  const height = isCharacterAsset ? 1216 : 768;
   return {
     '3': {
       class_type: 'KSampler',
@@ -465,8 +465,8 @@ const buildComfyZImageTurboWorkflow = (prompt: string, promptKind: ImagePromptKi
   const seed = Math.floor(Math.random() * 1_000_000_000);
   const normalizedPromptKind = normalizeImagePromptKind(promptKind);
   const isCharacterAsset = normalizedPromptKind === 'character_asset';
-  const width = isCharacterAsset ? 832 : 1024;
-  const height = isCharacterAsset ? 1216 : 1024;
+  const width = isCharacterAsset ? 832 : 1344;
+  const height = isCharacterAsset ? 1216 : 768;
   return {
     '3': {
       class_type: 'KSampler',

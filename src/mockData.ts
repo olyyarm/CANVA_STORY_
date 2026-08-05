@@ -167,7 +167,7 @@ const createScenePrompt = (request: GenerationRequest) => {
 
 const createSceneLocationPrompt = (request: GenerationRequest) => {
   const scene = request.sceneLabel || 'Scene';
-  return `${scene} background plate, empty location for a story scene, medium-wide establishing view, clear spatial layout with room for characters to be composited later, cinematic natural light, coherent architecture and props from the scene description, atmospheric but readable, production background concept art, clean unlabeled frame, source context: ${request.prompt}`;
+  return `${scene} wide 16:9 background plate, empty location for a story scene, medium-wide establishing view, clear spatial layout with room for characters to be composited later, cinematic natural light, coherent architecture and props from the scene description, atmospheric but readable, production background concept art, clean unlabeled frame, source context: ${request.prompt}`;
 };
 
 const createSceneCharacterLayerPrompt = (request: GenerationRequest) => {
@@ -179,7 +179,7 @@ const createCharacterAssetPrompt = (request: GenerationRequest) =>
   `single vertical character reference, one described character, full-body straight front view, looking directly forward, head-to-toe visible, centered in frame, arms relaxed at the sides, stable gender, age, face, hair, silhouette, outfit, proportions, and distinctive details, reusable visual anchor phrase, neutral light studio background for clean cutout, tight useful margins, consistent scale, clear readable silhouette, single coherent semi-realistic illustrated production concept art style, complete full-body reference, source description: ${request.prompt}`;
 
 const createLocationAssetPrompt = (request: GenerationRequest) =>
-  `single canonical location reference asset, one wide establishing background plate, clear readable architecture and props, coherent lighting and palette, natural open space for future characters, production background concept art, clean unlabeled frame, source description: ${request.prompt}`;
+  `single canonical location reference asset, one wide 16:9 establishing background plate, clear readable architecture and props, coherent lighting and palette, natural open space for future characters, production background concept art, clean unlabeled frame, source description: ${request.prompt}`;
 
 export const createMockCompletion = async (request: GenerationRequest, signal?: AbortSignal) => {
   await wait(450, signal);

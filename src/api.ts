@@ -380,9 +380,24 @@ const SDXL_NEGATIVE_PROMPTS: Record<ImagePromptKind, string> = {
   ].join(', '),
 };
 
+const normalizeImagePromptKind = (promptKind: ImagePromptKind | string): ImagePromptKind => {
+  const normalized = promptKind.split(':')[0];
+  if (
+    normalized === 'scene_location'
+    || normalized === 'scene_characters'
+    || normalized === 'character_asset'
+    || normalized === 'location_asset'
+    || normalized === 'default'
+  ) {
+    return normalized;
+  }
+  return 'default';
+};
+
 const buildComfySdxlWorkflow = (prompt: string, checkpoint: string, promptKind: ImagePromptKind) => {
   const seed = Math.floor(Math.random() * 1_000_000_000);
-  const isCharacterAsset = promptKind === 'character_asset';
+  const normalizedPromptKind = normalizeImagePromptKind(promptKind);
+  const isCharacterAsset = normalizedPromptKind === 'character_asset';
   const width = isCharacterAsset ? 832 : 1024;
   const height = isCharacterAsset ? 1216 : 1024;
   return {
@@ -426,7 +441,7 @@ const buildComfySdxlWorkflow = (prompt: string, checkpoint: string, promptKind: 
       class_type: 'CLIPTextEncode',
       inputs: {
         clip: ['4', 1],
-        text: SDXL_NEGATIVE_PROMPTS[promptKind],
+        text: SDXL_NEGATIVE_PROMPTS[normalizedPromptKind],
       },
     },
     '8': {
@@ -448,7 +463,8 @@ const buildComfySdxlWorkflow = (prompt: string, checkpoint: string, promptKind: 
 
 const buildComfyZImageTurboWorkflow = (prompt: string, promptKind: ImagePromptKind) => {
   const seed = Math.floor(Math.random() * 1_000_000_000);
-  const isCharacterAsset = promptKind === 'character_asset';
+  const normalizedPromptKind = normalizeImagePromptKind(promptKind);
+  const isCharacterAsset = normalizedPromptKind === 'character_asset';
   const width = isCharacterAsset ? 832 : 1024;
   const height = isCharacterAsset ? 1216 : 1024;
   return {

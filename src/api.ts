@@ -4,6 +4,8 @@ import { ChatApiResponse, GenerationRequest, ImagePipeline, ImagePromptKind } fr
 const MISTRAL_ENDPOINT = 'https://api.mistral.ai/v1/chat/completions';
 export const LM_STUDIO_DEFAULT_ENDPOINT = 'http://localhost:1234/v1/chat/completions';
 export const LM_STUDIO_DEFAULT_MODEL = 'local-model';
+export const LM_STUDIO_DEFAULT_DRAFT_CONTEXT_LENGTH = 4096;
+export const LM_STUDIO_DEFAULT_LARGE_CONTEXT_LENGTH = 50000;
 export const COMFYUI_DEFAULT_ENDPOINT = 'http://localhost:8188';
 export const COMFYUI_DEFAULT_CHECKPOINT = 'SDXL\\sd_xl_base_1.0.safetensors';
 const FLUX2_DIFFUSION_MODEL = 'flux2_dev_fp8mixed.safetensors';
@@ -27,6 +29,8 @@ export interface GenerationSettings {
   mode: GenerationMode;
   lmStudioEndpoint: string;
   lmStudioModel: string;
+  lmStudioDraftContextLength: number;
+  lmStudioLargeContextLength: number;
 }
 
 export interface ImageGenerationSettings {
@@ -50,6 +54,8 @@ export const getDefaultGenerationSettings = (): GenerationSettings => ({
   mode: getDefaultGenerationMode(),
   lmStudioEndpoint: LM_STUDIO_DEFAULT_ENDPOINT,
   lmStudioModel: LM_STUDIO_DEFAULT_MODEL,
+  lmStudioDraftContextLength: LM_STUDIO_DEFAULT_DRAFT_CONTEXT_LENGTH,
+  lmStudioLargeContextLength: LM_STUDIO_DEFAULT_LARGE_CONTEXT_LENGTH,
 });
 
 export const getDefaultImageGenerationSettings = (): ImageGenerationSettings => ({
@@ -143,6 +149,7 @@ const callLmStudioAPI = async (
   signal?: AbortSignal,
 ): Promise<string> => {
   const model = resolveLmStudioModel(settings.lmStudioModel, request);
+  await ensureLmStudioModelContext(model, settings, signal);
   const response = await fetch(getLmStudioEndpoint(settings.lmStudioEndpoint), {
     method: 'POST',
     signal,
@@ -204,8 +211,9 @@ const getOperationRole = (operation: GenerationRequest['operation']) => {
 
 const resolveLmStudioModel = (value: string, request: GenerationRequest) => {
   const trimmed = value.trim();
-  if (!trimmed) return LM_STUDIO_DEFAULT_MODEL;
-  if (!/[=\n;]/u.test(trimmed)) return trimmed;
+  const requestModel = request.model?.trim();
+  if (!trimmed) return requestModel || LM_STUDIO_DEFAULT_MODEL;
+  if (!/[=\n;]/u.test(trimmed)) return requestModel || trimmed;
 
   const entries = trimmed
     .split(/[;\n]+/u)
@@ -226,7 +234,7 @@ const resolveLmStudioModel = (value: string, request: GenerationRequest) => {
     entry.key === role || operationRoleAliases[role]?.includes(entry.key));
   const operationMatch = entries.find((entry) => entry.key === request.operation);
   const defaultMatch = entries.find((entry) => entry.key === 'default');
-  return operationMatch?.model ?? roleMatch?.model ?? defaultMatch?.model ?? request.model ?? LM_STUDIO_DEFAULT_MODEL;
+  return operationMatch?.model ?? roleMatch?.model ?? requestModel ?? defaultMatch?.model ?? LM_STUDIO_DEFAULT_MODEL;
 };
 
 export const generateText = (
@@ -822,11 +830,19 @@ export const generateComfyOmniVoiceDesignAudio = async (
 };
 
 interface LmStudioModelEntry {
+  type?: string;
   key?: string;
   id?: string;
   model_key?: string;
   display_name?: string;
-  loaded_instances?: { id?: string }[];
+  selected_variant?: string;
+  max_context_length?: number;
+  loaded_instances?: Array<{
+    id?: string;
+    config?: {
+      context_length?: number;
+    };
+  }>;
 }
 
 interface LmStudioModelsResponse {
@@ -842,7 +858,7 @@ const uniqueNonEmpty = (values: string[]) =>
 
 export const listLmStudioModels = async (settings: GenerationSettings, signal?: AbortSignal) => {
   const baseUrl = getLmStudioBaseUrl(settings.lmStudioEndpoint);
-  const endpoints = [`${baseUrl}/v1/models`, `${baseUrl}/api/v1/models`];
+  const endpoints = [`${baseUrl}/api/v1/models`, `${baseUrl}/v1/models`];
   let lastError = '';
 
   for (const endpoint of endpoints) {
@@ -855,12 +871,9 @@ export const listLmStudioModels = async (settings: GenerationSettings, signal?: 
 
       const data: OpenAiModelsResponse & LmStudioModelsResponse = await response.json();
       const openAiIds = (data.data ?? []).map((model) => model.id ?? '');
-      const lmStudioIds = (data.models ?? []).flatMap((model) => [
-        model.id ?? '',
-        model.key ?? '',
-        model.model_key ?? '',
-        model.display_name ?? '',
-      ]);
+      const lmStudioIds = (data.models ?? [])
+        .filter((model) => model.type !== 'embedding')
+        .map((model) => model.key ?? model.id ?? model.model_key ?? model.selected_variant ?? model.display_name ?? '');
       const models = uniqueNonEmpty([...openAiIds, ...lmStudioIds]);
       if (models.length > 0) return models;
       lastError = 'empty model list';
@@ -873,19 +886,43 @@ export const listLmStudioModels = async (settings: GenerationSettings, signal?: 
   throw new Error(`LM Studio не отдал список моделей${lastError ? `: ${lastError}` : ''}`);
 };
 
-export const unloadLmStudioModels = async (settings: GenerationSettings, signal?: AbortSignal) => {
-  const baseUrl = getLmStudioBaseUrl(settings.lmStudioEndpoint);
-  const modelsResponse = await fetch(`${baseUrl}/api/v1/models`, { signal });
-  if (!modelsResponse.ok) {
-    throw new Error(`LM Studio не отдал список моделей: ${modelsResponse.status}`);
-  }
+const getLmStudioNativeModels = async (baseUrl: string, signal?: AbortSignal) => {
+  const response = await fetch(`${baseUrl}/api/v1/models`, { signal });
+  if (!response.ok) throw new Error(`LM Studio не отдал список моделей: ${response.status}`);
+  const data: LmStudioModelsResponse = await response.json();
+  return data.models ?? [];
+};
 
-  const data: LmStudioModelsResponse = await modelsResponse.json();
-  const instanceIds = (data.models ?? [])
-    .flatMap((model) => model.loaded_instances ?? [])
-    .map((instance) => instance.id)
-    .filter((id): id is string => Boolean(id));
+const findLmStudioModel = (models: LmStudioModelEntry[], modelName: string) => {
+  const normalized = modelName.trim();
+  return models.find((model) =>
+    model.type !== 'embedding'
+    && [
+      model.key,
+      model.id,
+      model.model_key,
+      model.display_name,
+      model.selected_variant,
+      ...(model.loaded_instances ?? []).map((instance) => instance.id),
+    ].some((candidate) => candidate === normalized));
+};
 
+const clampContextLength = (value: number, fallback: number) => {
+  if (!Number.isFinite(value)) return fallback;
+  return Math.max(1024, Math.floor(value));
+};
+
+const getTargetLmStudioContextLength = (model: LmStudioModelEntry, settings: GenerationSettings) => {
+  const draftContext = clampContextLength(settings.lmStudioDraftContextLength, LM_STUDIO_DEFAULT_DRAFT_CONTEXT_LENGTH);
+  const largeContext = clampContextLength(settings.lmStudioLargeContextLength, LM_STUDIO_DEFAULT_LARGE_CONTEXT_LENGTH);
+  const maxContext = typeof model.max_context_length === 'number' && model.max_context_length > 0
+    ? model.max_context_length
+    : largeContext;
+  const target = maxContext >= largeContext ? largeContext : draftContext;
+  return Math.min(target, maxContext);
+};
+
+const unloadLmStudioInstances = async (baseUrl: string, instanceIds: string[], signal?: AbortSignal) => {
   await Promise.all(instanceIds.map(async (instanceId) => {
     const response = await fetch(`${baseUrl}/api/v1/models/unload`, {
       method: 'POST',
@@ -893,10 +930,73 @@ export const unloadLmStudioModels = async (settings: GenerationSettings, signal?
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ instance_id: instanceId }),
     });
-    if (!response.ok) {
-      throw new Error(`LM Studio не выгрузил ${instanceId}: ${response.status}`);
-    }
+    if (!response.ok) throw new Error(`LM Studio не выгрузил ${instanceId}: ${response.status}`);
   }));
+};
+
+const loadLmStudioModelWithContext = async (
+  baseUrl: string,
+  model: LmStudioModelEntry,
+  contextLength: number,
+  signal?: AbortSignal,
+) => {
+  const modelKey = model.key ?? model.model_key ?? model.id ?? model.display_name;
+  if (!modelKey) return;
+
+  const response = await fetch(`${baseUrl}/api/v1/models/load`, {
+    method: 'POST',
+    signal,
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      model_key: modelKey,
+      config: {
+        context_length: contextLength,
+      },
+    }),
+  });
+
+  if (!response.ok) {
+    let details = response.statusText;
+    try {
+      const payload: unknown = await response.json();
+      details = getErrorMessage(payload) || JSON.stringify(payload);
+    } catch {
+      // Native LM Studio errors are still useful with status text.
+    }
+    throw new Error(`LM Studio не загрузил "${modelKey}" с контекстом ${contextLength}: ${response.status}${details ? `: ${details.slice(0, 400)}` : ''}`);
+  }
+};
+
+const ensureLmStudioModelContext = async (
+  modelName: string,
+  settings: GenerationSettings,
+  signal?: AbortSignal,
+) => {
+  const baseUrl = getLmStudioBaseUrl(settings.lmStudioEndpoint);
+  const models = await getLmStudioNativeModels(baseUrl, signal);
+  const model = findLmStudioModel(models, modelName);
+  if (!model) return;
+
+  const targetContext = getTargetLmStudioContextLength(model, settings);
+  const loadedInstances = model.loaded_instances ?? [];
+  const hasGoodInstance = loadedInstances.some((instance) =>
+    (instance.config?.context_length ?? 0) >= targetContext);
+  if (hasGoodInstance) return;
+
+  const instanceIds = loadedInstances.map((instance) => instance.id).filter((id): id is string => Boolean(id));
+  if (instanceIds.length > 0) await unloadLmStudioInstances(baseUrl, instanceIds, signal);
+  await loadLmStudioModelWithContext(baseUrl, model, targetContext, signal);
+};
+
+export const unloadLmStudioModels = async (settings: GenerationSettings, signal?: AbortSignal) => {
+  const baseUrl = getLmStudioBaseUrl(settings.lmStudioEndpoint);
+  const models = await getLmStudioNativeModels(baseUrl, signal);
+  const instanceIds = models
+    .flatMap((model) => model.loaded_instances ?? [])
+    .map((instance) => instance.id)
+    .filter((id): id is string => Boolean(id));
+
+  await unloadLmStudioInstances(baseUrl, instanceIds, signal);
 
   return instanceIds.length;
 };

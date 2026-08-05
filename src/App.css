@@ -212,7 +212,7 @@
 .generation-controls {
   display: grid;
   min-width: 0;
-  grid-template-columns: 118px minmax(210px, 1fr) minmax(118px, 168px) auto;
+  grid-template-columns: 118px minmax(210px, 1fr) minmax(118px, 168px) 84px 84px auto;
   align-items: center;
   gap: 6px;
 }
@@ -220,6 +220,7 @@
 .generation-select,
 .generation-endpoint-input,
 .generation-model-input,
+.generation-context-input,
 .generation-refresh-button {
   width: 100%;
   height: 28px;
@@ -248,6 +249,7 @@
 .generation-select:focus,
 .generation-endpoint-input:focus,
 .generation-model-input:focus,
+.generation-context-input:focus,
 .generation-refresh-button:focus {
   border-color: var(--accent);
   color: var(--text);
@@ -1525,6 +1527,11 @@
 
   .generation-controls .generation-model-input {
     grid-column: 2;
+  }
+
+  .generation-controls .generation-context-input {
+    grid-column: 2;
+    max-width: 110px;
   }
 
   .generation-controls .generation-refresh-button {

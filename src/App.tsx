@@ -9,7 +9,9 @@ import {
   getDefaultGenerationSettings,
   getDefaultImageGenerationSettings,
   listLmStudioModels,
+  LM_STUDIO_DEFAULT_DRAFT_CONTEXT_LENGTH,
   LM_STUDIO_DEFAULT_ENDPOINT,
+  LM_STUDIO_DEFAULT_LARGE_CONTEXT_LENGTH,
   LM_STUDIO_DEFAULT_MODEL,
   unloadComfyModels,
   unloadLmStudioModels,
@@ -52,6 +54,11 @@ const isGenerationMode = (value: unknown): value is GenerationMode =>
 const isImageProvider = (value: unknown): value is ImageProvider =>
   value === 'pollinations' || value === 'comfyui';
 
+const getSavedContextLength = (value: unknown, fallback: number) =>
+  typeof value === 'number' && Number.isFinite(value)
+    ? Math.max(1024, Math.floor(value))
+    : fallback;
+
 const loadGenerationSettings = (): GenerationSettings => {
   const fallback = getDefaultGenerationSettings();
   try {
@@ -66,6 +73,14 @@ const loadGenerationSettings = (): GenerationSettings => {
       lmStudioModel: typeof parsed.lmStudioModel === 'string'
         ? parsed.lmStudioModel
         : LM_STUDIO_DEFAULT_MODEL,
+      lmStudioDraftContextLength: getSavedContextLength(
+        parsed.lmStudioDraftContextLength,
+        LM_STUDIO_DEFAULT_DRAFT_CONTEXT_LENGTH,
+      ),
+      lmStudioLargeContextLength: getSavedContextLength(
+        parsed.lmStudioLargeContextLength,
+        LM_STUDIO_DEFAULT_LARGE_CONTEXT_LENGTH,
+      ),
     };
   } catch {
     return fallback;
@@ -238,6 +253,8 @@ const App = () => {
         mode: 'lmstudio',
         lmStudioEndpoint: generationSettings.lmStudioEndpoint,
         lmStudioModel: LM_STUDIO_DEFAULT_MODEL,
+        lmStudioDraftContextLength: generationSettings.lmStudioDraftContextLength,
+        lmStudioLargeContextLength: generationSettings.lmStudioLargeContextLength,
       }, signal);
       setLmStudioModels(models);
       setLmStudioModelsStatus('ready');
@@ -250,7 +267,13 @@ const App = () => {
       setLmStudioModelsError(message);
       if (!silent) showProjectNotice('error', message);
     }
-  }, [generationSettings.lmStudioEndpoint, generationSettings.mode, showProjectNotice]);
+  }, [
+    generationSettings.lmStudioDraftContextLength,
+    generationSettings.lmStudioEndpoint,
+    generationSettings.lmStudioLargeContextLength,
+    generationSettings.mode,
+    showProjectNotice,
+  ]);
 
   useEffect(() => {
     if (!visibleNotice) return;
@@ -470,6 +493,22 @@ const App = () => {
     setGenerationSettings((settings) => ({ ...settings, lmStudioModel: event.target.value }));
   }, []);
 
+  const handleLmStudioDraftContextChange = useCallback((event: React.ChangeEvent<HTMLInputElement>) => {
+    const value = Number(event.target.value);
+    setGenerationSettings((settings) => ({
+      ...settings,
+      lmStudioDraftContextLength: getSavedContextLength(value, LM_STUDIO_DEFAULT_DRAFT_CONTEXT_LENGTH),
+    }));
+  }, []);
+
+  const handleLmStudioLargeContextChange = useCallback((event: React.ChangeEvent<HTMLInputElement>) => {
+    const value = Number(event.target.value);
+    setGenerationSettings((settings) => ({
+      ...settings,
+      lmStudioLargeContextLength: getSavedContextLength(value, LM_STUDIO_DEFAULT_LARGE_CONTEXT_LENGTH),
+    }));
+  }, []);
+
   const handleImageProviderChange = useCallback((event: React.ChangeEvent<HTMLSelectElement>) => {
     const provider = event.target.value;
     if (!isImageProvider(provider)) return;
@@ -610,6 +649,26 @@ const App = () => {
                   placeholder="default=local-model; research=fast; scenario=writer; editor=ernie"
                   aria-label="Модель или роли LM Studio"
                   title="Можно указать одну модель или роли: research=..., scenario=..., editor=..., narration=..., memory=..., details=..., image_prompt=..., default=..."
+                />
+                <input
+                  className="generation-context-input"
+                  type="number"
+                  min="1024"
+                  step="1024"
+                  value={generationSettings.lmStudioDraftContextLength}
+                  onChange={handleLmStudioDraftContextChange}
+                  aria-label="Быстрый контекст LM Studio"
+                  title="Контекст для быстрых/маленьких моделей"
+                />
+                <input
+                  className="generation-context-input"
+                  type="number"
+                  min="1024"
+                  step="1024"
+                  value={generationSettings.lmStudioLargeContextLength}
+                  onChange={handleLmStudioLargeContextChange}
+                  aria-label="Большой контекст LM Studio"
+                  title="Контекст для больших моделей, если max_context_length позволяет"
                 />
                 <button
                   type="button"

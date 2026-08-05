@@ -936,6 +936,15 @@ const unloadLmStudioInstances = async (baseUrl: string, instanceIds: string[], s
   }));
 };
 
+const readLmStudioErrorDetails = async (response: Response) => {
+  try {
+    const payload: unknown = await response.json();
+    return getErrorMessage(payload) || JSON.stringify(payload);
+  } catch {
+    return response.statusText;
+  }
+};
+
 const loadLmStudioModelWithContext = async (
   baseUrl: string,
   model: LmStudioModelEntry,
@@ -945,28 +954,41 @@ const loadLmStudioModelWithContext = async (
   const modelKey = model.key ?? model.model_key ?? model.id ?? model.display_name;
   if (!modelKey) return;
 
-  const response = await fetch(`${baseUrl}/api/v1/models/load`, {
-    method: 'POST',
-    signal,
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      model_key: modelKey,
-      config: {
-        context_length: contextLength,
+  const loadPayloads = [
+    {
+      label: 'model',
+      body: {
+        model: modelKey,
+        config: {
+          context_length: contextLength,
+        },
       },
-    }),
-  });
+    },
+    {
+      label: 'model_key',
+      body: {
+        model_key: modelKey,
+        config: {
+          context_length: contextLength,
+        },
+      },
+    },
+  ];
+  const errors: string[] = [];
 
-  if (!response.ok) {
-    let details = response.statusText;
-    try {
-      const payload: unknown = await response.json();
-      details = getErrorMessage(payload) || JSON.stringify(payload);
-    } catch {
-      // Native LM Studio errors are still useful with status text.
-    }
-    throw new Error(`LM Studio не загрузил "${modelKey}" с контекстом ${contextLength}: ${response.status}${details ? `: ${details.slice(0, 400)}` : ''}`);
+  for (const payload of loadPayloads) {
+    const response = await fetch(`${baseUrl}/api/v1/models/load`, {
+      method: 'POST',
+      signal,
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload.body),
+    });
+    if (response.ok) return;
+    const details = await readLmStudioErrorDetails(response);
+    errors.push(`${payload.label}: ${response.status}${details ? ` ${details.slice(0, 220)}` : ''}`);
   }
+
+  throw new Error(`LM Studio не загрузил "${modelKey}" с контекстом ${contextLength}: ${errors.join(' | ')}`);
 };
 
 const ensureLmStudioModelContext = async (

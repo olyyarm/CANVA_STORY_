@@ -855,7 +855,7 @@ interface OpenAiModelsResponse {
   data?: Array<{ id?: string }>;
 }
 
-let lmStudioLoadSupportsContextConfig: boolean | null = null;
+let lmStudioLoadSupportsContextLength: boolean | null = null;
 
 const uniqueNonEmpty = (values: string[]) =>
   [...new Set(values.map((value) => value.trim()).filter(Boolean))];
@@ -956,17 +956,16 @@ const loadLmStudioModelWithContext = async (
   const modelKey = model.key ?? model.model_key ?? model.id ?? model.display_name;
   if (!modelKey) return;
 
-  const configPayload = {
+  const contextPayload = {
     model: modelKey,
-    config: {
-      context_length: contextLength,
-    },
+    context_length: contextLength,
+    echo_load_config: true,
   };
   const plainPayload = { model: modelKey };
-  const loadPayloads = lmStudioLoadSupportsContextConfig === false
+  const loadPayloads = lmStudioLoadSupportsContextLength === false
     ? [{ label: 'model', body: plainPayload }]
     : [
-      { label: 'model + config', body: configPayload },
+      { label: 'model + context_length', body: contextPayload },
       { label: 'model', body: plainPayload },
     ];
   const errors: string[] = [];
@@ -979,12 +978,12 @@ const loadLmStudioModelWithContext = async (
       body: JSON.stringify(payload.body),
     });
     if (response.ok) {
-      lmStudioLoadSupportsContextConfig = payload.label.includes('config');
+      lmStudioLoadSupportsContextLength = payload.label.includes('context_length');
       return;
     }
     const details = await readLmStudioErrorDetails(response);
-    if (payload.label.includes('config') && /unrecognized key\(s\).*config/iu.test(details)) {
-      lmStudioLoadSupportsContextConfig = false;
+    if (payload.label.includes('context_length') && /unrecognized key\(s\).*context_length/iu.test(details)) {
+      lmStudioLoadSupportsContextLength = false;
     }
     errors.push(`${payload.label}: ${response.status}${details ? ` ${details.slice(0, 220)}` : ''}`);
   }
@@ -1007,10 +1006,10 @@ const ensureLmStudioModelContext = async (
   const hasGoodInstance = loadedInstances.some((instance) =>
     (instance.config?.context_length ?? 0) >= targetContext);
   if (hasGoodInstance) return;
-  if (loadedInstances.length > 0 && lmStudioLoadSupportsContextConfig === false) return;
+  if (loadedInstances.length > 0 && lmStudioLoadSupportsContextLength === false) return;
 
   const instanceIds = loadedInstances.map((instance) => instance.id).filter((id): id is string => Boolean(id));
-  if (instanceIds.length > 0 && lmStudioLoadSupportsContextConfig !== false) {
+  if (instanceIds.length > 0 && lmStudioLoadSupportsContextLength !== false) {
     await unloadLmStudioInstances(baseUrl, instanceIds, signal);
   }
   await loadLmStudioModelWithContext(baseUrl, model, targetContext, signal);

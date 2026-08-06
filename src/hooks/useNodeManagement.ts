@@ -14,6 +14,7 @@ import {
   generateText,
   GenerationSettings,
   ImageGenerationSettings,
+  unloadLmStudioModels,
 } from '../api';
 import {
   ASSOCIATE_SYSTEM_PROMPT,
@@ -2498,6 +2499,26 @@ export const useNodeManagement = (
     }
   }, [imageGenerationSettings, showNotice, updateNode, upsertImageNode]);
 
+  const unloadLmStudioBeforeComfyRender = useCallback(async (
+    nodeId: string,
+    signal?: AbortSignal,
+    statusMessage = 'Выгружаем LM Studio перед запуском ComfyUI...',
+  ) => {
+    if (generationSettings.mode !== 'lmstudio' || imageGenerationSettings.provider !== 'comfyui') return;
+    updateNode(nodeId, {
+      isLoading: true,
+      loadingProvider: 'lmstudio',
+      statusMessage,
+    });
+    try {
+      const unloadedCount = await unloadLmStudioModels(generationSettings, signal);
+      if (unloadedCount > 0) showNotice('info', `LM Studio выгрузил моделей: ${unloadedCount}.`);
+    } catch (error) {
+      if (isAbortError(error)) throw error;
+      showNotice('error', `Не удалось выгрузить LM Studio перед ComfyUI: ${errorMessage(error)}`);
+    }
+  }, [generationSettings, imageGenerationSettings.provider, showNotice, updateNode]);
+
   const handleGenerateDetailAsset = useCallback(async (detailNodeId: string) => {
     const detailNode = nodesRef.current[detailNodeId];
     const description = detailNode?.inputValue?.trim();
@@ -2543,7 +2564,7 @@ export const useNodeManagement = (
           return nextNodes;
         });
 
-        const generatedPrompts: string[] = [];
+        const preparedAssets: Array<{ name: string; description: string; prompt: string }> = [];
         for (let index = 0; index < characterDescriptions.length; index += 1) {
           const characterDescription = characterDescriptions[index];
           const characterName = getCharacterName(characterDescription, index);
@@ -2562,18 +2583,29 @@ export const useNodeManagement = (
             model: detailNode.selectedModel || MISTRAL_MODELS[0],
           }, controller.signal, generationSettings);
           const styledAssetPrompt = appendProjectVisualStyleToImagePrompt(assetPrompt, nodesRef.current);
-          generatedPrompts.push(`${characterName}\n${styledAssetPrompt}`);
+          preparedAssets.push({
+            name: characterName,
+            description: characterDescription,
+            prompt: styledAssetPrompt,
+          });
 
+          updateNode(detailNodeId, {
+            assetPrompt: preparedAssets.map((asset) => `${asset.name}\n${asset.prompt}`).join('\n\n'),
+          });
+        }
+
+        await unloadLmStudioBeforeComfyRender(detailNodeId, controller.signal);
+
+        for (let index = 0; index < preparedAssets.length; index += 1) {
+          const preparedAsset = preparedAssets[index];
           updateNode(detailNodeId, {
             isLoading: false,
             isLoadingImage: true,
             loadingProvider: imageGenerationSettings.provider,
-            assetPrompt: generatedPrompts.join('\n\n'),
-            statusMessage: `Генерируем референс ${index + 1}/${characterDescriptions.length}: ${characterName}`,
+            statusMessage: `Генерируем референс ${index + 1}/${preparedAssets.length}: ${preparedAsset.name}`,
           });
-
           const imageUrl = await generateImage(
-            styledAssetPrompt,
+            preparedAsset.prompt,
             detailNode.imagePipeline ?? 'sdxl',
             imageGenerationSettings,
             'character_asset',
@@ -2582,11 +2614,11 @@ export const useNodeManagement = (
           upsertImageNode(
             detailNodeId,
             imageUrl,
-            `Ассет ${index + 1} · ${characterName}`,
+            `Ассет ${index + 1} · ${preparedAsset.name}`,
             `character_asset:${index}`,
             index,
-            styledAssetPrompt,
-            withProjectVisualStyle(characterDescription, nodesRef.current),
+            preparedAsset.prompt,
+            withProjectVisualStyle(preparedAsset.description, nodesRef.current),
           );
         }
 
@@ -2611,7 +2643,7 @@ export const useNodeManagement = (
         return nextNodes;
       });
 
-      const generatedPrompts: string[] = [];
+      const preparedAssets: Array<{ name: string; description: string; prompt: string }> = [];
       for (let index = 0; index < locationDescriptions.length; index += 1) {
         const locationDescription = locationDescriptions[index];
         const locationName = getLocationName(locationDescription, index);
@@ -2630,18 +2662,29 @@ export const useNodeManagement = (
           model: detailNode.selectedModel || MISTRAL_MODELS[0],
         }, controller.signal, generationSettings);
         const styledAssetPrompt = appendProjectVisualStyleToImagePrompt(assetPrompt, nodesRef.current);
-        generatedPrompts.push(`${locationName}\n${styledAssetPrompt}`);
+        preparedAssets.push({
+          name: locationName,
+          description: locationDescription,
+          prompt: styledAssetPrompt,
+        });
 
+        updateNode(detailNodeId, {
+          assetPrompt: preparedAssets.map((asset) => `${asset.name}\n${asset.prompt}`).join('\n\n'),
+        });
+      }
+
+      await unloadLmStudioBeforeComfyRender(detailNodeId, controller.signal);
+
+      for (let index = 0; index < preparedAssets.length; index += 1) {
+        const preparedAsset = preparedAssets[index];
         updateNode(detailNodeId, {
           isLoading: false,
           isLoadingImage: true,
           loadingProvider: imageGenerationSettings.provider,
-          assetPrompt: generatedPrompts.join('\n\n'),
-          statusMessage: `Генерируем локацию ${index + 1}/${locationDescriptions.length}: ${locationName}`,
+          statusMessage: `Генерируем локацию ${index + 1}/${preparedAssets.length}: ${preparedAsset.name}`,
         });
-
         const imageUrl = await generateImage(
-          styledAssetPrompt,
+          preparedAsset.prompt,
           detailNode.imagePipeline ?? 'sdxl',
           imageGenerationSettings,
           'location_asset',
@@ -2650,11 +2693,11 @@ export const useNodeManagement = (
         upsertImageNode(
           detailNodeId,
           imageUrl,
-          `Ассет ${index + 1} · ${locationName}`,
+          `Ассет ${index + 1} · ${preparedAsset.name}`,
           `location_asset:${index}`,
           index,
-          styledAssetPrompt,
-          withProjectVisualStyle(locationDescription, nodesRef.current),
+          preparedAsset.prompt,
+          withProjectVisualStyle(preparedAsset.description, nodesRef.current),
         );
       }
       showNotice('success', `Создано референсов локаций: ${locationDescriptions.length}.`);
@@ -2675,7 +2718,15 @@ export const useNodeManagement = (
         statusMessage: undefined,
       });
     }
-  }, [generationSettings, imageGenerationSettings, setNodes, showNotice, updateNode, upsertImageNode]);
+  }, [
+    generationSettings,
+    imageGenerationSettings,
+    setNodes,
+    showNotice,
+    unloadLmStudioBeforeComfyRender,
+    updateNode,
+    upsertImageNode,
+  ]);
 
   const handleEditNarration = useCallback(async (detailNodeId: string) => {
     const detailNode = nodesRef.current[detailNodeId];

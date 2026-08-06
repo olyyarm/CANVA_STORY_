@@ -149,7 +149,7 @@ const callLmStudioAPI = async (
   signal?: AbortSignal,
 ): Promise<string> => {
   const model = resolveLmStudioModel(settings.lmStudioModel, request);
-  await ensureLmStudioModelContext(model, settings, signal);
+  await ensureLmStudioModelContext(model, settings, request.operation, signal);
   const response = await fetch(getLmStudioEndpoint(settings.lmStudioEndpoint), {
     method: 'POST',
     signal,
@@ -916,12 +916,17 @@ const clampContextLength = (value: number, fallback: number) => {
   return Math.max(1024, Math.floor(value));
 };
 
-const getTargetLmStudioContextLength = (model: LmStudioModelEntry, settings: GenerationSettings) => {
+const getTargetLmStudioContextLength = (
+  model: LmStudioModelEntry,
+  settings: GenerationSettings,
+  operation?: GenerationRequest['operation'],
+) => {
   const draftContext = clampContextLength(settings.lmStudioDraftContextLength, LM_STUDIO_DEFAULT_DRAFT_CONTEXT_LENGTH);
   const largeContext = clampContextLength(settings.lmStudioLargeContextLength, LM_STUDIO_DEFAULT_LARGE_CONTEXT_LENGTH);
   const maxContext = typeof model.max_context_length === 'number' && model.max_context_length > 0
     ? model.max_context_length
     : largeContext;
+  if (operation?.endsWith('_prompt')) return Math.min(draftContext, maxContext);
   const target = maxContext >= largeContext ? largeContext : draftContext;
   return Math.min(target, maxContext);
 };
@@ -994,6 +999,7 @@ const loadLmStudioModelWithContext = async (
 const ensureLmStudioModelContext = async (
   modelName: string,
   settings: GenerationSettings,
+  operation?: GenerationRequest['operation'],
   signal?: AbortSignal,
 ) => {
   const baseUrl = getLmStudioBaseUrl(settings.lmStudioEndpoint);
@@ -1001,7 +1007,7 @@ const ensureLmStudioModelContext = async (
   const model = findLmStudioModel(models, modelName);
   if (!model) return;
 
-  const targetContext = getTargetLmStudioContextLength(model, settings);
+  const targetContext = getTargetLmStudioContextLength(model, settings, operation);
   const loadedInstances = model.loaded_instances ?? [];
   const hasGoodInstance = loadedInstances.some((instance) =>
     (instance.config?.context_length ?? 0) >= targetContext);

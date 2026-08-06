@@ -266,11 +266,32 @@ const appendProjectVisualStyleToImagePrompt = (imagePrompt: string, nodes: Nodes
   ].join('\n\n'));
 };
 
-const buildChapterPrompt = (material: string, nodes: NodesState) =>
+const buildScenarioPrompt = (sourceText: string, sceneCount: number) =>
+  [
+    `Нужно ровно ${sceneCount} сцен. Верни сцены с номерами от 1 до ${sceneCount}, без пропусков, без объединения нескольких сцен в одну и без финального резюме.`,
+    'Не начинай сразу с профессиональной работы. Сначала покажи человеческую завязку: чья жизнь нарушена проблемой, где герой видит этого человека, как происходит первая встреча, почему между ними возникает доверие или трение, и только потом веди к решению.',
+    'Каждая сцена должна быть новым драматическим beat, а не растянутым описанием той же мастерской или той же операции.',
+    'Исходный материал:',
+    sourceText,
+  ].join('\n\n');
+
+const buildScenarioRepairPrompt = (scenario: string, requestedSceneCount: number, actualSceneCount: number) =>
+  [
+    `Предыдущий ответ содержит ${actualSceneCount} сцен, но нужно ровно ${requestedSceneCount}.`,
+    `Перепиши сценарий заново с номерами от 1 до ${requestedSceneCount}, без пропусков и без объединения сцен.`,
+    'Сохрани исходный смысл, но разверни драматическую структуру: жизнь носителя проблемы, первая встреча с протагонистом, отношение при встрече, причина вмешаться, первая неудача, сопротивление, профессиональная находка, проверка решения, последствия и крючок.',
+    'Каждая сцена должна иметь отдельное событие и начинаться строго с «Сцена N:».',
+    'Сценарий, который нужно исправить:',
+    scenario,
+  ].join('\n\n');
+
+const buildChapterPrompt = (material: string, sceneCount: number, nodes: NodesState) =>
   withStoryReferenceContext([
+    `Нужно ровно ${sceneCount} сцен. Не сокращай главу до 5-8 сцен, если запрошено больше.`,
     'Материал текущей главы:',
     material,
     'Задача: собрать главу как последовательный сценарий сцен. Используй материал главы как главный источник, а базы проекта и сезонную память как контекст.',
+    'Перед профессиональной работой обязательно покажи: кто страдает от проблемы, как выглядит его обычная жизнь, где и как он встречает протагониста, какая между ними первая эмоция, почему протагонист решает вмешаться.',
     'Каждая сцена должна быть не паузой для размышления, а маленьким событием: ближайшая цель героя, препятствие, физическое действие, реакция мира или другого персонажа, профессиональная лазейка, решение и крючок на следующую сцену.',
     'Закадр потом будет озвучивать эти действия, поэтому заложи в сценарий видимые поступки: герой встаёт, прячет предмет, идёт к двери, встречает союзника или противника, отвечает на угрозу, делает сделку, ошибается, меняет план.',
   ].join('\n\n'), nodes);
@@ -1196,6 +1217,28 @@ export const useNodeManagement = (
     }
   }, [generationSettings, showNotice, updateNode]);
 
+  const ensureScenarioSceneCount = useCallback(async (
+    nodeId: string,
+    scenario: string,
+    sceneCount: number,
+    systemPrompt: string,
+    model: string,
+  ) => {
+    const actualSceneCount = parseSceneBlocks(scenario, sceneCount).length;
+    if (actualSceneCount === sceneCount) return scenario;
+
+    showNotice('info', `Модель вернула ${actualSceneCount} сцен вместо ${sceneCount}. Просим пересобрать ровно ${sceneCount}.`);
+    const repairedScenario = await requestText(nodeId, {
+      operation: 'scenario',
+      prompt: withStoryReferenceContext(buildScenarioRepairPrompt(scenario, sceneCount, actualSceneCount), nodesRef.current),
+      systemPrompt,
+      model,
+      sceneCount,
+    }, `Исправляем количество сцен: нужно ровно ${sceneCount}...`);
+
+    return repairedScenario || scenario;
+  }, [requestText, showNotice]);
+
   const handleInputChange = useCallback((event: React.ChangeEvent<HTMLTextAreaElement>, nodeId: string) => {
     updateNode(nodeId, { inputValue: event.target.value, error: undefined });
   }, [updateNode]);
@@ -1293,18 +1336,20 @@ export const useNodeManagement = (
     const systemPrompt = theme
       ? `${SCENARIO_SYSTEM_PROMPT}\nСтилистическое направление: ${theme}.`
       : SCENARIO_SYSTEM_PROMPT;
+    const model = sourceNode.selectedModel || MISTRAL_MODELS[0];
     const result = await requestText(sourceNodeId, {
       operation: 'scenario',
-      prompt: withStoryReferenceContext(script, nodesRef.current),
+      prompt: withStoryReferenceContext(buildScenarioPrompt(script, sceneCount), nodesRef.current),
       systemPrompt,
-      model: sourceNode.selectedModel || MISTRAL_MODELS[0],
+      model,
       sceneCount,
     }, `Разбиваем историю на ${sceneCount} сцен…`);
     if (!result) return;
 
-    setNodes((previousNodes) => upsertScenarioGraph(previousNodes, sourceNodeId, result, sceneCount));
-    showNotice('success', `Сценарий и ${parseSceneBlocks(result, sceneCount).length} сцен готовы.`);
-  }, [requestText, setNodes, showNotice, updateNode]);
+    const scenario = await ensureScenarioSceneCount(sourceNodeId, result, sceneCount, systemPrompt, model);
+    setNodes((previousNodes) => upsertScenarioGraph(previousNodes, sourceNodeId, scenario, sceneCount));
+    showNotice('success', `Сценарий и ${parseSceneBlocks(scenario, sceneCount).length} сцен готовы.`);
+  }, [ensureScenarioSceneCount, requestText, setNodes, showNotice, updateNode]);
 
   const handleEnsureStoryReferenceNodes = useCallback(() => {
     setNodes((previousNodes) => {
@@ -1494,18 +1539,20 @@ export const useNodeManagement = (
     const systemPrompt = theme
       ? `${SCENARIO_SYSTEM_PROMPT}\nСтилистическое направление: ${theme}.`
       : SCENARIO_SYSTEM_PROMPT;
+    const model = briefNode.selectedModel || sourceNode.selectedModel || MISTRAL_MODELS[0];
     const result = await requestText(briefNodeId, {
       operation: 'scenario',
-      prompt: withStoryReferenceContext(brief, nodesRef.current),
+      prompt: withStoryReferenceContext(buildScenarioPrompt(brief, sceneCount), nodesRef.current),
       systemPrompt,
-      model: briefNode.selectedModel || sourceNode.selectedModel || MISTRAL_MODELS[0],
+      model,
       sceneCount,
     }, `Собираем ${sceneCount} сцен из редакторской заявки...`);
     if (!result) return;
 
-    setNodes((previousNodes) => upsertScenarioGraph(previousNodes, briefNode.parentId ?? '', result, sceneCount));
-    showNotice('success', `Сценарий пересобран из редакторской заявки: ${parseSceneBlocks(result, sceneCount).length} сцен.`);
-  }, [requestText, setNodes, showNotice, updateNode]);
+    const scenario = await ensureScenarioSceneCount(briefNodeId, result, sceneCount, systemPrompt, model);
+    setNodes((previousNodes) => upsertScenarioGraph(previousNodes, briefNode.parentId ?? '', scenario, sceneCount));
+    showNotice('success', `Сценарий пересобран из редакторской заявки: ${parseSceneBlocks(scenario, sceneCount).length} сцен.`);
+  }, [ensureScenarioSceneCount, requestText, setNodes, showNotice, updateNode]);
 
   const handleImportReferenceFile = useCallback(async (nodeId: string, file: File) => {
     const node = nodesRef.current[nodeId];
@@ -1748,17 +1795,18 @@ export const useNodeManagement = (
     };
     const sceneCount = clampSceneCount(materialNode.sceneCount ?? 8);
     const model = materialNode.selectedModel || MISTRAL_MODELS[0];
-    const scenario = await requestText(chapterMaterialNodeId, {
+    const rawScenario = await requestText(chapterMaterialNodeId, {
       operation: 'scenario',
-      prompt: buildChapterPrompt(material, nodesRef.current),
+      prompt: buildChapterPrompt(material, sceneCount, nodesRef.current),
       systemPrompt: SCENARIO_SYSTEM_PROMPT,
       model,
       sceneCount,
     }, `Автосборка: пишем ${sceneCount} сцен главы...`);
-    if (!scenario) {
+    if (!rawScenario) {
       updateNode(chapterMaterialNodeId, { error: 'Автосборка остановилась на создании сценария.' });
       return;
     }
+    const scenario = await ensureScenarioSceneCount(chapterMaterialNodeId, rawScenario, sceneCount, SCENARIO_SYSTEM_PROMPT, model);
 
     setChapterAutoStatus('Сценарий главы создан. Создаём ноды сцен и готовим детали...');
     const existingOutputEntry = getExistingChild(
@@ -1933,7 +1981,7 @@ export const useNodeManagement = (
       statusMessage: 'Автосборка завершена: сценарий, детали, закадр, резюме и сезонная память готовы.',
     });
     showNotice('success', 'Глава собрана: сценарий, детали, закадр, резюме и сезонная память готовы.');
-  }, [requestText, setNodes, showNotice, updateNode]);
+  }, [ensureScenarioSceneCount, requestText, setNodes, showNotice, updateNode]);
 
   const handleScenarioDetailClick = useCallback(async (sourceNodeId: string, detailType: DetailType) => {
     const sourceNode = nodesRef.current[sourceNodeId];
@@ -2707,14 +2755,15 @@ export const useNodeManagement = (
     const scenarioSystemPrompt = theme
       ? `${SCENARIO_SYSTEM_PROMPT}\nСтилистическое направление: ${theme}.`
       : SCENARIO_SYSTEM_PROMPT;
-    const revisedScenario = await requestText(detailNodeId, {
+    const rawRevisedScenario = await requestText(detailNodeId, {
       operation: 'scenario',
-      prompt: withStoryReferenceContext(revisedBrief, nodesRef.current),
+      prompt: withStoryReferenceContext(buildScenarioPrompt(revisedBrief, sceneCount), nodesRef.current),
       systemPrompt: scenarioSystemPrompt,
       model,
       sceneCount,
     }, `Редактура луп: пересобираем ${sceneCount} сцен...`, true);
-    if (!revisedScenario) return;
+    if (!rawRevisedScenario) return;
+    const revisedScenario = await ensureScenarioSceneCount(detailNodeId, rawRevisedScenario, sceneCount, scenarioSystemPrompt, model);
 
     const revisedNarration = await requestText(detailNodeId, {
       operation: 'narration',
@@ -2782,7 +2831,7 @@ export const useNodeManagement = (
       return nextNodes;
     });
     showNotice('success', 'Редакторский луп завершён: заявка, сценарий и закадр обновлены.');
-  }, [requestText, setNodes, showNotice, updateNode]);
+  }, [ensureScenarioSceneCount, requestText, setNodes, showNotice, updateNode]);
 
   const handlePrepareNarrationTts = useCallback(async (detailNodeId: string) => {
     const detailNode = nodesRef.current[detailNodeId];

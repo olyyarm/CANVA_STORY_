@@ -3,10 +3,20 @@ setlocal
 title CANVA STORY full local stack
 cd /d "%~dp0"
 
-set "CANVA_URL=http://localhost:5173/CANVA_STORY_/"
-set "LMS=%USERPROFILE%\.lmstudio\bin\lms.exe"
-set "LM_STUDIO_EXE=D:\SD\LM Studio\LM Studio.exe"
-set "COMFY_ROOT=D:\ComfyUI-Omnivorous-T2.6-P312-Cu126"
+rem === Machine-specific settings ==========================================
+rem Change these paths on a second PC, or set them before running this file.
+if not defined CANVA_PORT set "CANVA_PORT=5173"
+if not defined CANVA_HOST set "CANVA_HOST=127.0.0.1"
+if not defined LM_STUDIO_PORT set "LM_STUDIO_PORT=1234"
+if not defined LMS set "LMS=%USERPROFILE%\.lmstudio\bin\lms.exe"
+if not defined LM_STUDIO_EXE set "LM_STUDIO_EXE=D:\SD\LM Studio\LM Studio.exe"
+if not defined COMFY_PORT set "COMFY_PORT=8188"
+if not defined COMFY_ROOT set "COMFY_ROOT=D:\ComfyUI-Omnivorous-T2.6-P312-Cu126"
+rem =========================================================================
+
+set "CANVA_URL=http://localhost:%CANVA_PORT%/CANVA_STORY_/"
+set "LM_STUDIO_URL=http://localhost:%LM_STUDIO_PORT%"
+set "COMFY_URL=http://localhost:%COMFY_PORT%"
 set "COMFY_PY=%COMFY_ROOT%\python_embeded\python.exe"
 
 echo Starting CANVA STORY local stack...
@@ -14,9 +24,13 @@ echo.
 echo CANVA STORY:
 echo   %CANVA_URL%
 echo LM Studio:
-echo   http://localhost:1234
+echo   %LM_STUDIO_URL%
 echo ComfyUI:
-echo   http://localhost:8188
+echo   %COMFY_URL%
+echo.
+echo Config:
+echo   LM_STUDIO_EXE=%LM_STUDIO_EXE%
+echo   COMFY_ROOT=%COMFY_ROOT%
 echo.
 
 echo [1/3] Preparing LM Studio server with CORS...
@@ -30,7 +44,7 @@ if not exist "%LMS%" (
 )
 
 if exist "%LM_STUDIO_EXE%" (
-  powershell -NoProfile -ExecutionPolicy Bypass -Command "$path = 'D:\SD\LM Studio\LM Studio.exe'; $running = Get-Process -ErrorAction SilentlyContinue | Where-Object { try { $_.Path -eq $path } catch { $false } }; if (-not $running) { exit 1 }"
+  powershell -NoProfile -ExecutionPolicy Bypass -Command "$path = $env:LM_STUDIO_EXE; $running = Get-Process -ErrorAction SilentlyContinue | Where-Object { try { $_.Path -eq $path } catch { $false } }; if (-not $running) { exit 1 }"
   if errorlevel 1 (
     echo Opening LM Studio desktop app...
     start "" "%LM_STUDIO_EXE%"
@@ -40,7 +54,7 @@ if exist "%LM_STUDIO_EXE%" (
 
 "%LMS%" server stop >nul 2>nul
 timeout /t 2 /nobreak >nul
-"%LMS%" server start --port 1234 --cors
+"%LMS%" server start --port %LM_STUDIO_PORT% --cors
 if errorlevel 1 (
   echo.
   echo Could not start LM Studio server.
@@ -60,23 +74,23 @@ if not exist "%COMFY_PY%" (
   exit /b 1
 )
 
-powershell -NoProfile -ExecutionPolicy Bypass -Command "$listener = Get-NetTCPConnection -LocalPort 8188 -State Listen -ErrorAction SilentlyContinue; if (-not $listener) { exit 0 }; try { $response = Invoke-WebRequest -Uri 'http://127.0.0.1:8188/system_stats' -Headers @{ Origin = 'https://olyyarm.github.io' } -UseBasicParsing -TimeoutSec 5; if ($response.Headers['Access-Control-Allow-Origin']) { exit 2 } } catch {}; exit 1"
+powershell -NoProfile -ExecutionPolicy Bypass -Command "$listener = Get-NetTCPConnection -LocalPort %COMFY_PORT% -State Listen -ErrorAction SilentlyContinue; if (-not $listener) { exit 0 }; try { $response = Invoke-WebRequest -Uri 'http://127.0.0.1:%COMFY_PORT%/system_stats' -Headers @{ Origin = 'https://olyyarm.github.io' } -UseBasicParsing -TimeoutSec 5; if ($response.Headers['Access-Control-Allow-Origin']) { exit 2 } } catch {}; exit 1"
 if errorlevel 2 (
   echo ComfyUI is already running with CORS.
   goto canva_story_start
 )
 if errorlevel 1 (
-  echo Port 8188 is busy, but the running ComfyUI does not expose CORS.
+  echo Port %COMFY_PORT% is busy, but the running ComfyUI does not expose CORS.
   echo Close the current ComfyUI window/process, then run this file again.
   pause
   exit /b 1
 )
 
 echo Opening ComfyUI in a separate window...
-start "ComfyUI for CANVA STORY" /D "%COMFY_ROOT%" cmd /k ".\python_embeded\python.exe -s ComfyUI\main.py --windows-standalone-build --front-end-version Comfy-Org/ComfyUI_frontend@latest --enable-cors-header *"
+start "ComfyUI for CANVA STORY" /D "%COMFY_ROOT%" cmd /k ".\python_embeded\python.exe -s ComfyUI\main.py --windows-standalone-build --front-end-version Comfy-Org/ComfyUI_frontend@latest --listen 127.0.0.1 --port %COMFY_PORT% --enable-cors-header *"
 
 echo Waiting for ComfyUI readiness...
-powershell -NoProfile -ExecutionPolicy Bypass -Command "$deadline = (Get-Date).AddSeconds(90); while ((Get-Date) -lt $deadline) { try { $response = Invoke-WebRequest -Uri 'http://127.0.0.1:8188/system_stats' -Headers @{ Origin = 'https://olyyarm.github.io' } -UseBasicParsing -TimeoutSec 5; if ($response.Headers['Access-Control-Allow-Origin']) { exit 0 } } catch {}; Start-Sleep -Seconds 2 }; exit 1"
+powershell -NoProfile -ExecutionPolicy Bypass -Command "$deadline = (Get-Date).AddSeconds(90); while ((Get-Date) -lt $deadline) { try { $response = Invoke-WebRequest -Uri 'http://127.0.0.1:%COMFY_PORT%/system_stats' -Headers @{ Origin = 'https://olyyarm.github.io' } -UseBasicParsing -TimeoutSec 5; if ($response.Headers['Access-Control-Allow-Origin']) { exit 0 } } catch {}; Start-Sleep -Seconds 2 }; exit 1"
 if errorlevel 1 (
   echo ComfyUI window was opened, but it is still loading.
   echo You can continue after the ComfyUI window says it is ready.
@@ -96,17 +110,17 @@ if not exist "node_modules\" (
   )
 )
 
-powershell -NoProfile -ExecutionPolicy Bypass -Command "$listener = Get-NetTCPConnection -LocalPort 5173 -State Listen -ErrorAction SilentlyContinue; if ($listener) { exit 2 }"
+powershell -NoProfile -ExecutionPolicy Bypass -Command "$listener = Get-NetTCPConnection -LocalPort %CANVA_PORT% -State Listen -ErrorAction SilentlyContinue; if ($listener) { exit 2 }"
 if errorlevel 2 (
   echo CANVA STORY dev server is already running.
   goto open_canva_story
 )
 
 echo Opening CANVA STORY dev server in a separate window...
-start "CANVA STORY dev server" cmd /k "cd /d ""%~dp0"" && npm run dev -- --host 127.0.0.1 --port 5173"
+start "CANVA STORY dev server" cmd /k "cd /d ""%~dp0"" && npm run dev -- --host %CANVA_HOST% --port %CANVA_PORT%"
 
 echo Waiting for CANVA STORY readiness...
-powershell -NoProfile -ExecutionPolicy Bypass -Command "$deadline = (Get-Date).AddSeconds(60); while ((Get-Date) -lt $deadline) { try { $response = Invoke-WebRequest -Uri 'http://127.0.0.1:5173/CANVA_STORY_/' -UseBasicParsing -TimeoutSec 5; if ($response.StatusCode -eq 200) { exit 0 } } catch {}; Start-Sleep -Seconds 2 }; exit 1"
+powershell -NoProfile -ExecutionPolicy Bypass -Command "$deadline = (Get-Date).AddSeconds(60); while ((Get-Date) -lt $deadline) { try { $response = Invoke-WebRequest -Uri 'http://127.0.0.1:%CANVA_PORT%/CANVA_STORY_/' -UseBasicParsing -TimeoutSec 5; if ($response.StatusCode -eq 200) { exit 0 } } catch {}; Start-Sleep -Seconds 2 }; exit 1"
 if errorlevel 1 (
   echo CANVA STORY is still starting. Open it manually in a moment:
   echo   %CANVA_URL%

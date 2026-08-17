@@ -28,8 +28,18 @@ export const getNodeIcon = (nodeType?: string, label?: string) => {
       if (label === 'Настроение') return assetPath('emotion.png');
       if (label === 'Закадр') return assetPath('text.png');
       return assetPath('metaprompt.png');
+    case 'prompt_node':
+      return assetPath('metaprompt.png');
+    case 'split_node':
+      return assetPath('generated_associacii_.png');
+    case 'split_item':
+      return assetPath('text.png');
+    case 'character_registry':
+      return assetPath('character.png');
     case 'chapter_timeline':
       return assetPath('scenariy_generated.png');
+    case 'chapter_collector':
+      return assetPath('generated_associacii_.png');
     case 'video_output':
       return assetPath('generated_associacii_.png');
     default:
@@ -58,11 +68,11 @@ export interface ParsedScene {
 }
 
 export const parseSceneBlocks = (text: string, fallbackCount: number): ParsedScene[] => {
-  const matches = [...text.matchAll(/(?:^|\n)(Сцена\s+\d+\s*:[^\n]*)([\s\S]*?)(?=\nСцена\s+\d+\s*:|$)/giu)];
+  const matches = [...text.matchAll(/(?:^|\n)\s*(?:<<<SPLIT>>>\s*)?((?:Сцена|СЦЕНА)\s*0*(\d+)\s*(?::|[-–—])?[^\n]*)([\s\S]*?)(?=\n\s*(?:<<<SPLIT>>>\s*)?(?:Сцена|СЦЕНА)\s*0*\d+\s*(?::|[-–—])?|$)/giu)];
   if (matches.length > 0) {
     return matches.map((match, index) => ({
-      label: `СЦЕНА ${index + 1}`,
-      text: `${match[1]}${match[2]}`.trim(),
+      label: `СЦЕНА ${String(Number(match[2]) || index + 1).padStart(2, '0')}`,
+      text: `${match[1]}${match[3]}`.trim(),
     }));
   }
 

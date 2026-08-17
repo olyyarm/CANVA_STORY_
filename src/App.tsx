@@ -4,6 +4,9 @@ import {
   GenerationSettings,
   ImageGenerationSettings,
   ImageProvider,
+  COMFY_GEMINI_DEFAULT_MAX_OUTPUT_TOKENS,
+  COMFY_GEMINI_DEFAULT_MODEL,
+  COMFY_GEMINI_DEFAULT_THINKING_LEVEL,
   COMFYUI_DEFAULT_CHECKPOINT,
   COMFYUI_DEFAULT_ENDPOINT,
   getDefaultGenerationSettings,
@@ -16,11 +19,18 @@ import {
   unloadComfyModels,
   unloadLmStudioModels,
 } from './api';
+import {
+  deleteLocalAsset,
+  getNodeAssetId,
+  restoreImageAssetUrlsForProject,
+  restoreMediaAssetUrlsForProject,
+  saveLocalAssetFromUrl,
+} from './assetStorage';
 import NodeRenderer from './components/NodeRenderer';
 import { useCanvasNavigation } from './hooks/useCanvasNavigation';
 import { useDraggableNodes } from './hooks/useDraggableNodes';
 import { useNodeManagement } from './hooks/useNodeManagement';
-import { MISTRAL_MODELS } from './constants';
+import { COMFY_GEMINI_MODELS, MISTRAL_MODELS } from './constants';
 import {
   clearSavedProject,
   createProjectDocument,
@@ -30,7 +40,7 @@ import {
   projectToJson,
   saveProject,
 } from './project';
-import { AppNotice, NodesState, ProjectDocument, ViewportState } from './types';
+import { AppNotice, NodeData, NodesState, ProjectDocument, ViewportState } from './types';
 import { errorMessage } from './utils';
 import './App.css';
 
@@ -41,6 +51,7 @@ const generationModeLabels: Record<GenerationMode, string> = {
   mock: 'Тестовый режим',
   mistral: 'Mistral API',
   lmstudio: 'LM Studio',
+  comfygemini: 'Gemini · ComfyUI',
 };
 
 const imageProviderLabels: Record<ImageProvider, string> = {
@@ -49,7 +60,7 @@ const imageProviderLabels: Record<ImageProvider, string> = {
 };
 
 const isGenerationMode = (value: unknown): value is GenerationMode =>
-  value === 'mock' || value === 'mistral' || value === 'lmstudio';
+  value === 'mock' || value === 'mistral' || value === 'lmstudio' || value === 'comfygemini';
 
 const isImageProvider = (value: unknown): value is ImageProvider =>
   value === 'pollinations' || value === 'comfyui';
@@ -59,12 +70,32 @@ const getSavedContextLength = (value: unknown, fallback: number) =>
     ? Math.max(1024, Math.floor(value))
     : fallback;
 
+const loadSavedImageComfyOrgApiKey = () => {
+  try {
+    const saved = localStorage.getItem(IMAGE_GENERATION_SETTINGS_STORAGE_KEY);
+    if (!saved) return '';
+    const parsed = JSON.parse(saved) as Partial<ImageGenerationSettings>;
+    return typeof parsed.comfyOrgApiKey === 'string' ? parsed.comfyOrgApiKey : '';
+  } catch {
+    return '';
+  }
+};
+
 const loadGenerationSettings = (): GenerationSettings => {
   const fallback = getDefaultGenerationSettings();
+  const sharedComfyOrgApiKey = loadSavedImageComfyOrgApiKey();
   try {
     const saved = localStorage.getItem(GENERATION_SETTINGS_STORAGE_KEY);
-    if (!saved) return fallback;
+    if (!saved) {
+      return {
+        ...fallback,
+        comfyGeminiApiKey: sharedComfyOrgApiKey || fallback.comfyGeminiApiKey,
+      };
+    }
     const parsed = JSON.parse(saved) as Partial<GenerationSettings>;
+    const savedComfyGeminiApiKey = typeof parsed.comfyGeminiApiKey === 'string'
+      ? parsed.comfyGeminiApiKey.trim()
+      : '';
     return {
       mode: isGenerationMode(parsed.mode) ? parsed.mode : fallback.mode,
       lmStudioEndpoint: typeof parsed.lmStudioEndpoint === 'string'
@@ -81,9 +112,26 @@ const loadGenerationSettings = (): GenerationSettings => {
         parsed.lmStudioLargeContextLength,
         LM_STUDIO_DEFAULT_LARGE_CONTEXT_LENGTH,
       ),
+      comfyGeminiEndpoint: typeof parsed.comfyGeminiEndpoint === 'string'
+        ? parsed.comfyGeminiEndpoint
+        : COMFYUI_DEFAULT_ENDPOINT,
+      comfyGeminiModel: typeof parsed.comfyGeminiModel === 'string'
+        ? parsed.comfyGeminiModel
+        : COMFY_GEMINI_DEFAULT_MODEL,
+      comfyGeminiThinkingLevel: typeof parsed.comfyGeminiThinkingLevel === 'string'
+        ? parsed.comfyGeminiThinkingLevel
+        : COMFY_GEMINI_DEFAULT_THINKING_LEVEL,
+      comfyGeminiMaxOutputTokens: getSavedContextLength(
+        parsed.comfyGeminiMaxOutputTokens,
+        COMFY_GEMINI_DEFAULT_MAX_OUTPUT_TOKENS,
+      ),
+      comfyGeminiApiKey: savedComfyGeminiApiKey || sharedComfyOrgApiKey || fallback.comfyGeminiApiKey,
     };
   } catch {
-    return fallback;
+    return {
+      ...fallback,
+      comfyGeminiApiKey: sharedComfyOrgApiKey || fallback.comfyGeminiApiKey,
+    };
   }
 };
 
@@ -101,6 +149,9 @@ const loadImageGenerationSettings = (): ImageGenerationSettings => {
       comfyCheckpoint: typeof parsed.comfyCheckpoint === 'string'
         ? parsed.comfyCheckpoint
         : COMFYUI_DEFAULT_CHECKPOINT,
+      comfyOrgApiKey: typeof parsed.comfyOrgApiKey === 'string'
+        ? parsed.comfyOrgApiKey
+        : fallback.comfyOrgApiKey,
     };
   } catch {
     return fallback;
@@ -131,9 +182,15 @@ const App = () => {
   const fileInputRef = useRef<HTMLInputElement>(null);
   const projectRef = useRef<ProjectDocument>(bootstrap.project);
   const previousNodeCount = useRef(0);
+  const persistingAssetNodeIds = useRef(new Set<string>());
+  const persistingMediaAssetKeys = useRef(new Set<string>());
+  const assetPersistenceQueue = useRef(Promise.resolve());
+  const restoringAssetProjectId = useRef('');
+  const restoringMediaProjectId = useRef('');
   const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null);
   const [deleteCandidateId, setDeleteCandidateId] = useState<string | null>(null);
   const [pendingProjectAction, setPendingProjectAction] = useState<'new' | 'reset' | null>(null);
+  const [pendingOutputNodeId, setPendingOutputNodeId] = useState<string | null>(null);
   const [projectTitle, setProjectTitle] = useState(bootstrap.project.title);
   const [projectNotice, setProjectNotice] = useState<AppNotice | null>(null);
   const [saveStatus, setSaveStatus] = useState<'saved' | 'saving' | 'error'>('saved');
@@ -144,6 +201,8 @@ const App = () => {
   const [lmStudioModelsError, setLmStudioModelsError] = useState('');
   const [imageGenerationSettings, setImageGenerationSettings] = useState<ImageGenerationSettings>(loadImageGenerationSettings);
   const [viewport, setViewport] = useState<ViewportState>(bootstrap.project.viewport);
+  const [timelineFocusMode, setTimelineFocusMode] = useState(false);
+  const [expandedFocusNodeIds, setExpandedFocusNodeIds] = useState<Set<string>>(() => new Set());
   const {
     nodes,
     setNodes,
@@ -151,18 +210,39 @@ const App = () => {
     clearNotice,
     handleInputChange,
     handleThemeInputChange,
+    handleSystemPromptChange,
+    handlePromptContextChange,
+    handlePromptKnowledgeChange,
+    handlePromptMemoryChange,
+    handlePromptTemplateChange,
+    handleCreatePromptNode,
+    handleCreateSceneWriterPromptNode,
+    handleRunPromptNode,
+    handleAssemblePromptResultScenario,
+    handleCreateSplitNode,
+    handleSplitModeChange,
+    handleSplitSeparatorChange,
+    handleArrayPathChange,
+    handleRunSplitNode,
+    handleTogglePromptSnippet,
     handleModelChange,
     handleImagePipelineChange,
+    handleTimelineAssetPipelineChange,
+    handleTimelineSystemInsertPipelineChange,
     handleSceneCountChange,
     handleContinueAssociation,
     handleScriptVisualization,
     handleBuildScenarioFromBrief,
     handleImportReferenceFile,
     handleExtractChapterTopic,
+    handlePlanChapters,
+    handleCreateChapterPlanNodes,
     handleBuildChapterKnowledge,
+    handleBuildSeasonSkeleton,
     handleBuildChapterMaterial,
     handleAutoBuildChapter,
     handleEnsureStoryReferenceNodes,
+    handleEnsureCharacterRegistry,
     handleEnsureChapterTimeline,
     handleScenarioDetailClick,
     handleCreateSceneNodes,
@@ -172,6 +252,7 @@ const App = () => {
     handleComposeSceneFlux2,
     handleGenerateDetailAsset,
     handleEditNarration,
+    handleStoryStructureEdit,
     handleNarrationEditorialLoop,
     handlePrepareNarrationTts,
     handleSpeakNarration,
@@ -179,14 +260,22 @@ const App = () => {
     handleGenerateOmniVoiceNarration,
     handleGenerateSceneOmniVoiceNarration,
     handleBuildSceneVideoClip,
+    handleGenerateTimelineMissingAssets,
+    handleBuildChapterSceneClips,
     handleBuildChapterVideo,
+    handleEnsureChapterCollector,
+    handleBuildSeasonVideo,
     handleCopyToClipboard,
     handleRegenerateImageNode,
     handleToggleReferenceImage,
+    handleSetCharacterCanonicalAsset,
     handleCancelGeneration,
   } = useNodeManagement(bootstrap.project.nodes, generationSettings, imageGenerationSettings);
 
-  const clearSelection = useCallback(() => setSelectedNodeId(null), []);
+  const clearSelection = useCallback(() => {
+    setSelectedNodeId(null);
+    setPendingOutputNodeId(null);
+  }, []);
   const {
     isPanning,
     handleCanvasMouseDown,
@@ -211,13 +300,59 @@ const App = () => {
   });
 
   const nodeEntries = useMemo(() => Object.entries(nodes), [nodes]);
+  const toggleFocusChain = useCallback((nodeId: string) => {
+    setExpandedFocusNodeIds((previous) => {
+      const next = new Set(previous);
+      if (next.has(nodeId)) {
+        next.delete(nodeId);
+      } else {
+        next.add(nodeId);
+      }
+      return next;
+    });
+  }, []);
+
+  const visibleNodeEntries = useMemo(() => {
+    if (!timelineFocusMode) return nodeEntries;
+    const expandedIds = new Set(expandedFocusNodeIds);
+    let changed = true;
+    while (changed) {
+      changed = false;
+      nodeEntries.forEach(([nodeId, node]) => {
+        if (!node.parentId || !expandedIds.has(node.parentId) || expandedIds.has(nodeId)) return;
+        expandedIds.add(nodeId);
+        changed = true;
+      });
+    }
+    const isChapterNode = (node: NodeData) =>
+      node.nodeType === 'split_item'
+      && /^\s*(?:<<<SPLIT>>>\s*)?(?:ГЛАВА|CHAPTER)\b/iu.test(`${node.label}\n${node.inputValue ?? ''}`);
+    const isSceneWriterNode = (node: NodeData) =>
+      node.nodeType === 'prompt_node' && /Scene Writer/iu.test(node.label);
+    return nodeEntries.filter(([nodeId, node]) =>
+      node.nodeType === 'chapter_timeline'
+      || node.nodeType === 'chapter_collector'
+      || node.nodeType === 'video_output'
+      || node.nodeType === 'script_input'
+      || node.nodeType === 'script_output'
+      || isChapterNode(node)
+      || isSceneWriterNode(node)
+      || expandedIds.has(nodeId)
+      || selectedNodeId === nodeId);
+  }, [expandedFocusNodeIds, nodeEntries, selectedNodeId, timelineFocusMode]);
+  const visibleNodeIds = useMemo(
+    () => new Set(visibleNodeEntries.map(([nodeId]) => nodeId)),
+    [visibleNodeEntries],
+  );
   const selectedNode = selectedNodeId ? nodes[selectedNodeId] : undefined;
   const deleteCandidate = deleteCandidateId ? nodes[deleteCandidateId] : undefined;
   const visibleNotice = projectNotice ?? notice;
   const textModelOptions = useMemo(
-    () => (generationSettings.mode === 'lmstudio' && lmStudioModels.length > 0
-      ? lmStudioModels
-      : [...MISTRAL_MODELS]),
+    () => {
+      if (generationSettings.mode === 'lmstudio' && lmStudioModels.length > 0) return lmStudioModels;
+      if (generationSettings.mode === 'comfygemini') return [...COMFY_GEMINI_MODELS];
+      return [...MISTRAL_MODELS];
+    },
     [generationSettings.mode, lmStudioModels],
   );
   const lmStudioEndpoint = generationSettings.lmStudioEndpoint.trim();
@@ -230,10 +365,130 @@ const App = () => {
     && window.location.protocol === 'https:'
     && comfyEndpoint.startsWith('http://')
     && !/^http:\/\/(localhost|127\.0\.0\.1|\[::1\])(?::|\/|$)/i.test(comfyEndpoint);
+  const hasComfyGeminiMixedContentRisk = generationSettings.mode === 'comfygemini'
+    && window.location.protocol === 'https:'
+    && generationSettings.comfyGeminiEndpoint.trim().startsWith('http://')
+    && !/^http:\/\/(localhost|127\.0\.0\.1|\[::1\])(?::|\/|$)/i.test(generationSettings.comfyGeminiEndpoint.trim());
 
   const showProjectNotice = useCallback((tone: AppNotice['tone'], message: string) => {
     setProjectNotice({ id: Date.now(), tone, message });
   }, []);
+
+  const applyRestoredImageAssets = useCallback((
+    restoredAssets: Array<{ nodeId: string; imageUrl: string; localAssetId: string }>,
+  ) => {
+    if (restoredAssets.length === 0) return 0;
+    let appliedCount = 0;
+    setNodes((previousNodes) => {
+      let changed = false;
+      const nextNodes = { ...previousNodes };
+      restoredAssets.forEach(({ nodeId, imageUrl, localAssetId }) => {
+        const node = nextNodes[nodeId];
+        if (!node || node.nodeType !== 'pollinations_image' || node.imageUrl) {
+          URL.revokeObjectURL(imageUrl);
+          return;
+        }
+        nextNodes[nodeId] = {
+          ...node,
+          imageUrl,
+          metadata: {
+            ...node.metadata,
+            localAssetId,
+            localAssetKind: 'image',
+          },
+        };
+        changed = true;
+        appliedCount += 1;
+      });
+      return changed ? nextNodes : previousNodes;
+    });
+    return appliedCount;
+  }, [setNodes]);
+
+  const applyRestoredMediaAssets = useCallback((
+    restoredAssets: Array<{
+      nodeId: string;
+      kind: 'audio' | 'video';
+      urlKey: 'audioUrl' | 'videoUrl';
+      url: string;
+      localAssetId: string;
+    }>,
+  ) => {
+    if (restoredAssets.length === 0) return 0;
+    let appliedCount = 0;
+    setNodes((previousNodes) => {
+      let changed = false;
+      const nextNodes = { ...previousNodes };
+      restoredAssets.forEach(({ nodeId, kind, urlKey, url, localAssetId }) => {
+        const node = nextNodes[nodeId];
+        if (!node || node[urlKey]) {
+          URL.revokeObjectURL(url);
+          return;
+        }
+        const idKey = kind === 'audio' ? 'localAudioAssetId' : 'localVideoAssetId';
+        const kindKey = kind === 'audio' ? 'localAudioAssetKind' : 'localVideoAssetKind';
+        nextNodes[nodeId] = {
+          ...node,
+          [urlKey]: url,
+          metadata: {
+            ...node.metadata,
+            [idKey]: localAssetId,
+            [kindKey]: kind,
+          },
+        };
+        changed = true;
+        appliedCount += 1;
+      });
+      return changed ? nextNodes : previousNodes;
+    });
+    return appliedCount;
+  }, [setNodes]);
+
+  const handleStartOutputConnection = useCallback((nodeId: string) => {
+    const node = nodes[nodeId];
+    if (!node || node.nodeType !== 'prompt_node') return;
+    setPendingOutputNodeId((current) => (current === nodeId ? null : nodeId));
+    showProjectNotice('info', `${node.label}: выбран RESULT. Теперь нажмите RESULT TEXT на Split Node.`);
+  }, [nodes, showProjectNotice]);
+
+  const handleConnectInput = useCallback((nodeId: string) => {
+    const sourceId = pendingOutputNodeId;
+    if (!sourceId) {
+      showProjectNotice('info', 'Сначала нажмите RESULT у Prompt Node, потом RESULT TEXT у Split Node.');
+      return;
+    }
+
+    const sourceNode = nodes[sourceId];
+    const targetNode = nodes[nodeId];
+    if (
+      !sourceNode
+      || sourceNode.nodeType !== 'prompt_node'
+      || !targetNode
+      || targetNode.nodeType !== 'split_node'
+    ) {
+      setPendingOutputNodeId(null);
+      showProjectNotice('error', 'Можно соединять только RESULT Prompt Node с RESULT TEXT Split Node.');
+      return;
+    }
+
+    setNodes((previousNodes) => {
+      const currentTarget = previousNodes[nodeId];
+      if (!currentTarget || currentTarget.nodeType !== 'split_node') return previousNodes;
+      return {
+        ...previousNodes,
+        [nodeId]: {
+          ...currentTarget,
+          parentId: sourceId,
+          level: (previousNodes[sourceId]?.level ?? 0) + 1,
+          error: undefined,
+          statusMessage: `Подключено к ${previousNodes[sourceId]?.label ?? 'Prompt Node'}. Можно запускать Split Node.`,
+        },
+      };
+    });
+    setSelectedNodeId(nodeId);
+    setPendingOutputNodeId(null);
+    showProjectNotice('success', `${sourceNode.label} подключена к ${targetNode.label}.`);
+  }, [nodes, pendingOutputNodeId, setNodes, showProjectNotice]);
 
   const dismissNotice = useCallback(() => {
     setProjectNotice(null);
@@ -252,11 +507,9 @@ const App = () => {
     setLmStudioModelsError('');
     try {
       const models = await listLmStudioModels({
+        ...generationSettings,
         mode: 'lmstudio',
-        lmStudioEndpoint: generationSettings.lmStudioEndpoint,
         lmStudioModel: LM_STUDIO_DEFAULT_MODEL,
-        lmStudioDraftContextLength: generationSettings.lmStudioDraftContextLength,
-        lmStudioLargeContextLength: generationSettings.lmStudioLargeContextLength,
       }, signal);
       setLmStudioModels(models);
       setLmStudioModelsStatus('ready');
@@ -269,19 +522,35 @@ const App = () => {
       setLmStudioModelsError(message);
       if (!silent) showProjectNotice('error', message);
     }
-  }, [
-    generationSettings.lmStudioDraftContextLength,
-    generationSettings.lmStudioEndpoint,
-    generationSettings.lmStudioLargeContextLength,
-    generationSettings.mode,
-    showProjectNotice,
-  ]);
+  }, [generationSettings, showProjectNotice]);
 
   useEffect(() => {
     if (!visibleNotice) return;
     const timer = window.setTimeout(dismissNotice, 3800);
     return () => window.clearTimeout(timer);
   }, [dismissNotice, visibleNotice]);
+
+  useEffect(() => {
+    const textKey = generationSettings.comfyGeminiApiKey.trim();
+    const imageKey = imageGenerationSettings.comfyOrgApiKey.trim();
+    if (!textKey && imageKey) {
+      setGenerationSettings((settings) => (
+        settings.comfyGeminiApiKey.trim()
+          ? settings
+          : { ...settings, comfyGeminiApiKey: imageGenerationSettings.comfyOrgApiKey }
+      ));
+    }
+    if (textKey && !imageKey) {
+      setImageGenerationSettings((settings) => (
+        settings.comfyOrgApiKey.trim()
+          ? settings
+          : { ...settings, comfyOrgApiKey: generationSettings.comfyGeminiApiKey }
+      ));
+    }
+  }, [
+    generationSettings.comfyGeminiApiKey,
+    imageGenerationSettings.comfyOrgApiKey,
+  ]);
 
   useEffect(() => {
     const controller = new AbortController();
@@ -351,6 +620,312 @@ const App = () => {
     return () => window.clearTimeout(timer);
   }, [nodes, projectTitle, viewport]);
 
+  const missingImageRestoreKey = useMemo(() => Object.entries(nodes)
+    .filter(([, node]) => node.nodeType === 'pollinations_image' && !node.imageUrl)
+    .map(([nodeId, node]) => {
+      const localAssetId = typeof node.metadata?.localAssetId === 'string' ? node.metadata.localAssetId : '';
+      return `${nodeId}:${localAssetId}`;
+    })
+    .sort()
+    .join('|'), [nodes]);
+
+  const missingMediaRestoreKey = useMemo(() => Object.entries(nodes)
+    .flatMap(([nodeId, node]) => {
+      const keys: string[] = [];
+      if ((node.nodeType === 'scene' || node.nodeType === 'script_detail') && !node.audioUrl) {
+        const localAudioAssetId = typeof node.metadata?.localAudioAssetId === 'string' ? node.metadata.localAudioAssetId : '';
+        keys.push(`${nodeId}:audio:${localAudioAssetId}`);
+      }
+      if ((node.nodeType === 'scene' || node.nodeType === 'video_output') && !node.videoUrl) {
+        const localVideoAssetId = typeof node.metadata?.localVideoAssetId === 'string' ? node.metadata.localVideoAssetId : '';
+        keys.push(`${nodeId}:video:${localVideoAssetId}`);
+      }
+      return keys;
+    })
+    .sort()
+    .join('|'), [nodes]);
+
+  useEffect(() => {
+    if (!missingImageRestoreKey) return;
+    const projectId = projectRef.current.id;
+    const restoreKey = `${projectId}:${missingImageRestoreKey}`;
+    if (restoringAssetProjectId.current === restoreKey) return;
+    restoringAssetProjectId.current = restoreKey;
+    let cancelled = false;
+
+    restoreImageAssetUrlsForProject(projectId, nodes)
+      .then((restoredAssets) => {
+        if (cancelled || restoredAssets.length === 0) return;
+        applyRestoredImageAssets(restoredAssets);
+      })
+      .catch(() => {
+        restoringAssetProjectId.current = '';
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [applyRestoredImageAssets, missingImageRestoreKey, nodes]);
+
+  useEffect(() => {
+    if (!missingMediaRestoreKey) return;
+    const projectId = projectRef.current.id;
+    const restoreKey = `${projectId}:${missingMediaRestoreKey}`;
+    if (restoringMediaProjectId.current === restoreKey) return;
+    restoringMediaProjectId.current = restoreKey;
+    let cancelled = false;
+
+    restoreMediaAssetUrlsForProject(projectId, nodes)
+      .then((restoredAssets) => {
+        if (cancelled || restoredAssets.length === 0) return;
+        applyRestoredMediaAssets(restoredAssets);
+      })
+      .catch(() => {
+        restoringMediaProjectId.current = '';
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [applyRestoredMediaAssets, missingMediaRestoreKey, nodes]);
+
+  useEffect(() => {
+    Object.entries(nodes).forEach(([nodeId, node]) => {
+      const localAssetId = typeof node.metadata?.localAssetId === 'string' ? node.metadata.localAssetId : '';
+      const localAssetSavedAt = typeof node.metadata?.localAssetSavedAt === 'string' ? node.metadata.localAssetSavedAt : '';
+      const localAssetSourceUrl = typeof node.metadata?.localAssetSourceUrl === 'string' ? node.metadata.localAssetSourceUrl : '';
+      const stableAssetId = getNodeAssetId(projectRef.current.id, nodeId, 'image');
+      if (
+        node.nodeType !== 'pollinations_image'
+        || !node.imageUrl
+        || (localAssetId === stableAssetId && localAssetSavedAt && localAssetSourceUrl === node.imageUrl)
+        || persistingAssetNodeIds.current.has(nodeId)
+      ) {
+        return;
+      }
+
+      persistingAssetNodeIds.current.add(nodeId);
+      const sourceImageUrl = node.imageUrl;
+      let savedCurrentImage = false;
+      let shouldRetryLatestImage = false;
+      setNodes((previousNodes) => {
+        const currentNode = previousNodes[nodeId];
+        if (
+          !currentNode
+          || currentNode.nodeType !== 'pollinations_image'
+          || currentNode.imageUrl !== sourceImageUrl
+          || typeof currentNode.metadata?.localAssetSavedAt === 'string'
+        ) {
+          return previousNodes;
+        }
+        return {
+          ...previousNodes,
+          [nodeId]: {
+            ...currentNode,
+            metadata: {
+              ...currentNode.metadata,
+              localAssetId: stableAssetId,
+              localAssetKind: 'image',
+              localAssetPending: true,
+              localAssetSourceUrl: sourceImageUrl,
+            },
+          },
+        };
+      });
+      assetPersistenceQueue.current = assetPersistenceQueue.current
+        .catch(() => undefined)
+        .then(() => saveLocalAssetFromUrl(sourceImageUrl, 'image', stableAssetId))
+        .then((savedAssetId) => {
+          setNodes((previousNodes) => {
+            const currentNode = previousNodes[nodeId];
+            if (!currentNode || currentNode.nodeType !== 'pollinations_image') return previousNodes;
+            if (!currentNode.imageUrl) return previousNodes;
+            if (currentNode.imageUrl !== sourceImageUrl) {
+              shouldRetryLatestImage = true;
+              return previousNodes;
+            }
+            if (typeof currentNode.metadata?.localAssetId === 'string' && currentNode.metadata.localAssetId === savedAssetId) {
+              savedCurrentImage = true;
+              return {
+                ...previousNodes,
+                [nodeId]: {
+                  ...currentNode,
+                  metadata: {
+                    ...currentNode.metadata,
+                    localAssetKind: 'image',
+                    localAssetPending: false,
+                    localAssetSourceUrl: sourceImageUrl,
+                    localAssetSavedAt: new Date().toISOString(),
+                  },
+                },
+              };
+            }
+            savedCurrentImage = true;
+            return {
+              ...previousNodes,
+              [nodeId]: {
+                ...currentNode,
+                metadata: {
+                  ...currentNode.metadata,
+                  localAssetId: savedAssetId,
+                  localAssetKind: 'image',
+                  localAssetPending: false,
+                  localAssetSourceUrl: sourceImageUrl,
+                  localAssetSavedAt: new Date().toISOString(),
+                },
+              },
+            };
+          });
+        })
+        .catch(() => {
+          // Generated images are still usable in memory; this only affects reload recovery.
+        })
+        .finally(() => {
+          persistingAssetNodeIds.current.delete(nodeId);
+          if (!savedCurrentImage && shouldRetryLatestImage) {
+            setNodes((previousNodes) => ({ ...previousNodes }));
+          }
+      });
+    });
+  }, [nodes, setNodes]);
+
+  useEffect(() => {
+    Object.entries(nodes).forEach(([nodeId, node]) => {
+      const mediaPlans: Array<{
+        kind: 'audio' | 'video';
+        url: string | undefined;
+        urlKey: 'audioUrl' | 'videoUrl';
+        idKey: 'localAudioAssetId' | 'localVideoAssetId';
+        kindKey: 'localAudioAssetKind' | 'localVideoAssetKind';
+        pendingKey: 'localAudioAssetPending' | 'localVideoAssetPending';
+        sourceKey: 'localAudioAssetSourceUrl' | 'localVideoAssetSourceUrl';
+        savedAtKey: 'localAudioAssetSavedAt' | 'localVideoAssetSavedAt';
+      }> = [];
+
+      if (node.nodeType === 'scene' || node.nodeType === 'script_detail') {
+        mediaPlans.push({
+          kind: 'audio',
+          url: node.audioUrl,
+          urlKey: 'audioUrl',
+          idKey: 'localAudioAssetId',
+          kindKey: 'localAudioAssetKind',
+          pendingKey: 'localAudioAssetPending',
+          sourceKey: 'localAudioAssetSourceUrl',
+          savedAtKey: 'localAudioAssetSavedAt',
+        });
+      }
+      if (node.nodeType === 'scene' || node.nodeType === 'video_output') {
+        mediaPlans.push({
+          kind: 'video',
+          url: node.videoUrl,
+          urlKey: 'videoUrl',
+          idKey: 'localVideoAssetId',
+          kindKey: 'localVideoAssetKind',
+          pendingKey: 'localVideoAssetPending',
+          sourceKey: 'localVideoAssetSourceUrl',
+          savedAtKey: 'localVideoAssetSavedAt',
+        });
+      }
+
+      mediaPlans.forEach((plan) => {
+        if (!plan.url) return;
+        const stableAssetId = getNodeAssetId(projectRef.current.id, nodeId, plan.kind);
+        const localAssetId = typeof node.metadata?.[plan.idKey] === 'string' ? node.metadata[plan.idKey] : '';
+        const localAssetSavedAt = typeof node.metadata?.[plan.savedAtKey] === 'string' ? node.metadata[plan.savedAtKey] : '';
+        const localAssetSourceUrl = typeof node.metadata?.[plan.sourceKey] === 'string' ? node.metadata[plan.sourceKey] : '';
+        const persistenceKey = `${nodeId}:${plan.kind}`;
+        if (
+          (localAssetId === stableAssetId && localAssetSavedAt && localAssetSourceUrl === plan.url)
+          || persistingMediaAssetKeys.current.has(persistenceKey)
+        ) {
+          return;
+        }
+
+        persistingMediaAssetKeys.current.add(persistenceKey);
+        const sourceUrl = plan.url;
+        let savedCurrentAsset = false;
+        let shouldRetryLatestAsset = false;
+        setNodes((previousNodes) => {
+          const currentNode = previousNodes[nodeId];
+          if (
+            !currentNode
+            || currentNode[plan.urlKey] !== sourceUrl
+            || typeof currentNode.metadata?.[plan.savedAtKey] === 'string'
+          ) {
+            return previousNodes;
+          }
+          return {
+            ...previousNodes,
+            [nodeId]: {
+              ...currentNode,
+              metadata: {
+                ...currentNode.metadata,
+                [plan.idKey]: stableAssetId,
+                [plan.kindKey]: plan.kind,
+                [plan.pendingKey]: true,
+                [plan.sourceKey]: sourceUrl,
+              },
+            },
+          };
+        });
+
+        assetPersistenceQueue.current = assetPersistenceQueue.current
+          .catch(() => undefined)
+          .then(() => saveLocalAssetFromUrl(sourceUrl, plan.kind, stableAssetId))
+          .then((savedAssetId) => {
+            setNodes((previousNodes) => {
+              const currentNode = previousNodes[nodeId];
+              if (!currentNode || !currentNode[plan.urlKey]) return previousNodes;
+              if (currentNode[plan.urlKey] !== sourceUrl) {
+                shouldRetryLatestAsset = true;
+                return previousNodes;
+              }
+              savedCurrentAsset = true;
+              return {
+                ...previousNodes,
+                [nodeId]: {
+                  ...currentNode,
+                  metadata: {
+                    ...currentNode.metadata,
+                    [plan.idKey]: savedAssetId,
+                    [plan.kindKey]: plan.kind,
+                    [plan.pendingKey]: false,
+                    [plan.sourceKey]: sourceUrl,
+                    [plan.savedAtKey]: new Date().toISOString(),
+                  },
+                },
+              };
+            });
+          })
+          .catch(() => {
+            // Generated media remains usable in the current tab; this only affects reload recovery.
+          })
+          .finally(() => {
+            persistingMediaAssetKeys.current.delete(persistenceKey);
+            if (!savedCurrentAsset && shouldRetryLatestAsset) {
+              setNodes((previousNodes) => ({ ...previousNodes }));
+            }
+          });
+      });
+    });
+  }, [nodes, setNodes]);
+
+  const handleRestoreImageAssets = useCallback(async () => {
+    try {
+      const restoredAssets = await restoreImageAssetUrlsForProject(projectRef.current.id, nodes);
+      const restoredMediaAssets = await restoreMediaAssetUrlsForProject(projectRef.current.id, nodes);
+      if (restoredAssets.length === 0 && restoredMediaAssets.length === 0) {
+        showProjectNotice('info', 'В локальном хранилище не нашла сохранённых медиа для пустых нод.');
+        return;
+      }
+      applyRestoredImageAssets(restoredAssets);
+      applyRestoredMediaAssets(restoredMediaAssets);
+      showProjectNotice('success', `Восстановлено: картинок ${restoredAssets.length}, аудио/видео ${restoredMediaAssets.length}.`);
+    } catch {
+      showProjectNotice('error', 'Не удалось прочитать локальное хранилище медиа браузера.');
+    }
+  }, [applyRestoredImageAssets, applyRestoredMediaAssets, nodes, showProjectNotice]);
+
   useEffect(() => {
     const saveBeforeUnload = () => {
       try {
@@ -369,7 +944,7 @@ const App = () => {
       previousNodeCount.current = nodeCount;
       return;
     }
-    if (nodeCount > previousNodeCount.current) {
+    if (!bootstrap.restored && previousNodeCount.current === 0 && nodeCount > 0) {
       const timer = window.setTimeout(() => {
         fitView();
         previousNodeCount.current = nodeCount;
@@ -402,8 +977,12 @@ const App = () => {
       const idsToDelete = collectNodeFamily(previousNodes, deleteCandidateId);
       const nextNodes = { ...previousNodes };
       idsToDelete.forEach((nodeId) => {
-        const imageUrl = nextNodes[nodeId]?.imageUrl;
+        const node = nextNodes[nodeId];
+        const imageUrl = node?.imageUrl;
         if (imageUrl?.startsWith('blob:')) URL.revokeObjectURL(imageUrl);
+        const localAssetId = typeof node?.metadata?.localAssetId === 'string' ? node.metadata.localAssetId : '';
+        if (localAssetId) void deleteLocalAsset(localAssetId);
+        void deleteLocalAsset(getNodeAssetId(projectRef.current.id, nodeId, 'image'));
         delete nextNodes[nodeId];
       });
       return nextNodes;
@@ -511,6 +1090,32 @@ const App = () => {
     }));
   }, []);
 
+  const handleComfyGeminiEndpointChange = useCallback((event: React.ChangeEvent<HTMLInputElement>) => {
+    setGenerationSettings((settings) => ({ ...settings, comfyGeminiEndpoint: event.target.value }));
+  }, []);
+
+  const handleComfyGeminiModelChange = useCallback((event: React.ChangeEvent<HTMLSelectElement>) => {
+    setGenerationSettings((settings) => ({ ...settings, comfyGeminiModel: event.target.value }));
+  }, []);
+
+  const handleComfyGeminiThinkingLevelChange = useCallback((event: React.ChangeEvent<HTMLSelectElement>) => {
+    setGenerationSettings((settings) => ({ ...settings, comfyGeminiThinkingLevel: event.target.value }));
+  }, []);
+
+  const handleComfyGeminiMaxOutputTokensChange = useCallback((event: React.ChangeEvent<HTMLInputElement>) => {
+    const value = Number(event.target.value);
+    setGenerationSettings((settings) => ({
+      ...settings,
+      comfyGeminiMaxOutputTokens: getSavedContextLength(value, COMFY_GEMINI_DEFAULT_MAX_OUTPUT_TOKENS),
+    }));
+  }, []);
+
+  const handleComfyGeminiApiKeyChange = useCallback((event: React.ChangeEvent<HTMLInputElement>) => {
+    const apiKey = event.target.value;
+    setGenerationSettings((settings) => ({ ...settings, comfyGeminiApiKey: apiKey }));
+    setImageGenerationSettings((settings) => ({ ...settings, comfyOrgApiKey: apiKey }));
+  }, []);
+
   const handleImageProviderChange = useCallback((event: React.ChangeEvent<HTMLSelectElement>) => {
     const provider = event.target.value;
     if (!isImageProvider(provider)) return;
@@ -523,6 +1128,12 @@ const App = () => {
 
   const handleComfyCheckpointChange = useCallback((event: React.ChangeEvent<HTMLInputElement>) => {
     setImageGenerationSettings((settings) => ({ ...settings, comfyCheckpoint: event.target.value }));
+  }, []);
+
+  const handleComfyOrgApiKeyChange = useCallback((event: React.ChangeEvent<HTMLInputElement>) => {
+    const apiKey = event.target.value;
+    setImageGenerationSettings((settings) => ({ ...settings, comfyOrgApiKey: apiKey }));
+    setGenerationSettings((settings) => ({ ...settings, comfyGeminiApiKey: apiKey }));
   }, []);
 
   const handleUnloadLocalModels = useCallback(async () => {
@@ -561,10 +1172,10 @@ const App = () => {
     const parentNode = nodes[parentId];
     const childNode = nodes[childId];
     if (!parentNode || !childNode) return '';
-    const parentWidth = parentNode.width ?? 300;
-    const parentHeight = parentNode.height ?? 220;
-    const childWidth = childNode.width ?? 300;
-    const childHeight = childNode.height ?? 220;
+    const parentWidth = Math.max(parentNode.width ?? 300, parentNode.nodeType === 'scene' ? 400 : 0);
+    const parentHeight = Math.max(parentNode.height ?? 220, parentNode.nodeType === 'scene' ? 520 : 0);
+    const childWidth = Math.max(childNode.width ?? 300, childNode.nodeType === 'scene' ? 400 : 0);
+    const childHeight = Math.max(childNode.height ?? 220, childNode.nodeType === 'scene' ? 520 : 0);
     const parentCenterX = parentNode.x + parentWidth / 2;
     const parentCenterY = parentNode.y + parentHeight / 2;
     const childCenterX = childNode.x + childWidth / 2;
@@ -634,6 +1245,7 @@ const App = () => {
               <option value="mock">Тест</option>
               <option value="mistral">Mistral API</option>
               <option value="lmstudio">LM Studio</option>
+              <option value="comfygemini">Gemini · ComfyUI</option>
             </select>
             {generationSettings.mode === 'lmstudio' && (
               <>
@@ -687,10 +1299,66 @@ const App = () => {
                 </button>
               </>
             )}
+            {generationSettings.mode === 'comfygemini' && (
+              <>
+                <input
+                  className="generation-endpoint-input"
+                  value={generationSettings.comfyGeminiEndpoint}
+                  onChange={handleComfyGeminiEndpointChange}
+                  placeholder={COMFYUI_DEFAULT_ENDPOINT}
+                  aria-label="Endpoint ComfyUI для Gemini"
+                />
+                <select
+                  className="generation-model-input"
+                  value={generationSettings.comfyGeminiModel}
+                  onChange={handleComfyGeminiModelChange}
+                  aria-label="Модель Gemini в ComfyUI"
+                >
+                  {COMFY_GEMINI_MODELS.map((model) => (
+                    <option key={model} value={model}>{model}</option>
+                  ))}
+                </select>
+                <select
+                  className="generation-context-input"
+                  value={generationSettings.comfyGeminiThinkingLevel}
+                  onChange={handleComfyGeminiThinkingLevelChange}
+                  aria-label="Thinking level Gemini"
+                  title="Поле thinking_level из GeminiNodeV2"
+                >
+                  <option value="LOW">LOW</option>
+                  <option value="MEDIUM">MEDIUM</option>
+                  <option value="HIGH">HIGH</option>
+                </select>
+                <input
+                  className="generation-context-input"
+                  type="number"
+                  min="512"
+                  step="512"
+                  value={generationSettings.comfyGeminiMaxOutputTokens}
+                  onChange={handleComfyGeminiMaxOutputTokensChange}
+                  aria-label="Max output tokens Gemini"
+                  title="max_output_tokens для GeminiNodeV2"
+                />
+                <input
+                  className="generation-secret-input"
+                  type="password"
+                  value={generationSettings.comfyGeminiApiKey}
+                  onChange={handleComfyGeminiApiKeyChange}
+                  placeholder="Comfy.org API key"
+                  aria-label="Comfy.org API key для Gemini"
+                  title="Если GeminiNodeV2 требует ключ Comfy.org, он будет отправлен в extra_data. Хранится только в localStorage этого браузера."
+                />
+              </>
+            )}
           </div>
           {hasLmStudioMixedContentRisk && (
             <div className="generation-warning" role="status">
               GitHub Pages работает по HTTPS. Для HTTP-адреса в домашней сети браузер может потребовать локальный запуск приложения или HTTPS/proxy.
+            </div>
+          )}
+          {hasComfyGeminiMixedContentRisk && (
+            <div className="generation-warning" role="status">
+              GitHub Pages по HTTPS может блокировать HTTP ComfyUI для Gemini. Для такого режима лучше локальный запуск или HTTPS/proxy.
             </div>
           )}
           <div className="image-generation-controls" aria-label="Генерация кадров">
@@ -722,6 +1390,15 @@ const App = () => {
                   placeholder={COMFYUI_DEFAULT_CHECKPOINT}
                   aria-label="Checkpoint SDXL для ComfyUI"
                 />
+                <input
+                  className="generation-secret-input"
+                  type="password"
+                  value={imageGenerationSettings.comfyOrgApiKey}
+                  onChange={handleComfyOrgApiKeyChange}
+                  placeholder="Comfy.org API key"
+                  aria-label="Comfy.org API key"
+                  title="Ключ Comfy.org для API-нод вроде Nano Banana. Хранится только в localStorage этого браузера."
+                />
               </>
             )}
           </div>
@@ -740,9 +1417,23 @@ const App = () => {
         <div className="project-actions" aria-label="Действия с проектом">
           <span className="node-count">{nodeEntries.length} нод</span>
           <button type="button" onClick={handleEnsureStoryReferenceNodes}>Базы</button>
-          <button type="button" onClick={handleEnsureChapterTimeline}>Таймлайн</button>
+          <button type="button" onClick={handleEnsureCharacterRegistry}>Реестр персонажей</button>
+          <button type="button" onClick={() => handleEnsureChapterTimeline(selectedNodeId ?? undefined)}>Таймлайн</button>
+          <button type="button" onClick={handleEnsureChapterCollector}>Собиратель глав</button>
+          <button type="button" onClick={() => void handleRestoreImageAssets()}>Восстановить медиа</button>
+          <button type="button" onClick={() => handleCreatePromptNode(selectedNodeId ?? undefined)}>Prompt Node</button>
+          <button type="button" onClick={() => handleCreateSceneWriterPromptNode(selectedNodeId ?? undefined)}>Scene Writer</button>
+          <button type="button" onClick={() => handleCreateSplitNode(selectedNodeId ?? undefined)}>Split Node</button>
           <button type="button" onClick={handleUnloadLocalModels} disabled={isUnloadingModels}>
             {isUnloadingModels ? 'Выгружаю…' : 'Выгрузить модели'}
+          </button>
+          <button
+            type="button"
+            className={timelineFocusMode ? 'toolbar-active-button' : undefined}
+            onClick={() => setTimelineFocusMode((value) => !value)}
+            title="Спрятать промежуточные сцены и ассеты, оставив рабочий таймлайн"
+          >
+            {timelineFocusMode ? 'Все ноды' : 'Только таймлайн'}
           </button>
           <button type="button" onClick={() => setPendingProjectAction('new')}>Новый</button>
           <button type="button" onClick={handleExport}>Экспорт</button>
@@ -771,7 +1462,7 @@ const App = () => {
       >
         <svg className="connection-layer" aria-hidden="true">
           <g transform={svgWorldTransform}>
-            {nodeEntries.map(([childId, childNode]) => childNode.parentId && (
+            {nodeEntries.map(([childId, childNode]) => childNode.parentId && visibleNodeIds.has(childId) && visibleNodeIds.has(childNode.parentId) && (
               <path
                 key={`${childNode.parentId}-${childId}`}
                 d={getConnectionPath(childNode.parentId, childId)}
@@ -782,27 +1473,50 @@ const App = () => {
         </svg>
 
         <div className="canvas-world" style={{ transform: worldTransform }}>
-          {nodeEntries.map(([id, node]) => (
+          {visibleNodeEntries.map(([id, node]) => (
             <NodeRenderer
               key={id}
               id={id}
               node={node}
               allNodes={nodes}
               selected={selectedNodeId === id}
+              pendingOutputNodeId={pendingOutputNodeId}
               onMouseDown={handleMouseDown}
               onResizeMouseDown={handleResizeMouseDown}
               onDelete={setDeleteCandidateId}
+              onStartOutputConnection={handleStartOutputConnection}
+              onConnectInput={handleConnectInput}
               onInputChange={handleInputChange}
               onThemeInputChange={handleThemeInputChange}
+              onSystemPromptChange={handleSystemPromptChange}
+              onPromptContextChange={handlePromptContextChange}
+              onPromptKnowledgeChange={handlePromptKnowledgeChange}
+              onPromptMemoryChange={handlePromptMemoryChange}
+              onPromptTemplateChange={handlePromptTemplateChange}
+              onRunPromptNode={handleRunPromptNode}
+              onCreatePromptNode={handleCreatePromptNode}
+              onCreateSceneWriterPromptNode={handleCreateSceneWriterPromptNode}
+              onCreateSplitNode={handleCreateSplitNode}
+              onAssemblePromptResultScenario={handleAssemblePromptResultScenario}
+              onSplitModeChange={handleSplitModeChange}
+              onSplitSeparatorChange={handleSplitSeparatorChange}
+              onArrayPathChange={handleArrayPathChange}
+              onRunSplitNode={handleRunSplitNode}
+              onTogglePromptSnippet={handleTogglePromptSnippet}
               onModelChange={handleModelChange}
               onImagePipelineChange={handleImagePipelineChange}
+              onTimelineAssetPipelineChange={handleTimelineAssetPipelineChange}
+              onTimelineSystemInsertPipelineChange={handleTimelineSystemInsertPipelineChange}
               onSceneCountChange={handleSceneCountChange}
               onContinueAssociation={handleContinueAssociation}
               onScriptVisualize={handleScriptVisualization}
               onBuildScenarioFromBrief={handleBuildScenarioFromBrief}
               onImportReferenceFile={handleImportReferenceFile}
               onExtractChapterTopic={handleExtractChapterTopic}
+              onPlanChapters={handlePlanChapters}
+              onCreateChapterPlanNodes={handleCreateChapterPlanNodes}
               onBuildChapterKnowledge={handleBuildChapterKnowledge}
+              onBuildSeasonSkeleton={handleBuildSeasonSkeleton}
               onBuildChapterMaterial={handleBuildChapterMaterial}
               onAutoBuildChapter={handleAutoBuildChapter}
               onEnsureChapterTimeline={handleEnsureChapterTimeline}
@@ -814,6 +1528,7 @@ const App = () => {
               onComposeSceneFlux2={handleComposeSceneFlux2}
               onGenerateDetailAsset={handleGenerateDetailAsset}
               onEditNarration={handleEditNarration}
+              onStoryStructureEdit={handleStoryStructureEdit}
               onNarrationEditorialLoop={handleNarrationEditorialLoop}
               onPrepareNarrationTts={handlePrepareNarrationTts}
               onSpeakNarration={handleSpeakNarration}
@@ -821,13 +1536,19 @@ const App = () => {
               onGenerateOmniVoiceNarration={handleGenerateOmniVoiceNarration}
               onGenerateSceneOmniVoiceNarration={handleGenerateSceneOmniVoiceNarration}
               onBuildSceneVideoClip={handleBuildSceneVideoClip}
+              onGenerateTimelineMissingAssets={handleGenerateTimelineMissingAssets}
+              onBuildChapterSceneClips={handleBuildChapterSceneClips}
               onBuildChapterVideo={handleBuildChapterVideo}
+              onBuildSeasonVideo={handleBuildSeasonVideo}
               onCopyToClipboard={handleCopyToClipboard}
               onRegenerateImageNode={handleRegenerateImageNode}
               onToggleReferenceImage={handleToggleReferenceImage}
+              onSetCharacterCanonicalAsset={handleSetCharacterCanonicalAsset}
               textModelOptions={textModelOptions}
               imageProvider={imageGenerationSettings.provider}
               onCancelGeneration={handleCancelGeneration}
+              focusChainExpanded={expandedFocusNodeIds.has(id)}
+              onToggleFocusChain={toggleFocusChain}
             />
           ))}
         </div>

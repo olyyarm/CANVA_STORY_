@@ -7,15 +7,27 @@ export type NodeType =
   | 'script_output'
   | 'association'
   | 'script_detail'
+  | 'prompt_node'
+  | 'split_node'
+  | 'split_item'
+  | 'character_registry'
   | 'pollinations_image'
   | 'chapter_timeline'
+  | 'chapter_collector'
   | 'video_output';
 
 export type DetailType = 'герои' | 'локации' | 'настроение' | 'закадр' | 'система';
 export type EntityType = 'character' | 'location' | 'episode' | 'scene';
 export type ProductionStatus = 'idea' | 'draft' | 'ready' | 'in_production' | 'done';
-export type ImagePipeline = 'sdxl' | 'z_image_turbo' | 'flux2_compose' | 'flux2_turbo_compose';
-export type ImagePromptKind = 'default' | 'scene_location' | 'scene_characters' | 'character_asset' | 'location_asset';
+export type ImagePipeline =
+  | 'sdxl'
+  | 'z_image_turbo'
+  | 'ernie_image_turbo'
+  | 'flux2_compose'
+  | 'flux2_turbo_compose'
+  | 'nano_banana_2_lite_compose';
+export type ImagePromptKind = 'default' | 'scene_location' | 'scene_characters' | 'character_asset' | 'location_asset' | 'system_insert';
+export type SplitMode = 'lines' | 'separator' | 'json_path';
 
 export interface NodeData {
   x: number;
@@ -31,13 +43,22 @@ export interface NodeData {
   hasButton?: boolean;
   buttonLabel?: string;
   inputValue?: string;
+  promptContextValue?: string;
+  promptKnowledgeValue?: string;
+  promptMemoryValue?: string;
+  promptTemplateValue?: string;
+  promptResultValue?: string;
+  splitMode?: SplitMode;
+  splitSeparator?: string;
+  arrayPath?: string;
   outputNodeLabel?: string;
   themeInputValue?: string;
+  systemPrompt?: string;
   selectedModel?: string;
   sceneCount?: number;
   sceneText?: string;
   isLoading?: boolean;
-  loadingProvider?: 'mock' | 'mistral' | 'lmstudio' | 'pollinations' | 'comfyui';
+  loadingProvider?: 'mock' | 'mistral' | 'lmstudio' | 'comfygemini' | 'pollinations' | 'comfyui';
   isSpeaking?: boolean;
   isGenerated?: boolean;
   canContinue?: boolean;
@@ -122,9 +143,12 @@ export type GenerationOperation =
   | 'mood'
   | 'narration'
   | 'narration_edit'
+  | 'story_structure_edit'
   | 'brief_revision'
   | 'chapter_topic'
+  | 'chapter_planner'
   | 'chapter_knowledge'
+  | 'season_skeleton'
   | 'chapter_material'
   | 'chapter_facts'
   | 'chapter_summary'
@@ -137,7 +161,9 @@ export type GenerationOperation =
   | 'scene_location_prompt'
   | 'scene_character_layer_prompt'
   | 'character_asset_prompt'
-  | 'location_asset_prompt';
+  | 'location_asset_prompt'
+  | 'system_insert_asset_prompt'
+  | 'prompt_node';
 
 export interface GenerationRequest {
   operation: GenerationOperation;

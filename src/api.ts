@@ -1,4 +1,5 @@
 import { createMockCompletion } from './mockData';
+import { COMFY_GEMINI_MODELS } from './constants';
 import { ChatApiResponse, GenerationRequest, ImagePipeline, ImagePromptKind } from './types';
 
 const MISTRAL_ENDPOINT = 'https://api.mistral.ai/v1/chat/completions';
@@ -8,6 +9,9 @@ export const LM_STUDIO_DEFAULT_DRAFT_CONTEXT_LENGTH = 4096;
 export const LM_STUDIO_DEFAULT_LARGE_CONTEXT_LENGTH = 50000;
 export const COMFYUI_DEFAULT_ENDPOINT = 'http://localhost:8188';
 export const COMFYUI_DEFAULT_CHECKPOINT = 'SDXL\\sd_xl_base_1.0.safetensors';
+export const COMFY_GEMINI_DEFAULT_MODEL = 'Gemini 3.5 Flash';
+export const COMFY_GEMINI_DEFAULT_THINKING_LEVEL = 'MEDIUM';
+export const COMFY_GEMINI_DEFAULT_MAX_OUTPUT_TOKENS = 32768;
 const FLUX2_DIFFUSION_MODEL = 'flux2_dev_fp8mixed.safetensors';
 const FLUX2_TEXT_ENCODER = 'mistral_3_small_flux2_fp8.safetensors';
 const FLUX2_VAE = 'flux2-vae.safetensors';
@@ -15,14 +19,20 @@ const FLUX2_TURBO_LORA = 'Flux_2-Turbo-LoRA_comfyui.safetensors';
 const Z_IMAGE_TURBO_DIFFUSION_MODEL = 'z_image_turbo_bf16.safetensors';
 const Z_IMAGE_TEXT_ENCODER = 'qwen_3_4b.safetensors';
 const Z_IMAGE_VAE = 'ae.safetensors';
+const ERNIE_IMAGE_TURBO_DIFFUSION_MODEL = 'ernie-image-turbo.safetensors';
+const ERNIE_IMAGE_TEXT_ENCODER = 'ministral-3-3b.safetensors';
+const ERNIE_IMAGE_VAE = 'flux2-vae.safetensors';
 const COMFY_SDXL_TIMEOUT_MS = 4 * 60 * 1000;
 const COMFY_Z_IMAGE_TIMEOUT_MS = 45 * 60 * 1000;
+const COMFY_ERNIE_IMAGE_TIMEOUT_MS = 45 * 60 * 1000;
 const COMFY_FLUX2_TIMEOUT_MS = 6 * 60 * 60 * 1000;
+const COMFY_NANO_BANANA_TIMEOUT_MS = 45 * 60 * 1000;
 const COMFY_TTS_TIMEOUT_MS = 45 * 60 * 1000;
+const COMFY_GEMINI_TEXT_TIMEOUT_MS = 45 * 60 * 1000;
 const WIDE_FRAME_WIDTH = 1344;
 const WIDE_FRAME_HEIGHT = 768;
 
-export type GenerationMode = 'mock' | 'mistral' | 'lmstudio';
+export type GenerationMode = 'mock' | 'mistral' | 'lmstudio' | 'comfygemini';
 export type ImageProvider = 'pollinations' | 'comfyui';
 
 export interface GenerationSettings {
@@ -31,12 +41,18 @@ export interface GenerationSettings {
   lmStudioModel: string;
   lmStudioDraftContextLength: number;
   lmStudioLargeContextLength: number;
+  comfyGeminiEndpoint: string;
+  comfyGeminiModel: string;
+  comfyGeminiThinkingLevel: string;
+  comfyGeminiMaxOutputTokens: number;
+  comfyGeminiApiKey: string;
 }
 
 export interface ImageGenerationSettings {
   provider: ImageProvider;
   comfyEndpoint: string;
   comfyCheckpoint: string;
+  comfyOrgApiKey: string;
 }
 
 export interface Flux2CharacterReference {
@@ -56,12 +72,18 @@ export const getDefaultGenerationSettings = (): GenerationSettings => ({
   lmStudioModel: LM_STUDIO_DEFAULT_MODEL,
   lmStudioDraftContextLength: LM_STUDIO_DEFAULT_DRAFT_CONTEXT_LENGTH,
   lmStudioLargeContextLength: LM_STUDIO_DEFAULT_LARGE_CONTEXT_LENGTH,
+  comfyGeminiEndpoint: COMFYUI_DEFAULT_ENDPOINT,
+  comfyGeminiModel: COMFY_GEMINI_DEFAULT_MODEL,
+  comfyGeminiThinkingLevel: COMFY_GEMINI_DEFAULT_THINKING_LEVEL,
+  comfyGeminiMaxOutputTokens: COMFY_GEMINI_DEFAULT_MAX_OUTPUT_TOKENS,
+  comfyGeminiApiKey: import.meta.env.VITE_COMFY_ORG_API_KEY?.trim() ?? '',
 });
 
 export const getDefaultImageGenerationSettings = (): ImageGenerationSettings => ({
   provider: 'pollinations',
   comfyEndpoint: COMFYUI_DEFAULT_ENDPOINT,
   comfyCheckpoint: COMFYUI_DEFAULT_CHECKPOINT,
+  comfyOrgApiKey: import.meta.env.VITE_COMFY_ORG_API_KEY?.trim() ?? '',
 });
 
 const getErrorMessage = (value: unknown) => {
@@ -71,6 +93,8 @@ const getErrorMessage = (value: unknown) => {
   const error = data.error;
 
   if (typeof data.message === 'string') return data.message;
+  if (typeof detail === 'string') return detail;
+  if (typeof error === 'string') return error;
   if (detail && typeof detail === 'object' && typeof (detail as Record<string, unknown>).message === 'string') {
     return (detail as Record<string, unknown>).message as string;
   }
@@ -83,6 +107,22 @@ const getErrorMessage = (value: unknown) => {
 const normalizeContent = (content: ChatApiResponse['choices'][number]['message']['content']) => {
   if (typeof content === 'string') return content.trim();
   return content.map((chunk) => chunk.text ?? '').join('').trim();
+};
+
+const getTextGenerationParameters = (request: GenerationRequest) => {
+  if (request.operation === 'chapter_topic') {
+    return {
+      temperature: 1.35,
+      top_p: 0.98,
+      presence_penalty: 0.35,
+      frequency_penalty: 0.15,
+    };
+  }
+
+  return {
+    temperature: 0.7,
+    top_p: 0.9,
+  };
 };
 
 const getLmStudioEndpoint = (value: string) => {
@@ -100,6 +140,20 @@ const getLmStudioBaseUrl = (value: string) => {
   if (normalized.endsWith('/v1')) return normalized.slice(0, -'/v1'.length);
   if (normalized.endsWith('/api/v1')) return normalized.slice(0, -'/api/v1'.length);
   return normalized;
+};
+
+const isComfyGeminiModel = (value: string): value is (typeof COMFY_GEMINI_MODELS)[number] =>
+  COMFY_GEMINI_MODELS.includes(value as (typeof COMFY_GEMINI_MODELS)[number]);
+
+const resolveComfyGeminiModel = (requestModel: string | undefined, settingsModel: string) => {
+  const candidates = [
+    requestModel?.trim(),
+    settingsModel.trim(),
+    COMFY_GEMINI_DEFAULT_MODEL,
+  ];
+
+  return candidates.find((candidate): candidate is (typeof COMFY_GEMINI_MODELS)[number] =>
+    Boolean(candidate && isComfyGeminiModel(candidate))) ?? COMFY_GEMINI_DEFAULT_MODEL;
 };
 
 const callMistralAPI = async (request: GenerationRequest, signal?: AbortSignal): Promise<string> => {
@@ -120,6 +174,7 @@ const callMistralAPI = async (request: GenerationRequest, signal?: AbortSignal):
         { role: 'system', content: request.systemPrompt },
         { role: 'user', content: request.prompt },
       ],
+      ...getTextGenerationParameters(request),
     }),
   });
 
@@ -149,7 +204,8 @@ const callLmStudioAPI = async (
   signal?: AbortSignal,
 ): Promise<string> => {
   const model = resolveLmStudioModel(settings.lmStudioModel, request);
-  await ensureLmStudioModelContext(model, settings, request.operation, signal);
+  await ensureLmStudioModelContext(model, settings, request, signal);
+  const generationParameters = getTextGenerationParameters(request);
   const response = await fetch(getLmStudioEndpoint(settings.lmStudioEndpoint), {
     method: 'POST',
     signal,
@@ -163,7 +219,7 @@ const callLmStudioAPI = async (
         { role: 'system', content: request.systemPrompt },
         { role: 'user', content: request.prompt },
       ],
-      temperature: 0.7,
+      ...generationParameters,
       stream: false,
     }),
   });
@@ -172,9 +228,13 @@ const callLmStudioAPI = async (
     let details = response.statusText;
     try {
       const payload: unknown = await response.json();
-      details = getErrorMessage(payload) || details;
+      details = getErrorMessage(payload) || JSON.stringify(payload);
     } catch {
-      // LM Studio can also return a plain text error.
+      try {
+        details = await response.text();
+      } catch {
+        // LM Studio can also return an empty plain text error.
+      }
     }
     throw new Error(`LM Studio вернул ошибку ${response.status}${details ? `: ${details}` : ''}`);
   }
@@ -190,20 +250,20 @@ const callLmStudioAPI = async (
 
 const operationRoleAliases: Record<string, string[]> = {
   scenario: ['scenario', 'writer', 'draft', 'chapter'],
-  editor: ['editor', 'edit', 'revision', 'narration_edit', 'brief_revision'],
+  editor: ['editor', 'edit', 'revision', 'narration_edit', 'story_structure_edit', 'brief_revision'],
   narration: ['narration', 'voice', 'tts', 'tts_cleanup'],
   memory: ['memory', 'summary', 'chapter_summary', 'season_memory', 'chapter_facts', 'character_memory'],
   dialogue: ['dialogue', 'dialog', 'character', 'scene_dialogue'],
-  research: ['research', 'topic', 'knowledge', 'chapter_topic', 'chapter_knowledge', 'chapter_material'],
+  research: ['research', 'topic', 'knowledge', 'chapter_topic', 'chapter_knowledge', 'season_skeleton', 'chapter_material'],
   details: ['details', 'heroes', 'locations', 'mood', 'system'],
   image_prompt: ['image_prompt', 'prompt', 'visual'],
 };
 
 const getOperationRole = (operation: GenerationRequest['operation']) => {
   if (operation === 'scenario') return 'scenario';
-  if (operation === 'narration_edit' || operation === 'brief_revision') return 'editor';
+  if (operation === 'narration_edit' || operation === 'story_structure_edit' || operation === 'brief_revision') return 'editor';
   if (operation === 'narration' || operation === 'tts_cleanup') return 'narration';
-  if (operation === 'chapter_topic' || operation === 'chapter_knowledge' || operation === 'chapter_material') return 'research';
+  if (operation === 'chapter_topic' || operation === 'chapter_knowledge' || operation === 'season_skeleton' || operation === 'chapter_material') return 'research';
   if (operation === 'chapter_summary' || operation === 'season_memory_update' || operation === 'chapter_facts' || operation === 'character_memory') return 'memory';
   if (operation === 'scene_dialogue') return 'dialogue';
   if (operation === 'heroes' || operation === 'locations' || operation === 'mood' || operation === 'system_inserts') return 'details';
@@ -244,8 +304,9 @@ export const generateText = (
   signal?: AbortSignal,
   settings = getDefaultGenerationSettings(),
 ): Promise<string> => {
-  if (settings.mode === 'mock') return createMockCompletion(request, signal);
+  if (settings.mode === 'mock') return createMockCompletion(request, signal).then((value) => value ?? '');
   if (settings.mode === 'lmstudio') return callLmStudioAPI(request, settings, signal);
+  if (settings.mode === 'comfygemini') return callComfyGeminiTextAPI(request, settings, signal);
   return callMistralAPI(request, signal);
 };
 
@@ -263,6 +324,35 @@ const wait = (milliseconds: number, signal?: AbortSignal) =>
   });
 
 const getComfyBaseUrl = (value: string) => (value.trim() || COMFYUI_DEFAULT_ENDPOINT).replace(/\/+$/, '');
+
+const getComfyFetchOptions = (options: RequestInit = {}): RequestInit => options;
+
+const createComfyPromptPayload = (
+  clientId: string,
+  workflow: unknown,
+  settings: { comfyOrgApiKey?: string; comfyGeminiApiKey?: string },
+) => {
+  const apiKey = getComfyOrgApiKey(settings);
+  return {
+    client_id: clientId,
+    prompt: workflow,
+    extra_data: {
+      comfy_usage_source: 'canva-story',
+      ...(apiKey ? { api_key_comfy_org: apiKey } : {}),
+    },
+  };
+};
+
+const getComfyOrgApiKey = (settings: { comfyOrgApiKey?: string; comfyGeminiApiKey?: string }) =>
+  (settings.comfyOrgApiKey ?? settings.comfyGeminiApiKey ?? '').trim()
+  || import.meta.env.VITE_COMFY_ORG_API_KEY?.trim()
+  || '';
+
+const isComfyAuthorizationError = (message: string) =>
+  /unauthorized|login first|authentication required|auth/i.test(message);
+
+const getComfyGeminiAuthMessage = () =>
+  'Gemini через ComfyUI требует Comfy.org API key. Вход в отдельной вкладке ComfyUI не передаётся в Canva Story API-запрос: вставьте ключ в поле Comfy.org API key в верхней панели Canva Story или переключите текстовый режим на LM Studio.';
 
 const readResponseDetails = async (response: Response) => {
   try {
@@ -302,11 +392,16 @@ const getComfyNodeErrorDetails = (value: unknown) => {
   return lines.join('; ');
 };
 
-const getComfyError = (action: string, response: Response, details: string) =>
-  `${action}: ${response.status}${details ? ` · ${details.slice(0, 600)}` : ''}`;
+const getComfyError = (action: string, response: Response, details: string) => {
+  const trimmedDetails = details.slice(0, 600);
+  const authHint = response.status === 401 || /unauthorized|login first|auth/i.test(details)
+    ? ' Для Comfy API-нод нужен Comfy.org API key: вставьте его в поле Comfy.org key в верхней панели Canva Story.'
+    : '';
+  return `${action}: ${response.status}${trimmedDetails ? ` · ${trimmedDetails}` : ''}${authHint}`;
+};
 
 const getComfyCheckpointNames = async (baseUrl: string, signal?: AbortSignal) => {
-  const response = await fetch(`${baseUrl}/object_info/CheckpointLoaderSimple`, { signal });
+  const response = await fetch(`${baseUrl}/object_info/CheckpointLoaderSimple`, getComfyFetchOptions({ signal }));
   if (!response.ok) return null;
   const data: unknown = await response.json();
   if (!data || typeof data !== 'object') return null;
@@ -439,6 +534,18 @@ const SDXL_NEGATIVE_PROMPTS: Record<ImagePromptKind, string> = {
     'foreground character',
     'close-up portrait',
   ].join(', '),
+  system_insert: [
+    'watermark',
+    'logo',
+    'blurry',
+    'low quality',
+    'messy layout',
+    'illegible letters',
+    'random symbols',
+    'crowded composition',
+    'photorealistic scene',
+    'human character',
+  ].join(', '),
 };
 
 const normalizeImagePromptKind = (promptKind: ImagePromptKind | string): ImagePromptKind => {
@@ -448,6 +555,7 @@ const normalizeImagePromptKind = (promptKind: ImagePromptKind | string): ImagePr
     || normalized === 'scene_characters'
     || normalized === 'character_asset'
     || normalized === 'location_asset'
+    || normalized === 'system_insert'
     || normalized === 'default'
   ) {
     return normalized;
@@ -610,6 +718,100 @@ const buildComfyZImageTurboWorkflow = (prompt: string, promptKind: ImagePromptKi
   };
 };
 
+const buildComfyErnieImageTurboWorkflow = (prompt: string, promptKind: ImagePromptKind) => {
+  const seed = Math.floor(Math.random() * 1_000_000_000);
+  const normalizedPromptKind = normalizeImagePromptKind(promptKind);
+  const isCharacterAsset = normalizedPromptKind === 'character_asset';
+  const width = isCharacterAsset ? 832 : WIDE_FRAME_WIDTH;
+  const height = isCharacterAsset ? 1216 : WIDE_FRAME_HEIGHT;
+
+  return {
+    '62': {
+      class_type: 'CLIPLoader',
+      inputs: {
+        clip_name: ERNIE_IMAGE_TEXT_ENCODER,
+        device: 'default',
+        type: 'flux2',
+      },
+    },
+    '63': {
+      class_type: 'VAELoader',
+      inputs: {
+        vae_name: ERNIE_IMAGE_VAE,
+      },
+    },
+    '65': {
+      class_type: 'VAEDecode',
+      inputs: {
+        samples: ['70', 0],
+        vae: ['63', 0],
+      },
+    },
+    '66': {
+      class_type: 'UNETLoader',
+      inputs: {
+        unet_name: ERNIE_IMAGE_TURBO_DIFFUSION_MODEL,
+        weight_dtype: 'default',
+      },
+    },
+    '67': {
+      class_type: 'CLIPTextEncode',
+      inputs: {
+        clip: ['62', 0],
+        text: prompt,
+      },
+    },
+    '70': {
+      class_type: 'KSampler',
+      inputs: {
+        cfg: 1,
+        denoise: 1,
+        latent_image: ['71', 0],
+        model: ['66', 0],
+        negative: ['91', 0],
+        positive: ['67', 0],
+        sampler_name: 'euler',
+        scheduler: 'simple',
+        seed,
+        steps: 8,
+      },
+    },
+    '71': {
+      class_type: 'EmptyFlux2LatentImage',
+      inputs: {
+        batch_size: 1,
+        height,
+        width,
+      },
+    },
+    '91': {
+      class_type: 'ConditioningZeroOut',
+      inputs: {
+        conditioning: ['67', 0],
+      },
+    },
+    '92': {
+      class_type: 'SaveImage',
+      inputs: {
+        filename_prefix: 'CANVA_STORY_ERNIE_IMAGE_TURBO',
+        images: ['65', 0],
+      },
+    },
+  };
+};
+
+const getComfyImagePipelineLabel = (pipeline: ImagePipeline) => {
+  if (pipeline === 'z_image_turbo') return 'Z-Image Turbo';
+  if (pipeline === 'ernie_image_turbo') return 'ERNIE Image Turbo';
+  return 'SDXL';
+};
+
+const getComfyImageTimeoutMs = (pipeline: ImagePipeline) => {
+  if (pipeline === 'sdxl') return COMFY_SDXL_TIMEOUT_MS;
+  if (pipeline === 'ernie_image_turbo') return COMFY_ERNIE_IMAGE_TIMEOUT_MS;
+  return COMFY_Z_IMAGE_TIMEOUT_MS;
+};
+
 interface ComfyPromptResponse {
   prompt_id?: string;
 }
@@ -626,6 +828,12 @@ interface ComfyAudioRef {
   type?: string;
 }
 
+interface ComfyTextFileRef {
+  filename: string;
+  subfolder?: string;
+  type?: string;
+}
+
 interface ComfyUploadResponse {
   name?: string;
   subfolder?: string;
@@ -633,7 +841,16 @@ interface ComfyUploadResponse {
 }
 
 interface ComfyHistoryEntry {
-  outputs?: Record<string, { images?: ComfyImageRef[]; audio?: ComfyAudioRef[]; audios?: ComfyAudioRef[] }>;
+  outputs?: Record<string, {
+    images?: ComfyImageRef[];
+    audio?: ComfyAudioRef[];
+    audios?: ComfyAudioRef[];
+    text?: unknown;
+    texts?: unknown;
+    string?: unknown;
+    strings?: unknown;
+    files?: unknown;
+  }>;
   status?: {
     status_str?: string;
     completed?: boolean;
@@ -662,6 +879,64 @@ const getAudioFromComfyHistory = (value: unknown): ComfyAudioRef | null => {
     for (const output of outputs) {
       const audio = output.audio?.[0] ?? output.audios?.[0];
       if (audio?.filename) return audio;
+    }
+  }
+  return null;
+};
+
+const extractComfyTextValue = (value: unknown): string => {
+  if (typeof value === 'string') return value.trim();
+  if (Array.isArray(value)) {
+    return value
+      .map((entry) => extractComfyTextValue(entry))
+      .filter(Boolean)
+      .join('\n')
+      .trim();
+  }
+  if (!value || typeof value !== 'object') return '';
+  const data = value as Record<string, unknown>;
+  return ['text', 'content', 'value', 'STRING', 'string']
+    .map((key) => extractComfyTextValue(data[key]))
+    .find(Boolean) ?? '';
+};
+
+const getComfyTextFileRef = (value: unknown): ComfyTextFileRef | null => {
+  if (Array.isArray(value)) {
+    for (const entry of value) {
+      const file = getComfyTextFileRef(entry);
+      if (file) return file;
+    }
+    return null;
+  }
+  if (!value || typeof value !== 'object') return null;
+  const data = value as Record<string, unknown>;
+  if (typeof data.filename === 'string') {
+    return {
+      filename: data.filename,
+      subfolder: typeof data.subfolder === 'string' ? data.subfolder : '',
+      type: typeof data.type === 'string' ? data.type : 'output',
+    };
+  }
+  for (const key of ['text', 'texts', 'files', 'file']) {
+    const file = getComfyTextFileRef(data[key]);
+    if (file) return file;
+  }
+  return null;
+};
+
+const getTextFromComfyHistory = (value: unknown): { text?: string; file?: ComfyTextFileRef } | null => {
+  if (!value || typeof value !== 'object') return null;
+  const entries = Object.values(value as Record<string, ComfyHistoryEntry>);
+  for (const entry of entries) {
+    const outputs = entry.outputs ? Object.values(entry.outputs) : [];
+    for (const output of outputs) {
+      const candidates = [output.text, output.texts, output.string, output.strings, output.files];
+      for (const candidate of candidates) {
+        const text = extractComfyTextValue(candidate);
+        if (text) return { text };
+        const file = getComfyTextFileRef(candidate);
+        if (file) return { file };
+      }
     }
   }
   return null;
@@ -699,7 +974,7 @@ const waitForComfyImage = async (
   const startedAt = Date.now();
   while (Date.now() - startedAt < timeoutMs) {
     await wait(1000, signal);
-    const historyResponse = await fetch(`${baseUrl}/history/${promptId}`, { signal });
+    const historyResponse = await fetch(`${baseUrl}/history/${promptId}`, getComfyFetchOptions({ signal }));
     if (!historyResponse.ok) continue;
     const history: unknown = await historyResponse.json();
     const image = getImageFromComfyHistory(history);
@@ -719,7 +994,7 @@ const waitForComfyAudio = async (
   const startedAt = Date.now();
   while (Date.now() - startedAt < timeoutMs) {
     await wait(2000, signal);
-    const historyResponse = await fetch(`${baseUrl}/history/${promptId}`, { signal });
+    const historyResponse = await fetch(`${baseUrl}/history/${promptId}`, getComfyFetchOptions({ signal }));
     if (!historyResponse.ok) continue;
     const history: unknown = await historyResponse.json();
     const audio = getAudioFromComfyHistory(history);
@@ -730,13 +1005,45 @@ const waitForComfyAudio = async (
   return null;
 };
 
+const waitForComfyText = async (
+  baseUrl: string,
+  promptId: string,
+  timeoutMs: number,
+  signal?: AbortSignal,
+) => {
+  const startedAt = Date.now();
+  while (Date.now() - startedAt < timeoutMs) {
+    await wait(1000, signal);
+    const historyResponse = await fetch(`${baseUrl}/history/${promptId}`, getComfyFetchOptions({ signal }));
+    if (!historyResponse.ok) continue;
+    const history: unknown = await historyResponse.json();
+    const result = getTextFromComfyHistory(history);
+    if (result?.text) return result.text;
+    if (result?.file) {
+      const params = new URLSearchParams({
+        filename: result.file.filename,
+        subfolder: result.file.subfolder ?? '',
+        type: result.file.type ?? 'output',
+      });
+      const viewResponse = await fetch(`${baseUrl}/view?${params.toString()}`, getComfyFetchOptions({ signal }));
+      if (viewResponse.ok) {
+        const text = (await viewResponse.text()).trim();
+        if (text) return text;
+      }
+    }
+    const failure = getComfyExecutionFailure(history);
+    if (failure) throw new Error(failure);
+  }
+  return null;
+};
+
 const freeComfyModels = async (baseUrl: string, signal?: AbortSignal) => {
-  const response = await fetch(`${baseUrl}/free`, {
+  const response = await fetch(`${baseUrl}/free`, getComfyFetchOptions({
     method: 'POST',
     signal,
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ free_memory: true, unload_models: true }),
-  });
+  }));
   if (!response.ok) throw new Error(`ComfyUI не выгрузил модели: ${response.status}`);
 };
 
@@ -759,7 +1066,7 @@ const buildComfyOmniVoiceDesignWorkflow = (
         steps: 32,
         guidance_scale: 2,
         t_shift: 0.1,
-        speed: 1,
+        speed: 0.9,
         duration: 0,
         device: 'auto',
         dtype: 'auto',
@@ -796,12 +1103,12 @@ export const generateComfyOmniVoiceDesignAudio = async (
       ? crypto.randomUUID()
       : `canva-story-omnivoice-${Date.now()}`;
 
-    const promptResponse = await fetch(`${baseUrl}/prompt`, {
+    const promptResponse = await fetch(`${baseUrl}/prompt`, getComfyFetchOptions({
       method: 'POST',
       signal,
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ client_id: clientId, prompt: workflow }),
-    });
+      body: JSON.stringify(createComfyPromptPayload(clientId, workflow, settings)),
+    }));
     if (!promptResponse.ok) {
       throw new Error(getComfyError('ComfyUI не принял OmniVoice workflow', promptResponse, await readResponseDetails(promptResponse)));
     }
@@ -816,7 +1123,7 @@ export const generateComfyOmniVoiceDesignAudio = async (
       subfolder: audio.subfolder ?? '',
       type: audio.type ?? 'temp',
     });
-    const viewResponse = await fetch(`${baseUrl}/view?${params.toString()}`, { signal });
+    const viewResponse = await fetch(`${baseUrl}/view?${params.toString()}`, getComfyFetchOptions({ signal }));
     if (!viewResponse.ok) {
       throw new Error(getComfyError('ComfyUI не отдал готовое OmniVoice аудио', viewResponse, await readResponseDetails(viewResponse)));
     }
@@ -831,14 +1138,105 @@ export const generateComfyOmniVoiceDesignAudio = async (
   }
 };
 
+const buildComfyGeminiTextWorkflow = (
+  request: GenerationRequest,
+  settings: GenerationSettings,
+) => {
+  // GeminiNodeV2 uses Comfy's DynamicCombo input. Keep nested model options as
+  // dotted keys (`model.temperature`, etc.), and only send a real Gemini combo value.
+  // Invalid names like `mistral-small-latest` make Comfy drop the whole `model` group.
+  const parameters = getTextGenerationParameters(request);
+  const seed = Math.floor(Math.random() * 2_000_000_000);
+  const model = resolveComfyGeminiModel(request.model, settings.comfyGeminiModel);
+  const maxOutputTokens = Math.max(
+    512,
+    Math.floor(settings.comfyGeminiMaxOutputTokens || COMFY_GEMINI_DEFAULT_MAX_OUTPUT_TOKENS),
+  );
+  const thinkingLevel = settings.comfyGeminiThinkingLevel.trim() || COMFY_GEMINI_DEFAULT_THINKING_LEVEL;
+  return {
+    '1': {
+      class_type: 'GeminiNodeV2',
+      inputs: {
+        prompt: request.prompt,
+        model,
+        'model.thinking_level': thinkingLevel,
+        'model.temperature': parameters.temperature,
+        'model.top_p': parameters.top_p,
+        'model.max_output_tokens': maxOutputTokens,
+        seed,
+        system_prompt: request.systemPrompt,
+      },
+    },
+    '2': {
+      class_type: 'SaveText',
+      inputs: {
+        text: ['1', 0],
+        filename_prefix: 'Text/CANVA_STORY_GEMINI',
+        format: 'txt',
+      },
+    },
+  };
+};
+
+const callComfyGeminiTextAPI = async (
+  request: GenerationRequest,
+  settings: GenerationSettings,
+  signal?: AbortSignal,
+): Promise<string> => {
+  const baseUrl = getComfyBaseUrl(settings.comfyGeminiEndpoint);
+  if (!getComfyOrgApiKey(settings)) {
+    throw new Error(getComfyGeminiAuthMessage());
+  }
+  try {
+    const runWorkflow = async () => {
+      const clientId = typeof crypto.randomUUID === 'function'
+        ? crypto.randomUUID()
+        : `canva-story-gemini-${Date.now()}`;
+      const workflow = buildComfyGeminiTextWorkflow(request, settings);
+      const response = await fetch(`${baseUrl}/prompt`, getComfyFetchOptions({
+        method: 'POST',
+        signal,
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(createComfyPromptPayload(clientId, workflow, settings)),
+      }));
+      if (response.ok) return response;
+      const details = await readResponseDetails(response);
+      throw new Error(getComfyError('ComfyUI не принял Gemini workflow', response, details));
+    };
+
+    const readWorkflowResult = async (promptResponse: Response) => {
+      const promptData: ComfyPromptResponse = await promptResponse.json();
+      if (!promptData.prompt_id) throw new Error('ComfyUI не вернул prompt_id для Gemini workflow.');
+
+      const text = await waitForComfyText(baseUrl, promptData.prompt_id, COMFY_GEMINI_TEXT_TIMEOUT_MS, signal);
+      if (!text) throw new Error('Gemini в ComfyUI не вернул текст за 45 минут. Проверьте окно ComfyUI и папку output/Text.');
+      return text;
+    };
+
+    return await readWorkflowResult(await runWorkflow());
+  } catch (error) {
+    if (error instanceof DOMException && error.name === 'AbortError') throw error;
+    if (error instanceof TypeError) {
+      throw new Error(`Не удалось подключиться к ComfyUI по адресу ${baseUrl}. Проверьте, что ComfyUI запущен, endpoint указан верно и разрешён CORS (--enable-cors-header).`);
+    }
+    if (error instanceof Error && isComfyAuthorizationError(error.message)) {
+      throw new Error(getComfyGeminiAuthMessage());
+    }
+    throw error;
+  }
+};
+
 interface LmStudioModelEntry {
   type?: string;
   key?: string;
   id?: string;
   model_key?: string;
   display_name?: string;
+  params_string?: string;
+  paramsString?: string;
   selected_variant?: string;
   max_context_length?: number;
+  maxContextLength?: number;
   loaded_instances?: Array<{
     id?: string;
     config?: {
@@ -916,19 +1314,38 @@ const clampContextLength = (value: number, fallback: number) => {
   return Math.max(1024, Math.floor(value));
 };
 
+const roundContextLength = (value: number) =>
+  Math.ceil(value / 1024) * 1024;
+
+const getOperationOutputReserve = (request: GenerationRequest) => {
+  if (request.operation.endsWith('_prompt')) return 1536;
+  if (request.operation === 'chapter_summary' || request.operation === 'chapter_facts') return 3072;
+  if (request.operation === 'scenario' || request.operation === 'chapter_material') {
+    return Math.max(3072, (request.sceneCount ?? 8) * 640);
+  }
+  if (request.operation === 'chapter_knowledge' || request.operation === 'chapter_topic' || request.operation === 'season_skeleton') return 4096;
+  return 2048;
+};
+
+const estimateLmStudioContextLength = (request: GenerationRequest, draftContext: number, largeContext: number) => {
+  const sourceText = `${request.systemPrompt}\n\n${request.prompt}`;
+  const estimatedInputTokens = Math.ceil(sourceText.length / 3);
+  const target = estimatedInputTokens + getOperationOutputReserve(request) + 512;
+  return Math.min(largeContext, Math.max(draftContext, roundContextLength(target)));
+};
+
 const getTargetLmStudioContextLength = (
   model: LmStudioModelEntry,
   settings: GenerationSettings,
-  operation?: GenerationRequest['operation'],
+  request: GenerationRequest,
 ) => {
   const draftContext = clampContextLength(settings.lmStudioDraftContextLength, LM_STUDIO_DEFAULT_DRAFT_CONTEXT_LENGTH);
   const largeContext = clampContextLength(settings.lmStudioLargeContextLength, LM_STUDIO_DEFAULT_LARGE_CONTEXT_LENGTH);
-  const maxContext = typeof model.max_context_length === 'number' && model.max_context_length > 0
-    ? model.max_context_length
+  const declaredMaxContext = model.max_context_length ?? model.maxContextLength;
+  const maxContext = typeof declaredMaxContext === 'number' && declaredMaxContext > 0
+    ? declaredMaxContext
     : largeContext;
-  if (operation?.endsWith('_prompt')) return Math.min(draftContext, maxContext);
-  const target = maxContext >= largeContext ? largeContext : draftContext;
-  return Math.min(target, maxContext);
+  return Math.min(estimateLmStudioContextLength(request, draftContext, largeContext), maxContext);
 };
 
 const unloadLmStudioInstances = async (baseUrl: string, instanceIds: string[], signal?: AbortSignal) => {
@@ -942,6 +1359,13 @@ const unloadLmStudioInstances = async (baseUrl: string, instanceIds: string[], s
     if (!response.ok) throw new Error(`LM Studio не выгрузил ${instanceId}: ${response.status}`);
   }));
 };
+
+const getLoadedLmStudioInstanceIds = (models: LmStudioModelEntry[], predicate: (model: LmStudioModelEntry) => boolean) =>
+  models
+    .filter((model) => model.type !== 'embedding' && predicate(model))
+    .flatMap((model) => model.loaded_instances ?? [])
+    .map((instance) => instance.id)
+    .filter((id): id is string => Boolean(id));
 
 const readLmStudioErrorDetails = async (response: Response) => {
   try {
@@ -999,7 +1423,7 @@ const loadLmStudioModelWithContext = async (
 const ensureLmStudioModelContext = async (
   modelName: string,
   settings: GenerationSettings,
-  operation?: GenerationRequest['operation'],
+  request: GenerationRequest,
   signal?: AbortSignal,
 ) => {
   const baseUrl = getLmStudioBaseUrl(settings.lmStudioEndpoint);
@@ -1007,10 +1431,18 @@ const ensureLmStudioModelContext = async (
   const model = findLmStudioModel(models, modelName);
   if (!model) return;
 
-  const targetContext = getTargetLmStudioContextLength(model, settings, operation);
+  const targetContext = getTargetLmStudioContextLength(model, settings, request);
+  const otherInstanceIds = getLoadedLmStudioInstanceIds(models, (candidate) => candidate !== model);
+  if (otherInstanceIds.length > 0) {
+    await unloadLmStudioInstances(baseUrl, otherInstanceIds, signal);
+  }
+
   const loadedInstances = model.loaded_instances ?? [];
-  const hasGoodInstance = loadedInstances.some((instance) =>
-    (instance.config?.context_length ?? 0) >= targetContext);
+  const hasGoodInstance = loadedInstances.some((instance) => {
+    const loadedContext = instance.config?.context_length ?? 0;
+    if (loadedContext < targetContext) return false;
+    return targetContext > settings.lmStudioDraftContextLength || loadedContext <= targetContext * 2;
+  });
   if (hasGoodInstance) return;
   if (loadedInstances.length > 0 && lmStudioLoadSupportsContextLength === false) return;
 
@@ -1043,24 +1475,26 @@ const generateComfyImage = async (
 ) => {
   const baseUrl = getComfyBaseUrl(settings.comfyEndpoint);
   try {
-    if (pipeline !== 'sdxl' && pipeline !== 'z_image_turbo') {
-      throw new Error('Этот генератор ожидает pipeline SDXL или Z-Image Turbo.');
+    if (pipeline !== 'sdxl' && pipeline !== 'z_image_turbo' && pipeline !== 'ernie_image_turbo') {
+      throw new Error('Этот генератор ожидает pipeline SDXL, Z-Image Turbo или ERNIE Image Turbo.');
     }
     const workflow = pipeline === 'sdxl'
       ? buildComfySdxlWorkflow(prompt, await resolveComfyCheckpoint(baseUrl, settings.comfyCheckpoint, signal), promptKind)
-      : buildComfyZImageTurboWorkflow(prompt, promptKind);
+      : pipeline === 'ernie_image_turbo'
+        ? buildComfyErnieImageTurboWorkflow(prompt, promptKind)
+        : buildComfyZImageTurboWorkflow(prompt, promptKind);
     const clientId = typeof crypto.randomUUID === 'function'
       ? crypto.randomUUID()
       : `canva-story-${Date.now()}`;
 
-    const promptResponse = await fetch(`${baseUrl}/prompt`, {
+    const promptResponse = await fetch(`${baseUrl}/prompt`, getComfyFetchOptions({
       method: 'POST',
       signal,
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ client_id: clientId, prompt: workflow }),
-    });
+      body: JSON.stringify(createComfyPromptPayload(clientId, workflow, settings)),
+    }));
     if (!promptResponse.ok) {
-      throw new Error(getComfyError(`ComfyUI не принял ${pipeline === 'sdxl' ? 'SDXL' : 'Z-Image Turbo'} workflow`, promptResponse, await readResponseDetails(promptResponse)));
+      throw new Error(getComfyError(`ComfyUI не принял ${getComfyImagePipelineLabel(pipeline)} workflow`, promptResponse, await readResponseDetails(promptResponse)));
     }
     const promptData: ComfyPromptResponse = await promptResponse.json();
     if (!promptData.prompt_id) throw new Error('ComfyUI не вернул prompt_id. Проверьте workflow в консоли ComfyUI.');
@@ -1068,7 +1502,7 @@ const generateComfyImage = async (
     const image = await waitForComfyImage(
       baseUrl,
       promptData.prompt_id,
-      pipeline === 'sdxl' ? COMFY_SDXL_TIMEOUT_MS : COMFY_Z_IMAGE_TIMEOUT_MS,
+      getComfyImageTimeoutMs(pipeline),
       signal,
     );
     if (!image) throw new Error('ComfyUI не вернул изображение за отведённое время. Проверьте, не упал ли workflow в окне ComfyUI.');
@@ -1078,7 +1512,7 @@ const generateComfyImage = async (
       subfolder: image.subfolder ?? '',
       type: image.type ?? 'output',
     });
-    const viewResponse = await fetch(`${baseUrl}/view?${params.toString()}`, { signal });
+    const viewResponse = await fetch(`${baseUrl}/view?${params.toString()}`, getComfyFetchOptions({ signal }));
     if (!viewResponse.ok) {
       throw new Error(getComfyError('ComfyUI не отдал готовое изображение', viewResponse, await readResponseDetails(viewResponse)));
     }
@@ -1109,11 +1543,11 @@ const uploadComfyInputImage = async (
   formData.append('type', 'input');
   formData.append('overwrite', 'true');
 
-  const response = await fetch(`${baseUrl}/upload/image`, {
+  const response = await fetch(`${baseUrl}/upload/image`, getComfyFetchOptions({
     method: 'POST',
     signal,
     body: formData,
-  });
+  }));
   if (!response.ok) {
     throw new Error(getComfyError('ComfyUI не принял reference image', response, await readResponseDetails(response)));
   }
@@ -1420,6 +1854,59 @@ const buildComfyFlux2ComposeWorkflow = (
   };
 };
 
+const buildComfyNanoBanana2LiteComposeWorkflow = (
+  prompt: string,
+  backgroundImageName: string,
+  characterImageName: string,
+) => {
+  const seed = Math.floor(Math.random() * 1_000_000_000_000_000);
+  return {
+    '3': {
+      class_type: 'GeminiNanoBanana2V2',
+      inputs: {
+        prompt,
+        model: 'Nano Banana 2 Lite',
+        'model.aspect_ratio': '16:9',
+        'model.resolution': '1K',
+        'model.thinking_level': 'MINIMAL',
+        seed,
+        response_modalities: 'IMAGE',
+        system_prompt: [
+          'You are an expert image-generation engine. You must ALWAYS produce an image.',
+          'Interpret all user input as literal visual directives for image composition.',
+          'Create the final composed story frame from the supplied reference images and prompt.',
+        ].join('\n'),
+        temperature: 1,
+        top_p: 0.95,
+        'model.images.image_1': ['8', 0],
+        'model.images.image_2': ['10', 0],
+      },
+    },
+    '4': {
+      class_type: 'SaveImageAdvanced',
+      inputs: {
+        filename_prefix: 'CANVA_STORY_NANO_BANANA_2_LITE',
+        format: 'png',
+        'format.bit_depth': '8-bit',
+        'format.input_color_space': 'sRGB',
+        images: ['3', 0],
+      },
+    },
+    '8': {
+      class_type: 'LoadImage',
+      inputs: {
+        image: backgroundImageName,
+      },
+    },
+    '10': {
+      class_type: 'LoadImage',
+      inputs: {
+        image: characterImageName,
+      },
+    },
+  };
+};
+
 export const generateComfyFlux2ComposeImage = async (
   prompt: string,
   backgroundImageUrl: string,
@@ -1449,12 +1936,12 @@ export const generateComfyFlux2ComposeImage = async (
       ? crypto.randomUUID()
       : `canva-story-flux2-${Date.now()}`;
 
-    const promptResponse = await fetch(`${baseUrl}/prompt`, {
+    const promptResponse = await fetch(`${baseUrl}/prompt`, getComfyFetchOptions({
       method: 'POST',
       signal,
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ client_id: clientId, prompt: workflow }),
-    });
+      body: JSON.stringify(createComfyPromptPayload(clientId, workflow, settings)),
+    }));
     if (!promptResponse.ok) {
       throw new Error(getComfyError('ComfyUI не принял Flux2 workflow', promptResponse, await readResponseDetails(promptResponse)));
     }
@@ -1469,9 +1956,75 @@ export const generateComfyFlux2ComposeImage = async (
       subfolder: image.subfolder ?? '',
       type: image.type ?? 'output',
     });
-    const viewResponse = await fetch(`${baseUrl}/view?${params.toString()}`, { signal });
+    const viewResponse = await fetch(`${baseUrl}/view?${params.toString()}`, getComfyFetchOptions({ signal }));
     if (!viewResponse.ok) {
       throw new Error(getComfyError('ComfyUI не отдал готовое Flux2 изображение', viewResponse, await readResponseDetails(viewResponse)));
+    }
+
+    const blob = await viewResponse.blob();
+    return URL.createObjectURL(blob);
+  } catch (error) {
+    if (error instanceof DOMException && error.name === 'AbortError') throw error;
+    if (error instanceof TypeError) {
+      throw new Error(`Не удалось подключиться к ComfyUI по адресу ${baseUrl}. Проверьте ComfyUI и CORS.`);
+    }
+    throw error;
+  } finally {
+    if (referenceBoardUrl) URL.revokeObjectURL(referenceBoardUrl);
+  }
+};
+
+export const generateComfyNanoBanana2LiteComposeImage = async (
+  prompt: string,
+  backgroundImageUrl: string,
+  characterReferences: Flux2CharacterReference[] | string,
+  settings: ImageGenerationSettings,
+  signal?: AbortSignal,
+) => {
+  const baseUrl = getComfyBaseUrl(settings.comfyEndpoint);
+  let referenceBoardUrl: string | null = null;
+  try {
+    if (settings.provider !== 'comfyui') throw new Error('Nano Banana compose работает только через ComfyUI.');
+    const normalizedReferences = Array.isArray(characterReferences)
+      ? characterReferences.filter((reference) => reference.imageUrl)
+      : [{ imageUrl: characterReferences, label: 'character reference' }];
+    if (normalizedReferences.length === 0) throw new Error('Для Nano Banana нужен хотя бы один character reference.');
+    const characterImageUrl = normalizedReferences.length === 1
+      ? normalizedReferences[0].imageUrl
+      : await createCharacterReferenceBoard(normalizedReferences, signal);
+    if (normalizedReferences.length > 1) referenceBoardUrl = characterImageUrl;
+    const [backgroundImageName, characterImageName] = await Promise.all([
+      uploadComfyInputImage(baseUrl, backgroundImageUrl, 'canva-story-bg', signal),
+      uploadComfyInputImage(baseUrl, characterImageUrl, 'canva-story-ref', signal),
+    ]);
+    const workflow = buildComfyNanoBanana2LiteComposeWorkflow(prompt, backgroundImageName, characterImageName);
+    const clientId = typeof crypto.randomUUID === 'function'
+      ? crypto.randomUUID()
+      : `canva-story-nano-banana-${Date.now()}`;
+
+    const promptResponse = await fetch(`${baseUrl}/prompt`, getComfyFetchOptions({
+      method: 'POST',
+      signal,
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(createComfyPromptPayload(clientId, workflow, settings)),
+    }));
+    if (!promptResponse.ok) {
+      throw new Error(getComfyError('ComfyUI не принял Nano Banana workflow', promptResponse, await readResponseDetails(promptResponse)));
+    }
+    const promptData: ComfyPromptResponse = await promptResponse.json();
+    if (!promptData.prompt_id) throw new Error('ComfyUI не вернул prompt_id для Nano Banana workflow.');
+
+    const image = await waitForComfyImage(baseUrl, promptData.prompt_id, COMFY_NANO_BANANA_TIMEOUT_MS, signal);
+    if (!image) throw new Error('Nano Banana не вернул изображение за 45 минут. Проверьте очередь ComfyUI и output.');
+
+    const params = new URLSearchParams({
+      filename: image.filename,
+      subfolder: image.subfolder ?? '',
+      type: image.type ?? 'output',
+    });
+    const viewResponse = await fetch(`${baseUrl}/view?${params.toString()}`, getComfyFetchOptions({ signal }));
+    if (!viewResponse.ok) {
+      throw new Error(getComfyError('ComfyUI не отдал готовое Nano Banana изображение', viewResponse, await readResponseDetails(viewResponse)));
     }
 
     const blob = await viewResponse.blob();

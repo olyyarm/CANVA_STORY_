@@ -1,5 +1,5 @@
 import { Dispatch, SetStateAction, useCallback, useEffect, useRef } from 'react';
-import { NodesState } from '../types';
+import { NodeData, NodesState } from '../types';
 
 interface UseDraggableNodesProps {
   nodes: NodesState;
@@ -18,6 +18,43 @@ type Interaction = {
   startWidth: number;
   startHeight: number;
 };
+
+const getMinimumNodeSize = (node: NodeData) => ({
+  width: node.nodeType === 'pollinations_image'
+    ? 220
+    : node.nodeType === 'chapter_timeline'
+      ? 760
+      : node.nodeType === 'prompt_node'
+        ? 540
+      : node.nodeType === 'split_node'
+        ? 420
+      : node.nodeType === 'split_item'
+        ? 420
+      : node.nodeType === 'character_registry'
+        ? 420
+      : node.nodeType === 'script_detail'
+        ? 360
+      : node.nodeType === 'scene'
+        ? 400
+        : 260,
+  height: node.nodeType === 'pollinations_image'
+    ? 160
+    : node.nodeType === 'chapter_timeline'
+      ? 420
+      : node.nodeType === 'prompt_node'
+        ? 760
+      : node.nodeType === 'split_node'
+        ? 340
+      : node.nodeType === 'split_item'
+        ? 430
+      : node.nodeType === 'character_registry'
+        ? 360
+      : node.nodeType === 'script_detail'
+        ? node.label === 'Закадр' || node.label === 'Системные вставки' ? 460 : 360
+      : node.nodeType === 'scene'
+        ? 520
+        : 180,
+});
 
 export const useDraggableNodes = ({ nodes, setNodes, zoom, onSelect }: UseDraggableNodesProps) => {
   const interactionRef = useRef<Interaction | null>(null);
@@ -39,6 +76,7 @@ export const useDraggableNodes = ({ nodes, setNodes, zoom, onSelect }: UseDragga
     if (event.button !== 0) return;
     const node = nodesRef.current[nodeId];
     if (!node) return;
+    const minimumNodeSize = getMinimumNodeSize(node);
     event.preventDefault();
     event.stopPropagation();
     onSelect(nodeId);
@@ -49,8 +87,8 @@ export const useDraggableNodes = ({ nodes, setNodes, zoom, onSelect }: UseDragga
       startClientY: event.clientY,
       startX: node.x,
       startY: node.y,
-      startWidth: node.width ?? 300,
-      startHeight: node.height ?? 220,
+      startWidth: Math.max(node.width ?? 300, minimumNodeSize.width),
+      startHeight: Math.max(node.height ?? 220, minimumNodeSize.height),
     };
   }, [onSelect]);
 
@@ -89,8 +127,7 @@ export const useDraggableNodes = ({ nodes, setNodes, zoom, onSelect }: UseDragga
           };
         }
         const isChapterTimeline = node.nodeType === 'chapter_timeline';
-        const minWidth = node.nodeType === 'pollinations_image' ? 220 : isChapterTimeline ? 760 : 260;
-        const minHeight = node.nodeType === 'pollinations_image' ? 160 : isChapterTimeline ? 420 : 180;
+        const { width: minWidth, height: minHeight } = getMinimumNodeSize(node);
         const maxWidth = isChapterTimeline ? 2400 : 920;
         const maxHeight = isChapterTimeline ? 2400 : 760;
         return {

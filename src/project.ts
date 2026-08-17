@@ -1,13 +1,33 @@
 import {
   DEFAULT_CHAPTER_MATERIAL,
   DEFAULT_CHAPTER_KNOWLEDGE,
+  DEFAULT_CHAPTER_PLANNER,
   DEFAULT_CHAPTER_TOPIC,
+  DEFAULT_FANTASY_STYLE_BIBLE,
   DEFAULT_FORMAT_BIBLE,
   DEFAULT_KNOWLEDGE_BASE,
   DEFAULT_PDF_SOURCE,
   DEFAULT_SCENE_COUNT,
   DEFAULT_SEASON_MEMORY,
+  DEFAULT_SEASON_SKELETON,
+  CHAPTER_KNOWLEDGE_SYSTEM_PROMPT,
+  CHAPTER_MATERIAL_SYSTEM_PROMPT,
+  CHAPTER_PLANNER_SYSTEM_PROMPT,
+  CHAPTER_TOPIC_SYSTEM_PROMPT,
+  CHARACTER_MEMORY_SYSTEM_PROMPT,
+  CHAPTER_FACTS_SYSTEM_PROMPT,
+  CHAPTER_SUMMARY_SYSTEM_PROMPT,
+  LOCATION_DETAIL_SYSTEM_PROMPT,
   MISTRAL_MODELS,
+  MOOD_DETAIL_SYSTEM_PROMPT,
+  NARRATION_DETAIL_SYSTEM_PROMPT,
+  SCENARIO_SYSTEM_PROMPT,
+  SCENE_DIALOGUE_SYSTEM_PROMPT,
+  SEASON_MEMORY_UPDATE_SYSTEM_PROMPT,
+  SEASON_SKELETON_SYSTEM_PROMPT,
+  STRICT_HERO_DETAIL_SYSTEM_PROMPT,
+  SYSTEM_INSERTS_DETAIL_SYSTEM_PROMPT,
+  ISEKAI_PROLOG_REQUIREMENT,
 } from './constants';
 import {
   ImagePipeline,
@@ -28,12 +48,24 @@ const nodeTypes = new Set<NodeType>([
   'script_output',
   'association',
   'script_detail',
+  'prompt_node',
+  'split_node',
+  'split_item',
+  'character_registry',
   'pollinations_image',
   'chapter_timeline',
+  'chapter_collector',
   'video_output',
 ]);
 
-const imagePipelines = new Set<ImagePipeline>(['sdxl', 'z_image_turbo', 'flux2_compose', 'flux2_turbo_compose']);
+const imagePipelines = new Set<ImagePipeline>([
+  'sdxl',
+  'z_image_turbo',
+  'ernie_image_turbo',
+  'flux2_compose',
+  'flux2_turbo_compose',
+  'nano_banana_2_lite_compose',
+]);
 
 const newId = () => {
   if (typeof crypto !== 'undefined' && 'randomUUID' in crypto) return crypto.randomUUID();
@@ -45,6 +77,91 @@ const isRecord = (value: unknown): value is Record<string, unknown> =>
 
 const finiteNumber = (value: unknown, fallback: number) =>
   typeof value === 'number' && Number.isFinite(value) ? value : fallback;
+
+const getStoredImagePipeline = (value: Record<string, unknown>) => {
+  const metadata = isRecord(value.metadata) ? value.metadata : {};
+  const directPipeline = imagePipelines.has(value.imagePipeline as ImagePipeline)
+    ? value.imagePipeline as ImagePipeline
+    : undefined;
+  const metadataPipeline = imagePipelines.has(metadata.imagePipeline as ImagePipeline)
+    ? metadata.imagePipeline as ImagePipeline
+    : undefined;
+  return value.nodeType === 'pollinations_image'
+    ? metadataPipeline ?? directPipeline
+    : directPipeline ?? metadataPipeline;
+};
+
+const getDefaultSystemPrompt = (value: Record<string, unknown>) => {
+  const metadata = isRecord(value.metadata) ? value.metadata : {};
+  const sourceKind = typeof metadata.sourceKind === 'string' ? metadata.sourceKind : '';
+  const label = typeof value.label === 'string' ? value.label : '';
+
+  if (sourceKind === 'pdf_source') return CHAPTER_TOPIC_SYSTEM_PROMPT;
+  if (sourceKind === 'chapter_planner') return CHAPTER_PLANNER_SYSTEM_PROMPT;
+  if (sourceKind === 'chapter_plan') return CHAPTER_MATERIAL_SYSTEM_PROMPT;
+  if (sourceKind === 'chapter_topic') return CHAPTER_KNOWLEDGE_SYSTEM_PROMPT;
+  if (sourceKind === 'chapter_knowledge') return SEASON_SKELETON_SYSTEM_PROMPT;
+  if (sourceKind === 'season_skeleton') return CHAPTER_MATERIAL_SYSTEM_PROMPT;
+  if (sourceKind === 'chapter_material') return SCENARIO_SYSTEM_PROMPT;
+  if (sourceKind === 'season_memory') return SEASON_MEMORY_UPDATE_SYSTEM_PROMPT;
+  if (sourceKind === 'character_memory') return CHARACTER_MEMORY_SYSTEM_PROMPT;
+  if (sourceKind === 'chapter_facts') return CHAPTER_FACTS_SYSTEM_PROMPT;
+  if (sourceKind === 'chapter_summary') return CHAPTER_SUMMARY_SYSTEM_PROMPT;
+  if (sourceKind === 'scene_dialogue') return SCENE_DIALOGUE_SYSTEM_PROMPT;
+  if (value.nodeType === 'prompt_node') return 'Ты — универсальная LLM-нода. Выполни пользовательский шаблон, используя входной текст и подключённый контекст. Верни только полезный результат без пояснений о процессе.';
+  if (value.nodeType === 'script_input') return SCENARIO_SYSTEM_PROMPT;
+  if (value.nodeType === 'script_output') return SCENARIO_SYSTEM_PROMPT;
+  if (value.nodeType === 'scene') return SCENE_DIALOGUE_SYSTEM_PROMPT;
+  if (value.nodeType === 'script_detail' && label === 'Герои') return STRICT_HERO_DETAIL_SYSTEM_PROMPT;
+  if (value.nodeType === 'script_detail' && label === 'Локации') return LOCATION_DETAIL_SYSTEM_PROMPT;
+  if (value.nodeType === 'script_detail' && label === 'Настроение') return MOOD_DETAIL_SYSTEM_PROMPT;
+  if (value.nodeType === 'script_detail' && label === 'Закадр') return NARRATION_DETAIL_SYSTEM_PROMPT;
+  if (value.nodeType === 'script_detail' && label === 'Системные вставки') return SYSTEM_INSERTS_DETAIL_SYSTEM_PROMPT;
+  return undefined;
+};
+
+const getStoredSystemPrompt = (value: Record<string, unknown>) => {
+  const systemPrompt = typeof value.systemPrompt === 'string'
+    ? value.systemPrompt
+    : getDefaultSystemPrompt(value);
+  return systemPrompt
+    ?.replace(ISEKAI_PROLOG_REQUIREMENT, '')
+    .replace(/\n{3,}/gu, '\n\n')
+    .trim();
+};
+
+const ensureManagedPromptSnippetNodes = (nodes: NodesState): NodesState => {
+  const hasIsekaiSnippet = Object.values(nodes).some((node) =>
+    node.nodeType === 'script_detail'
+    && node.metadata?.sourceKind === 'system_prompt_snippet'
+    && node.metadata?.promptSnippetKey === 'isekai_prolog');
+  if (hasIsekaiSnippet) return nodes;
+
+  const parentId = nodes.formatBibleNode ? 'formatBibleNode' : undefined;
+  const anchor = parentId ? nodes[parentId] : Object.values(nodes)[0];
+  return {
+    ...nodes,
+    systemPromptSnippetIsekaiNode: {
+      nodeType: 'script_detail',
+      x: (anchor?.x ?? 40) + 470,
+      y: (anchor?.y ?? 40) + 340,
+      label: 'Системное правило · исекай-пролог',
+      width: 460,
+      height: 420,
+      isGenerated: true,
+      level: 0,
+      parentId,
+      inputValue: ISEKAI_PROLOG_REQUIREMENT,
+      statusMessage: 'Подключено к: зерно, планировщик и материал глав.',
+      metadata: {
+        sourceKind: 'system_prompt_snippet',
+        promptSnippetKey: 'isekai_prolog',
+        appliesTo: 'pdf_source,chapter_topic,chapter_planner,chapter_plan,chapter_material',
+        enabled: true,
+      },
+    },
+  };
+};
 
 export const createStarterNodes = (): NodesState => ({
   ideaNode: {
@@ -111,6 +228,40 @@ export const createStarterNodes = (): NodesState => ({
       sourceKind: 'knowledge_base',
     },
   },
+  fantasyStyleBibleNode: {
+    nodeType: 'script_detail',
+    x: 1360,
+    y: 40,
+    label: 'Библия фэнтези-стиля',
+    width: 450,
+    height: 360,
+    isGenerated: true,
+    level: 0,
+    parentId: 'formatBibleNode',
+    inputValue: DEFAULT_FANTASY_STYLE_BIBLE,
+    metadata: {
+      sourceKind: 'fantasy_style_bible',
+    },
+  },
+  systemPromptSnippetIsekaiNode: {
+    nodeType: 'script_detail',
+    x: 1820,
+    y: 40,
+    label: 'Системное правило · исекай-пролог',
+    width: 460,
+    height: 420,
+    isGenerated: true,
+    level: 0,
+    parentId: 'formatBibleNode',
+    inputValue: ISEKAI_PROLOG_REQUIREMENT,
+    statusMessage: 'Подключено к: зерно, планировщик и материал глав.',
+    metadata: {
+      sourceKind: 'system_prompt_snippet',
+      promptSnippetKey: 'isekai_prolog',
+      appliesTo: 'pdf_source,chapter_topic,chapter_planner,chapter_plan,chapter_material',
+      enabled: true,
+    },
+  },
   seasonMemoryNode: {
     nodeType: 'script_detail',
     x: 480,
@@ -137,6 +288,7 @@ export const createStarterNodes = (): NodesState => ({
     level: 0,
     parentId: 'knowledgeBaseNode',
     inputValue: DEFAULT_PDF_SOURCE,
+    systemPrompt: CHAPTER_TOPIC_SYSTEM_PROMPT,
     selectedModel: MISTRAL_MODELS[0],
     metadata: {
       sourceKind: 'pdf_source',
@@ -146,13 +298,14 @@ export const createStarterNodes = (): NodesState => ({
     nodeType: 'script_detail',
     x: 1370,
     y: 370,
-    label: 'Тема главы',
+    label: 'Зерно истории',
     width: 430,
     height: 340,
     isGenerated: true,
     level: 0,
     parentId: 'pdfSourceNode',
     inputValue: DEFAULT_CHAPTER_TOPIC,
+    systemPrompt: CHAPTER_KNOWLEDGE_SYSTEM_PROMPT,
     selectedModel: MISTRAL_MODELS[0],
     metadata: {
       sourceKind: 'chapter_topic',
@@ -169,26 +322,63 @@ export const createStarterNodes = (): NodesState => ({
     level: 0,
     parentId: 'chapterTopicNode',
     inputValue: DEFAULT_CHAPTER_KNOWLEDGE,
+    systemPrompt: SEASON_SKELETON_SYSTEM_PROMPT,
     selectedModel: MISTRAL_MODELS[0],
     metadata: {
       sourceKind: 'chapter_knowledge',
     },
   },
+  chapterPlannerNode: {
+    nodeType: 'script_detail',
+    x: 1820,
+    y: 830,
+    label: 'Планировщик глав',
+    width: 460,
+    height: 380,
+    isGenerated: true,
+    level: 0,
+    parentId: 'chapterTopicNode',
+    inputValue: DEFAULT_CHAPTER_PLANNER,
+    systemPrompt: CHAPTER_PLANNER_SYSTEM_PROMPT,
+    selectedModel: MISTRAL_MODELS[0],
+    metadata: {
+      sourceKind: 'chapter_planner',
+    },
+  },
   chapterMaterialNode: {
     nodeType: 'script_detail',
-    x: 2280,
+    x: 2760,
     y: 370,
     label: 'Материал главы',
     width: 430,
     height: 360,
     isGenerated: true,
     level: 0,
-    parentId: 'chapterKnowledgeNode',
+    parentId: 'seasonSkeletonNode',
     inputValue: DEFAULT_CHAPTER_MATERIAL,
+    systemPrompt: SCENARIO_SYSTEM_PROMPT,
     selectedModel: MISTRAL_MODELS[0],
     sceneCount: 8,
     metadata: {
       sourceKind: 'chapter_material',
+    },
+  },
+  seasonSkeletonNode: {
+    nodeType: 'script_detail',
+    x: 2280,
+    y: 370,
+    label: 'Скелет сезона',
+    width: 460,
+    height: 430,
+    isGenerated: true,
+    level: 0,
+    parentId: 'chapterKnowledgeNode',
+    inputValue: DEFAULT_SEASON_SKELETON,
+    systemPrompt: CHAPTER_MATERIAL_SYSTEM_PROMPT,
+    selectedModel: MISTRAL_MODELS[0],
+    sceneCount: 8,
+    metadata: {
+      sourceKind: 'season_skeleton',
     },
   },
 });
@@ -215,10 +405,16 @@ export const createProjectDocument = (title = 'Новый проект'): Projec
 const sanitizeNode = (value: unknown): NodeData | null => {
   if (!isRecord(value) || !nodeTypes.has(value.nodeType as NodeType)) return null;
   if (typeof value.label !== 'string') return null;
+  const imagePipeline = getStoredImagePipeline(value);
+  const metadata = isRecord(value.metadata) ? value.metadata : {};
+  const sourceKind = typeof metadata.sourceKind === 'string' ? metadata.sourceKind : '';
+  const label = sourceKind === 'chapter_topic' && value.label === 'Тема главы'
+    ? 'Зерно истории'
+    : value.label;
   const node: NodeData = {
     ...(value as unknown as NodeData),
     nodeType: value.nodeType as NodeType,
-    label: value.label.slice(0, 500),
+    label: label.slice(0, 500),
     x: finiteNumber(value.x, 0),
     y: finiteNumber(value.y, 0),
     width: finiteNumber(value.width, value.nodeType === 'association' ? 180 : 300),
@@ -229,9 +425,10 @@ const sanitizeNode = (value: unknown): NodeData | null => {
     statusMessage: undefined,
     pollinationsApiError: undefined,
     imageUrl: undefined,
-    imagePipeline: imagePipelines.has(value.imagePipeline as ImagePipeline)
-      ? value.imagePipeline as ImagePipeline
-      : 'sdxl',
+    audioUrl: undefined,
+    videoUrl: undefined,
+    systemPrompt: getStoredSystemPrompt(value),
+    ...(imagePipeline ? { imagePipeline } : {}),
   };
   return node;
 };
@@ -276,7 +473,7 @@ export const parseProjectJson = (json: string): ProjectDocument => {
     title: value.title.slice(0, 120) || 'Импортированный проект',
     createdAt: typeof value.createdAt === 'string' ? value.createdAt : new Date().toISOString(),
     updatedAt: new Date().toISOString(),
-    nodes: sanitizeNodes(value.nodes),
+    nodes: ensureManagedPromptSnippetNodes(sanitizeNodes(value.nodes)),
     viewport: sanitizeViewport(value.viewport),
     extensions: isRecord(value.extensions)
       ? value.extensions as ProjectDocument['extensions']

@@ -33,6 +33,11 @@ export interface SaveLocalAssetOptions {
   filePath?: string;
 }
 
+export interface LocalAssetRecord {
+  reference: AssetReference;
+  blob: Blob;
+}
+
 export const getNodeAssetId = (projectId: string, nodeId: string, kind: LocalAssetKind) =>
   `${projectId}:${kind}:${nodeId}`;
 
@@ -155,6 +160,31 @@ const getStoredAssetReference = (asset: StoredAsset): AssetReference => asset.re
 export const loadLocalAssetReference = async (assetId: string) => {
   const asset = await withAssetStore<StoredAsset | undefined>('readonly', (store) => store.get(assetId));
   return asset?.blob ? getStoredAssetReference(asset) : null;
+};
+
+export const loadLocalAssetRecord = async (assetId: string): Promise<LocalAssetRecord | null> => {
+  const asset = await withAssetStore<StoredAsset | undefined>('readonly', (store) => store.get(assetId));
+  if (!asset?.blob) return null;
+  return { reference: getStoredAssetReference(asset), blob: asset.blob };
+};
+
+export const saveImportedAssetBlob = async (blob: Blob, reference: AssetReference) => {
+  const storedReference: AssetReference = {
+    ...reference,
+    storage: 'indexeddb',
+    mimeType: blob.type || reference.mimeType || 'application/octet-stream',
+    updatedAt: new Date().toISOString(),
+  };
+  const asset: StoredAsset = {
+    id: storedReference.assetId,
+    kind: storedReference.mediaKind,
+    blob,
+    mimeType: storedReference.mimeType ?? 'application/octet-stream',
+    createdAt: storedReference.createdAt,
+    reference: storedReference,
+  };
+  await withAssetStore('readwrite', (store) => store.put(asset));
+  return storedReference;
 };
 
 export const loadLocalAssetObjectUrl = async (assetId: string) => {

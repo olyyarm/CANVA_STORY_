@@ -38,6 +38,11 @@ import {
   projectToJson,
   saveProject,
 } from './project';
+import {
+  buildPortableProjectPackage,
+  importPortableProjectPackage,
+  isPortableProjectPackageFile,
+} from './portableProject';
 import { AppNotice, NodeData, NodesState, ProjectDocument, ViewportState } from './types';
 import { errorMessage } from './utils';
 import './App.css';
@@ -171,6 +176,20 @@ const collectNodeFamily = (nodes: NodesState, rootId: string) => {
   return ids;
 };
 
+const getSafeProjectFileName = (title: string) =>
+  title.replace(/[\\/:*?"<>|]+/g, '-').trim() || 'canva-story-project';
+
+const downloadBlob = (blob: Blob, fileName: string) => {
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement('a');
+  link.href = url;
+  link.download = fileName;
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+  window.setTimeout(() => URL.revokeObjectURL(url), 0);
+};
+
 const App = () => {
   const [bootstrap] = useState(() => {
     const savedProject = loadSavedProject();
@@ -187,6 +206,8 @@ const App = () => {
   const [projectTitle, setProjectTitle] = useState(bootstrap.project.title);
   const [projectNotice, setProjectNotice] = useState<AppNotice | null>(null);
   const [saveStatus, setSaveStatus] = useState<'saved' | 'saving' | 'error'>('saved');
+  const [isSavingPackage, setIsSavingPackage] = useState(false);
+  const [isImportingProject, setIsImportingProject] = useState(false);
   const [isUnloadingModels, setIsUnloadingModels] = useState(false);
   const [generationSettings, setGenerationSettings] = useState<GenerationSettings>(loadGenerationSettings);
   const [lmStudioModels, setLmStudioModels] = useState<string[]>([]);
@@ -655,18 +676,35 @@ const App = () => {
     );
   }, [applyProject, pendingProjectAction, showProjectNotice]);
 
-  const handleExport = useCallback(() => {
+  const handleSavePortableProject = useCallback(async () => {
+    if (isSavingPackage) return;
+    setIsSavingPackage(true);
+    try {
+      const snapshot = projectSnapshot(projectRef.current, nodes, viewport, projectTitle);
+      const result = await buildPortableProjectPackage(snapshot);
+      downloadBlob(result.blob, `${getSafeProjectFileName(snapshot.title)}.canva-story.zip`);
+      if (result.missingAssetIds.length > 0) {
+        showProjectNotice(
+          'info',
+          `Проект сохранён с ${result.includedAssetCount} медиафайлами. Не найдено локальных ассетов: ${result.missingAssetIds.length}.`,
+        );
+      } else {
+        showProjectNotice(
+          'success',
+          `Проект сохранён вместе с медиафайлами: ${result.includedAssetCount}.`,
+        );
+      }
+    } catch (error) {
+      showProjectNotice('error', error instanceof Error ? error.message : 'Не удалось сохранить пакет проекта.');
+    } finally {
+      setIsSavingPackage(false);
+    }
+  }, [isSavingPackage, nodes, projectTitle, showProjectNotice, viewport]);
+
+  const handleExportJson = useCallback(() => {
     const snapshot = projectSnapshot(projectRef.current, nodes, viewport, projectTitle);
     const blob = new Blob([projectToJson(snapshot)], { type: 'application/json;charset=utf-8' });
-    const url = URL.createObjectURL(blob);
-    const link = document.createElement('a');
-    const safeTitle = snapshot.title.replace(/[\\/:*?"<>|]+/g, '-').trim() || 'canva-story-project';
-    link.href = url;
-    link.download = `${safeTitle}.canva-story.json`;
-    document.body.appendChild(link);
-    link.click();
-    link.remove();
-    window.setTimeout(() => URL.revokeObjectURL(url), 0);
+    downloadBlob(blob, `${getSafeProjectFileName(snapshot.title)}.canva-story.json`);
     showProjectNotice('success', 'Проект экспортирован в JSON без тяжёлых изображений.');
   }, [nodes, projectTitle, showProjectNotice, viewport]);
 
@@ -674,16 +712,34 @@ const App = () => {
     const file = event.target.files?.[0];
     event.target.value = '';
     if (!file) return;
+    if (isImportingProject) return;
+    setIsImportingProject(true);
     try {
+      if (isPortableProjectPackageFile(file)) {
+        const result = await importPortableProjectPackage(file);
+        saveProject(result.project);
+        applyProject(result.project);
+        const missingMessage = result.missingAssetIds.length > 0
+          ? ` В исходном пакете отсутствовало ассетов: ${result.missingAssetIds.length}.`
+          : '';
+        showProjectNotice(
+          'success',
+          `Проект «${result.project.title}» открыт. Восстановлено медиафайлов: ${result.importedAssetCount}.${missingMessage}`,
+        );
+        return;
+      }
+
       const importedProject = parseProjectJson(await file.text());
       saveProject(importedProject);
       applyProject(importedProject);
-      showProjectNotice('success', `Проект «${importedProject.title}» импортирован.`);
+      showProjectNotice('success', `JSON проекта «${importedProject.title}» открыт без бинарных медиафайлов.`);
     } catch (error) {
       setSaveStatus('error');
-      showProjectNotice('error', error instanceof Error ? error.message : 'Не удалось импортировать проект.');
+      showProjectNotice('error', error instanceof Error ? error.message : 'Не удалось открыть проект.');
+    } finally {
+      setIsImportingProject(false);
     }
-  }, [applyProject, showProjectNotice]);
+  }, [applyProject, isImportingProject, showProjectNotice]);
 
   const handleGenerationModeChange = useCallback((event: React.ChangeEvent<HTMLSelectElement>) => {
     const mode = event.target.value;
@@ -1061,13 +1117,29 @@ const App = () => {
             {timelineFocusMode ? 'Все ноды' : 'Только таймлайн'}
           </button>
           <button type="button" onClick={() => setPendingProjectAction('new')}>Новый</button>
-          <button type="button" onClick={handleExport}>Экспорт</button>
-          <button type="button" onClick={() => fileInputRef.current?.click()}>Импорт</button>
+          <button
+            type="button"
+            onClick={() => void handleSavePortableProject()}
+            disabled={isSavingPackage}
+            title="Скачать переносимый пакет с project.json, изображениями, аудио и видео"
+          >
+            {isSavingPackage ? 'Сохраняю…' : 'Сохранить проект'}
+          </button>
+          <button type="button" onClick={handleExportJson} title="Скачать только структуру проекта без медиафайлов">
+            Экспорт JSON
+          </button>
+          <button
+            type="button"
+            onClick={() => fileInputRef.current?.click()}
+            disabled={isImportingProject}
+          >
+            {isImportingProject ? 'Открываю…' : 'Открыть проект'}
+          </button>
           <button type="button" className="toolbar-danger-button" onClick={() => setPendingProjectAction('reset')}>Сброс</button>
           <input
             ref={fileInputRef}
             type="file"
-            accept="application/json,.json"
+            accept=".canva-story.zip,.zip,application/zip,application/x-zip-compressed,application/vnd.canva-story.project+zip,application/json,.json"
             onChange={handleImport}
             className="visually-hidden"
             hidden

@@ -63,6 +63,7 @@ interface NodeRendererProps {
   onGenerateOmniVoiceNarration: (nodeId: string) => Promise<void>;
   onGenerateSceneOmniVoiceNarration: (nodeId: string) => Promise<void>;
   onBuildSceneVideoClip: (nodeId: string) => Promise<void>;
+  onGenerateChapterBackdrop: (nodeId: string) => Promise<void>;
   onGenerateTimelineMissingAssets: (nodeId: string) => Promise<void>;
   onBuildChapterSceneClips: (nodeId: string) => Promise<void>;
   onBuildChapterVideo: (nodeId: string) => Promise<void>;
@@ -464,6 +465,7 @@ const NodeRenderer: React.FC<NodeRendererProps> = ({
   onGenerateOmniVoiceNarration,
   onGenerateSceneOmniVoiceNarration,
   onBuildSceneVideoClip,
+  onGenerateChapterBackdrop,
   onGenerateTimelineMissingAssets,
   onBuildChapterSceneClips,
   onBuildChapterVideo,
@@ -1610,6 +1612,17 @@ const NodeRenderer: React.FC<NodeRendererProps> = ({
               <span><strong>{timelineStats.audio}</strong> озвучек</span>
               <span><strong>{timelineStats.clips}</strong> клипов</span>
               <span><strong>{timelineStats.inserts}</strong> вставок</span>
+              <button
+                type="button"
+                className={`node-secondary-button chapter-timeline__refresh${node.isLoadingImage ? ' node-secondary-button--cancel' : ''}`}
+                onMouseDown={stopMouseDown}
+                onClick={(event) => runWithoutDrag(event, () => node.isLoadingImage
+                  ? onCancelGeneration(id)
+                  : void onGenerateChapterBackdrop(id))}
+                disabled={Boolean(node.isLoading || node.isLoadingAudio || node.isLoadingVideo)}
+              >
+                {node.isLoadingImage ? 'Отменить фон' : 'Фон главы'}
+              </button>
               <button
                 type="button"
                 className={`node-secondary-button chapter-timeline__refresh${node.isLoadingVideo ? ' node-secondary-button--cancel' : ''}`}

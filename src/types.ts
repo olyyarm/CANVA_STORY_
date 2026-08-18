@@ -26,7 +26,14 @@ export type ImagePipeline =
   | 'flux2_compose'
   | 'flux2_turbo_compose'
   | 'nano_banana_2_lite_compose';
-export type ImagePromptKind = 'default' | 'scene_location' | 'scene_characters' | 'character_asset' | 'location_asset' | 'system_insert';
+export type ImagePromptKind =
+  | 'default'
+  | 'scene_location'
+  | 'scene_characters'
+  | 'character_asset'
+  | 'location_asset'
+  | 'system_insert'
+  | 'chapter_backdrop';
 export type SplitMode = 'lines' | 'separator' | 'json_path';
 
 export interface NodeData {
@@ -163,6 +170,7 @@ export type GenerationOperation =
   | 'character_asset_prompt'
   | 'location_asset_prompt'
   | 'system_insert_asset_prompt'
+  | 'chapter_backdrop_prompt'
   | 'prompt_node';
 
 export interface GenerationRequest {

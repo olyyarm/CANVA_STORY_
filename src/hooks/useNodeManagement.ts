@@ -27,6 +27,7 @@ import {
   CHAPTER_PLANNER_SYSTEM_PROMPT,
   CHAPTER_SUMMARY_SYSTEM_PROMPT,
   CHAPTER_TOPIC_SYSTEM_PROMPT,
+  CHAPTER_BACKDROP_ASSET_PROMPT_SYSTEM_PROMPT,
   DEFAULT_FANTASY_STYLE_BIBLE,
   DEFAULT_CHAPTER_MATERIAL,
   DEFAULT_CHAPTER_KNOWLEDGE,
@@ -154,6 +155,7 @@ interface UseNodeManagementReturn {
   handleGenerateOmniVoiceNarration: (detailNodeId: string) => Promise<void>;
   handleGenerateSceneOmniVoiceNarration: (sceneNodeId: string) => Promise<void>;
   handleBuildSceneVideoClip: (sceneNodeId: string) => Promise<void>;
+  handleGenerateChapterBackdrop: (timelineNodeId: string) => Promise<void>;
   handleGenerateTimelineMissingAssets: (timelineNodeId: string) => Promise<void>;
   handleBuildChapterSceneClips: (timelineNodeId: string) => Promise<void>;
   handleBuildChapterVideo: (timelineNodeId: string) => Promise<void>;
@@ -836,11 +838,13 @@ const drawAnimatedStillFrame = (
   width: number,
   height: number,
   progress: number,
+  backgroundImage?: HTMLImageElement,
 ) => {
   const easedProgress = Math.min(1, Math.max(0, progress));
   const centerX = width / 2;
   const centerY = height / 2;
-  const coverScale = Math.max(width / image.naturalWidth, height / image.naturalHeight);
+  const backdrop = backgroundImage ?? image;
+  const coverScale = Math.max(width / backdrop.naturalWidth, height / backdrop.naturalHeight);
   const backgroundScale = coverScale * 1.5;
   const backgroundDrift = (easedProgress - 0.5) * 28;
 
@@ -850,11 +854,11 @@ const drawAnimatedStillFrame = (
   context.filter = 'blur(28px)';
   drawCenteredImage(
     context,
-    image,
+    backdrop,
     centerX + backgroundDrift,
     centerY - backgroundDrift * 0.35,
-    image.naturalWidth * backgroundScale,
-    image.naturalHeight * backgroundScale,
+    backdrop.naturalWidth * backgroundScale,
+    backdrop.naturalHeight * backgroundScale,
   );
   context.restore();
 
@@ -878,18 +882,21 @@ const drawAnimatedStillFrame = (
 const buildStillImagesVideoClip = async (
   imageUrls: string[],
   audioUrl: string,
-  signal?: AbortSignal,
+  options?: AbortSignal | { signal?: AbortSignal; backgroundImageUrl?: string },
 ) => {
   if (typeof MediaRecorder === 'undefined') {
     throw new Error('Браузер не поддерживает MediaRecorder, поэтому не может собрать клип.');
   }
+  const signal = options && 'aborted' in options ? options : options?.signal;
+  const backgroundImageUrl = options && !('aborted' in options) ? options.backgroundImageUrl : undefined;
   const usableImageUrls = imageUrls.filter(Boolean);
   if (usableImageUrls.length === 0) {
     throw new Error('Нет картинки для сборки 16:9 клипа.');
   }
 
-  const [images, audioResponse] = await Promise.all([
+  const [images, backgroundImage, audioResponse] = await Promise.all([
     Promise.all(usableImageUrls.map((imageUrl) => loadImageElement(imageUrl))),
+    backgroundImageUrl ? loadImageElement(backgroundImageUrl) : Promise.resolve(undefined),
     fetch(audioUrl, { signal }),
   ]);
   if (!audioResponse.ok) throw new Error(`Не удалось прочитать аудио для клипа: ${audioResponse.status}.`);
@@ -907,7 +914,7 @@ const buildStillImagesVideoClip = async (
   canvas.height = 1080;
   const context = canvas.getContext('2d');
   if (!context) throw new Error('Браузер не смог подготовить canvas для 16:9 клипа.');
-  drawAnimatedStillFrame(context, images[0], canvas.width, canvas.height, 0);
+  drawAnimatedStillFrame(context, images[0], canvas.width, canvas.height, 0, backgroundImage);
 
   const canvasStream = canvas.captureStream(30);
   const stream = new MediaStream([
@@ -929,7 +936,7 @@ const buildStillImagesVideoClip = async (
     const imageProgress = Math.min(0.999999, Math.max(0, progress));
     const segmentIndex = Math.min(images.length - 1, Math.floor(imageProgress * images.length));
     const segmentProgress = (imageProgress * images.length) - segmentIndex;
-    drawAnimatedStillFrame(context, images[segmentIndex], canvas.width, canvas.height, segmentProgress);
+    drawAnimatedStillFrame(context, images[segmentIndex], canvas.width, canvas.height, segmentProgress, backgroundImage);
     frameId = requestAnimationFrame(paintFrame);
   };
 
@@ -1276,6 +1283,7 @@ const imagePromptKinds = new Set<ImagePromptKind>([
   'character_asset',
   'location_asset',
   'system_insert',
+  'chapter_backdrop',
 ]);
 
 const getImagePromptKind = (node: NodeData): ImagePromptKind => {
@@ -1366,6 +1374,36 @@ const findSystemInsertImageNodeForScene = (nodes: NodesState, sceneNumber: numbe
     })
     .map(([, node]) => node)
     .sort((first, second) => first.label.localeCompare(second.label, 'ru', { numeric: true }))[0];
+
+const findChapterBackdropImageNode = (
+  nodes: NodesState,
+  timelineNodeId: string,
+  timelineNode: NodeData,
+) => {
+  const sourceScenarioId = typeof timelineNode.metadata?.sourceScenarioId === 'string'
+    ? timelineNode.metadata.sourceScenarioId
+    : timelineNode.parentId ?? '';
+  const sourceChapterId = typeof timelineNode.metadata?.sourceChapterId === 'string'
+    ? timelineNode.metadata.sourceChapterId
+    : '';
+  const scopedIds = getScopedNodeIds(nodes, [sourceScenarioId, sourceChapterId, timelineNodeId]);
+  return Object.entries(nodes)
+    .filter(([nodeId, node]) =>
+      node.nodeType === 'pollinations_image'
+      && Boolean(node.imageUrl)
+      && getAssetKind(node) === 'chapter_backdrop'
+      && (
+        node.parentId === timelineNodeId
+        || node.parentId === sourceChapterId
+        || node.parentId === sourceScenarioId
+        || scopedIds.has(nodeId)
+        || scopedIds.has(node.parentId ?? '')
+      ))
+    .map(([, node]) => node)
+    .sort((first, second) =>
+      String(second.metadata?.chapterBackdropGeneratedAt ?? '').localeCompare(String(first.metadata?.chapterBackdropGeneratedAt ?? ''))
+      || first.label.localeCompare(second.label, 'ru', { numeric: true }))[0];
+};
 
 const getReferenceLabelFromNodeTitle = (label: string) =>
   label
@@ -5094,10 +5132,23 @@ export const useNodeManagement = (
       const systemInsertNode = sceneNumber
         ? findSystemInsertImageNodeForScene(currentNodes, sceneNumber, sceneNode.parentId ?? '')
         : undefined;
+      const timelineEntry = Object.entries(currentNodes).find(([timelineId, candidate]) =>
+        candidate.nodeType === 'chapter_timeline'
+        && getScopedNodeIds(currentNodes, [
+          typeof candidate.metadata?.sourceScenarioId === 'string' ? candidate.metadata.sourceScenarioId : candidate.parentId ?? '',
+          typeof candidate.metadata?.sourceChapterId === 'string' ? candidate.metadata.sourceChapterId : '',
+          timelineId,
+        ]).has(sceneNodeId));
+      const chapterBackdropNode = timelineEntry
+        ? findChapterBackdropImageNode(currentNodes, timelineEntry[0], timelineEntry[1])
+        : undefined;
       const clipImageUrls = systemInsertNode?.imageUrl
         ? [frameNode.imageUrl, systemInsertNode.imageUrl]
         : [frameNode.imageUrl];
-      const videoUrl = await buildStillImagesVideoClip(clipImageUrls, sceneNode.audioUrl, controller.signal);
+      const videoUrl = await buildStillImagesVideoClip(clipImageUrls, sceneNode.audioUrl, {
+        signal: controller.signal,
+        backgroundImageUrl: chapterBackdropNode?.imageUrl,
+      });
 
       setNodes((previousNodes) => {
         const currentNode = previousNodes[sceneNodeId];
@@ -5119,6 +5170,7 @@ export const useNodeManagement = (
               videoAspectRatio: '16:9',
               videoFrameSource: frameNode.label,
               ...(systemInsertNode ? { systemInsertSource: systemInsertNode.label } : {}),
+              ...(chapterBackdropNode ? { chapterBackdropSource: chapterBackdropNode.label } : {}),
               ...(audioGeneratedAt ? { videoAudioGeneratedAt: audioGeneratedAt } : {}),
               videoGeneratedAt: new Date().toISOString(),
             },
@@ -5177,6 +5229,7 @@ export const useNodeManagement = (
       const frameNode = findBestSceneFrameNode(currentNodes, sceneId);
       return { sceneId, scene, frameNode, systemInsertNode };
     });
+    const chapterBackdropNode = findChapterBackdropImageNode(currentNodes, timelineNodeId, timelineNode);
     const missingSourceLabels = scenePlans
       .filter((plan) => !plan.scene.videoUrl && (!plan.scene.audioUrl || !plan.frameNode?.imageUrl))
       .map((plan) => plan.scene.label);
@@ -5231,7 +5284,10 @@ export const useNodeManagement = (
         const imageUrls = plan.systemInsertNode?.imageUrl
           ? [plan.frameNode.imageUrl, plan.systemInsertNode.imageUrl]
           : [plan.frameNode.imageUrl];
-        const videoUrl = await buildStillImagesVideoClip(imageUrls, plan.scene.audioUrl, controller.signal);
+        const videoUrl = await buildStillImagesVideoClip(imageUrls, plan.scene.audioUrl, {
+          signal: controller.signal,
+          backgroundImageUrl: chapterBackdropNode?.imageUrl,
+        });
 
         setNodes((previousNodes) => {
           const currentSceneNode = previousNodes[plan.sceneId];
@@ -5253,6 +5309,7 @@ export const useNodeManagement = (
                 videoAspectRatio: '16:9',
                 videoFrameSource: plan.frameNode.label,
                 ...(plan.systemInsertNode ? { systemInsertSource: plan.systemInsertNode.label } : {}),
+                ...(chapterBackdropNode ? { chapterBackdropSource: chapterBackdropNode.label } : {}),
                 ...(audioGeneratedAt ? { videoAudioGeneratedAt: audioGeneratedAt } : {}),
                 videoGeneratedAt: new Date().toISOString(),
               },
@@ -5320,6 +5377,7 @@ export const useNodeManagement = (
       const shouldBuildFromSources = canBuildFromSources && (Boolean(systemInsertNode?.imageUrl) || !scene.videoUrl);
       return { sceneId, scene, frameNode, systemInsertNode, canBuildFromSources, shouldBuildFromSources };
     });
+    const chapterBackdropNode = findChapterBackdropImageNode(currentNodes, timelineNodeId, timelineNode);
     const missingClipLabels = scenePlans
       .filter((plan) => !plan.scene.videoUrl && !plan.canBuildFromSources)
       .map((plan) => plan.scene.label);
@@ -5358,7 +5416,10 @@ export const useNodeManagement = (
           const imageUrls = plan.systemInsertNode?.imageUrl
             ? [plan.frameNode.imageUrl, plan.systemInsertNode.imageUrl]
             : [plan.frameNode.imageUrl];
-          const sceneClipUrl = await buildStillImagesVideoClip(imageUrls, plan.scene.audioUrl, controller.signal);
+          const sceneClipUrl = await buildStillImagesVideoClip(imageUrls, plan.scene.audioUrl, {
+            signal: controller.signal,
+            backgroundImageUrl: chapterBackdropNode?.imageUrl,
+          });
           clipUrls.push(sceneClipUrl);
           setNodes((previousNodes) => {
             const currentSceneNode = previousNodes[plan.sceneId];
@@ -5375,6 +5436,7 @@ export const useNodeManagement = (
                   videoAspectRatio: '16:9',
                   videoFrameSource: plan.frameNode.label,
                   ...(plan.systemInsertNode ? { systemInsertSource: plan.systemInsertNode.label } : {}),
+                  ...(chapterBackdropNode ? { chapterBackdropSource: chapterBackdropNode.label } : {}),
                   videoGeneratedAt: new Date().toISOString(),
                 },
               },
@@ -5403,6 +5465,7 @@ export const useNodeManagement = (
               ...currentNode.metadata,
               chapterClipCount: clipUrls.length,
               chapterSystemInsertCount: systemInsertCount,
+              ...(chapterBackdropNode ? { chapterBackdropSource: chapterBackdropNode.label } : {}),
               videoGeneratedAt: new Date().toISOString(),
             },
           },
@@ -5425,6 +5488,148 @@ export const useNodeManagement = (
       });
     }
   }, [setNodes, showNotice, updateNode]);
+
+  const handleGenerateChapterBackdrop = useCallback(async (timelineNodeId: string) => {
+    const currentNodes = nodesRef.current;
+    const timelineNode = currentNodes[timelineNodeId];
+    if (!timelineNode || timelineNode.nodeType !== 'chapter_timeline' || timelineNode.isLoadingImage) return;
+
+    const sourceScenarioId = typeof timelineNode.metadata?.sourceScenarioId === 'string'
+      ? timelineNode.metadata.sourceScenarioId
+      : timelineNode.parentId;
+    const sourceChapterId = typeof timelineNode.metadata?.sourceChapterId === 'string'
+      ? timelineNode.metadata.sourceChapterId
+      : '';
+    const sourceChapterNode = sourceChapterId ? currentNodes[sourceChapterId] : undefined;
+    const timelineTextModel = typeof timelineNode.selectedModel === 'string' && timelineNode.selectedModel.trim()
+      ? timelineNode.selectedModel.trim()
+      : MISTRAL_MODELS[0];
+    const timelineSystemInsertPipeline: ImagePipeline =
+      timelineNode.metadata?.timelineSystemInsertPipeline === 'sdxl'
+      || timelineNode.metadata?.timelineSystemInsertPipeline === 'z_image_turbo'
+      || timelineNode.metadata?.timelineSystemInsertPipeline === 'ernie_image_turbo'
+        ? timelineNode.metadata.timelineSystemInsertPipeline
+        : 'ernie_image_turbo';
+
+    const timelineScope = getScopedNodeIds(currentNodes, [sourceScenarioId ?? '', sourceChapterId]);
+    const hasTimelineScope = timelineScope.size > 0;
+    const sceneEntries = Object.entries(currentNodes)
+      .filter(([, candidate]) =>
+        candidate.nodeType === 'scene'
+        && (!hasTimelineScope || timelineScope.has(candidate.parentId ?? '')))
+      .sort(([, first], [, second]) =>
+        (getSceneNumber(first.label) ?? 0) - (getSceneNumber(second.label) ?? 0)
+        || first.label.localeCompare(second.label, 'ru', { numeric: true }));
+    const findScopedDetailNode = (label: string) =>
+      findProjectDetail(currentNodes, sourceScenarioId, label)
+      ?? findProjectDetail(currentNodes, sourceChapterId, label);
+    const narrationNode = findScopedDetailNode('Закадр');
+    const systemInsertsNode = findScopedDetailNode('Системные вставки');
+    const locationsNode = findScopedDetailNode('Локации');
+    const heroesNode = findScopedDetailNode('Герои');
+    const sceneSummary = sceneEntries
+      .map(([, scene]) => `${scene.label}\n${scene.sceneText || scene.inputValue || ''}`.trim())
+      .filter(Boolean)
+      .join('\n\n')
+      .slice(0, 9000);
+    const chapterMaterial = [
+      sourceChapterNode?.label ? `Глава: ${sourceChapterNode.label}` : '',
+      sourceChapterNode?.inputValue ? sourceChapterNode.inputValue.slice(0, 7000) : '',
+      timelineNode.inputValue ? timelineNode.inputValue.slice(0, 3000) : '',
+    ].filter(Boolean).join('\n\n');
+    const promptContext = [
+      `Таймлайн: ${timelineNode.label}`,
+      chapterMaterial ? `Материал главы:\n${chapterMaterial}` : '',
+      sceneSummary ? `Сцены главы:\n${sceneSummary}` : '',
+      heroesNode?.inputValue ? `Персонажи главы:\n${heroesNode.inputValue.slice(0, 3000)}` : '',
+      locationsNode?.inputValue ? `Локации главы:\n${locationsNode.inputValue.slice(0, 3000)}` : '',
+      narrationNode?.inputValue ? `Закадр главы:\n${narrationNode.inputValue.slice(0, 4000)}` : '',
+      systemInsertsNode?.inputValue ? `Системные вставки главы:\n${systemInsertsNode.inputValue.slice(0, 4000)}` : '',
+      'Задача: придумай одну декоративную тематическую подложку главы для фона видеоклипов.',
+    ].filter(Boolean).join('\n\n');
+
+    if (!promptContext.trim()) {
+      updateNode(timelineNodeId, { pollinationsApiError: 'Нет материала главы для генерации фона.' });
+      return;
+    }
+
+    const requestId = `chapter-backdrop:${timelineNodeId}`;
+    if (activeRequests.current.has(requestId)) return;
+    const controller = new AbortController();
+    activeRequests.current.set(requestId, controller);
+
+    try {
+      updateNode(timelineNodeId, {
+        isLoadingImage: true,
+        loadingProvider: generationSettings.mode,
+        pollinationsApiError: undefined,
+        statusMessage: 'Собираем prompt фона главы...',
+      });
+
+      const assetPrompt = await generateText({
+        operation: 'chapter_backdrop_prompt',
+        prompt: withProjectVisualStyle(promptContext, nodesRef.current),
+        systemPrompt: CHAPTER_BACKDROP_ASSET_PROMPT_SYSTEM_PROMPT,
+        model: timelineTextModel,
+      }, controller.signal, generationSettings);
+      const styledAssetPrompt = appendProjectVisualStyleToImagePrompt(assetPrompt, nodesRef.current);
+
+      updateNode(timelineNodeId, {
+        assetPrompt: styledAssetPrompt,
+        loadingProvider: imageGenerationSettings.provider,
+        statusMessage: `Генерируем фон главы через ${timelineSystemInsertPipeline}...`,
+      });
+
+      await unloadLmStudioBeforeComfyRender(timelineNodeId, controller.signal);
+      const imageUrl = await generateImage(
+        styledAssetPrompt,
+        timelineSystemInsertPipeline,
+        imageGenerationSettings,
+        'chapter_backdrop',
+        controller.signal,
+      );
+
+      upsertImageNode(
+        timelineNodeId,
+        imageUrl,
+        'Фон главы',
+        'chapter_backdrop',
+        -1,
+        styledAssetPrompt,
+        promptContext,
+        {
+          imagePipeline: timelineSystemInsertPipeline,
+          chapterBackdropGeneratedAt: new Date().toISOString(),
+        },
+      );
+      updateNode(timelineNodeId, {
+        statusMessage: 'Фон главы готов. Пересоберите клипы, чтобы он попал в видео.',
+      });
+      showNotice('success', 'Фон главы готов. Теперь он будет использоваться как подложка при сборке клипов.');
+    } catch (error) {
+      if (isAbortError(error)) {
+        showNotice('info', 'Генерация фона главы отменена.');
+      } else {
+        const message = errorMessage(error);
+        updateNode(timelineNodeId, { pollinationsApiError: message });
+        showNotice('error', message);
+      }
+    } finally {
+      activeRequests.current.delete(requestId);
+      updateNode(timelineNodeId, {
+        isLoadingImage: false,
+        loadingProvider: undefined,
+        statusMessage: undefined,
+      });
+    }
+  }, [
+    generationSettings,
+    imageGenerationSettings,
+    showNotice,
+    unloadLmStudioBeforeComfyRender,
+    updateNode,
+    upsertImageNode,
+  ]);
 
   const handleGenerateTimelineMissingAssets = useCallback(async (timelineNodeId: string) => {
     const currentNodes = nodesRef.current;
@@ -5993,6 +6198,7 @@ export const useNodeManagement = (
     activeRequests.current.get(`tts:${nodeId}`)?.abort();
     activeRequests.current.get(`tts-scene:${nodeId}`)?.abort();
     activeRequests.current.get(`scene-video:${nodeId}`)?.abort();
+    activeRequests.current.get(`chapter-backdrop:${nodeId}`)?.abort();
     activeRequests.current.get(`timeline-missing:${nodeId}`)?.abort();
     activeRequests.current.get(`chapter-scene-clips:${nodeId}`)?.abort();
     activeRequests.current.get(`chapter-video:${nodeId}`)?.abort();
@@ -6072,6 +6278,7 @@ export const useNodeManagement = (
     handleGenerateOmniVoiceNarration,
     handleGenerateSceneOmniVoiceNarration,
     handleBuildSceneVideoClip,
+    handleGenerateChapterBackdrop,
     handleGenerateTimelineMissingAssets,
     handleBuildChapterSceneClips,
     handleBuildChapterVideo,

@@ -546,6 +546,16 @@ const SDXL_NEGATIVE_PROMPTS: Record<ImagePromptKind, string> = {
     'photorealistic scene',
     'human character',
   ].join(', '),
+  chapter_backdrop: [
+    'watermark',
+    'logo',
+    'blurry',
+    'low quality',
+    'messy layout',
+    'illegible letters',
+    'foreground character',
+    'portrait',
+  ].join(', '),
 };
 
 const normalizeImagePromptKind = (promptKind: ImagePromptKind | string): ImagePromptKind => {
@@ -556,6 +566,7 @@ const normalizeImagePromptKind = (promptKind: ImagePromptKind | string): ImagePr
     || normalized === 'character_asset'
     || normalized === 'location_asset'
     || normalized === 'system_insert'
+    || normalized === 'chapter_backdrop'
     || normalized === 'default'
   ) {
     return normalized;

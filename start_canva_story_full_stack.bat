@@ -3,8 +3,11 @@ setlocal
 title CANVA STORY full local stack
 cd /d "%~dp0"
 
+set "CANVA_LOCAL_CONFIG=%~dp0start_canva_story_local_config.bat"
+if exist "%CANVA_LOCAL_CONFIG%" call "%CANVA_LOCAL_CONFIG%"
+
 rem === Machine-specific settings ==========================================
-rem Change these paths on a second PC, or set them before running this file.
+rem Override these defaults in start_canva_story_local_config.bat on each PC.
 if not defined CANVA_PORT set "CANVA_PORT=5173"
 if not defined CANVA_HOST set "CANVA_HOST=127.0.0.1"
 if not defined LM_STUDIO_PORT set "LM_STUDIO_PORT=1234"
@@ -12,6 +15,8 @@ if not defined LMS set "LMS=%USERPROFILE%\.lmstudio\bin\lms.exe"
 if not defined LM_STUDIO_EXE set "LM_STUDIO_EXE=D:\SD\LM Studio\LM Studio.exe"
 if not defined COMFY_PORT set "COMFY_PORT=8188"
 if not defined COMFY_ROOT set "COMFY_ROOT=D:\ComfyUI-Omnivorous-T2.6-P312-Cu126"
+if not defined JS_PACKAGE_MANAGER set "JS_PACKAGE_MANAGER=npm"
+if not defined JS_DEV_COMMAND set "JS_DEV_COMMAND=npm run dev --"
 rem =========================================================================
 
 set "CANVA_URL=http://localhost:%CANVA_PORT%/CANVA_STORY_/"
@@ -29,8 +34,11 @@ echo ComfyUI:
 echo   %COMFY_URL%
 echo.
 echo Config:
+if exist "%CANVA_LOCAL_CONFIG%" echo   LOCAL_CONFIG=%CANVA_LOCAL_CONFIG%
 echo   LM_STUDIO_EXE=%LM_STUDIO_EXE%
 echo   COMFY_ROOT=%COMFY_ROOT%
+echo   JS_PACKAGE_MANAGER=%JS_PACKAGE_MANAGER%
+echo   JS_DEV_COMMAND=%JS_DEV_COMMAND%
 echo.
 
 echo [1/3] Preparing LM Studio server with CORS...
@@ -102,9 +110,9 @@ echo.
 echo [3/3] Starting CANVA STORY...
 if not exist "node_modules\" (
   echo node_modules was not found. Installing dependencies first...
-  npm install
+  call "%JS_PACKAGE_MANAGER%" install
   if errorlevel 1 (
-    echo npm install failed.
+    echo Dependency installation failed.
     pause
     exit /b 1
   )
@@ -117,7 +125,7 @@ if errorlevel 2 (
 )
 
 echo Opening CANVA STORY dev server in a separate window...
-start "CANVA STORY dev server" cmd /k "cd /d ""%~dp0"" && npm run dev -- --host %CANVA_HOST% --port %CANVA_PORT%"
+start "CANVA STORY dev server" /D "%~dp0" cmd.exe /d /k %JS_DEV_COMMAND% --host %CANVA_HOST% --port %CANVA_PORT%
 
 echo Waiting for CANVA STORY readiness...
 powershell -NoProfile -ExecutionPolicy Bypass -Command "$deadline = (Get-Date).AddSeconds(60); while ((Get-Date) -lt $deadline) { try { $response = Invoke-WebRequest -Uri 'http://127.0.0.1:%CANVA_PORT%/CANVA_STORY_/' -UseBasicParsing -TimeoutSec 5; if ($response.StatusCode -eq 200) { exit 0 } } catch {}; Start-Sleep -Seconds 2 }; exit 1"

@@ -160,6 +160,7 @@ Vite использует базовый путь `/CANVA_STORY_/`. Workflow `.g
 - `src/hooks/useDraggableNodes.ts` — drag, selection и resize;
 - `src/api.ts` — выбор тестового, Mistral или LM Studio-режима;
 - `src/assetStorage.ts` — локальное хранилище медиа и стабильные ссылки на ассеты;
+- `src/services/videoGeneration.ts` — браузерная сборка сценовых клипов и итогового видео;
 - `src/mockData.ts` — локальные тестовые ответы;
 - `src/project.ts` — схема v1, localStorage, экспортная очистка и проверка импорта;
 - `docs/architecture/asset-store.md` — контракт ассетов, текущий жизненный цикл и план развития;

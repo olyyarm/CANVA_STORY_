@@ -36,6 +36,39 @@ export type ImagePromptKind =
   | 'chapter_backdrop';
 export type SplitMode = 'lines' | 'separator' | 'json_path';
 
+export type AssetMediaKind = 'image' | 'audio' | 'video';
+export type AssetKind =
+  | 'character_reference'
+  | 'location_reference'
+  | 'scene_frame'
+  | 'system_insert'
+  | 'chapter_backdrop'
+  | 'narration_audio'
+  | 'scene_clip'
+  | 'chapter_video'
+  | 'other';
+export type AssetScope = 'project' | 'chapter' | 'scene' | 'character' | 'location';
+export type AssetStorageDriver = 'indexeddb' | 'file';
+
+export interface AssetReference {
+  assetId: string;
+  assetKind: AssetKind;
+  mediaKind: AssetMediaKind;
+  scope: AssetScope;
+  storage: AssetStorageDriver;
+  projectId?: string;
+  chapterId?: string;
+  sceneId?: string;
+  canonicalId?: string;
+  sourcePrompt?: string;
+  filePath?: string;
+  mimeType?: string;
+  createdAt: string;
+  updatedAt?: string;
+}
+
+export type NodeAssetReferences = Partial<Record<AssetMediaKind, AssetReference>>;
+
 export interface NodeData {
   x: number;
   y: number;
@@ -80,6 +113,7 @@ export interface NodeData {
   imageUrl?: string;
   audioUrl?: string;
   videoUrl?: string;
+  assets?: NodeAssetReferences;
   imagePipeline?: ImagePipeline;
   error?: string;
   statusMessage?: string;
@@ -114,7 +148,7 @@ export interface ProjectDocument {
     characters?: unknown[];
     locations?: unknown[];
     episodes?: unknown[];
-    assets?: unknown[];
+    assets?: AssetReference[];
   };
 }
 

@@ -1,10 +1,16 @@
-import { NodesState } from './types';
+import {
+  AssetKind,
+  AssetMediaKind,
+  AssetReference,
+  AssetScope,
+  NodesState,
+} from './types';
 
 const ASSET_DB_NAME = 'canva-story-assets';
 const ASSET_DB_VERSION = 1;
 const ASSET_STORE_NAME = 'assets';
 
-export type LocalAssetKind = 'image' | 'audio' | 'video';
+export type LocalAssetKind = AssetMediaKind;
 
 interface StoredAsset {
   id: string;
@@ -12,6 +18,19 @@ interface StoredAsset {
   blob: Blob;
   mimeType: string;
   createdAt: string;
+  reference?: AssetReference;
+}
+
+export interface SaveLocalAssetOptions {
+  assetId?: string;
+  assetKind?: AssetKind;
+  scope?: AssetScope;
+  projectId?: string;
+  chapterId?: string;
+  sceneId?: string;
+  canonicalId?: string;
+  sourcePrompt?: string;
+  filePath?: string;
 }
 
 export const getNodeAssetId = (projectId: string, nodeId: string, kind: LocalAssetKind) =>
@@ -22,6 +41,38 @@ const createId = () => {
     return crypto.randomUUID();
   }
   return `${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
+};
+
+const getDefaultAssetKind = (mediaKind: AssetMediaKind): AssetKind => {
+  if (mediaKind === 'audio') return 'narration_audio';
+  if (mediaKind === 'video') return 'scene_clip';
+  return 'other';
+};
+
+const optionalField = (value: string | undefined) => value?.trim() || undefined;
+
+export const createLocalAssetReference = (
+  blob: Blob,
+  mediaKind: AssetMediaKind,
+  options: SaveLocalAssetOptions = {},
+): AssetReference => {
+  const now = new Date().toISOString();
+  return {
+    assetId: options.assetId ?? createId(),
+    assetKind: options.assetKind ?? getDefaultAssetKind(mediaKind),
+    mediaKind,
+    scope: options.scope ?? 'project',
+    storage: 'indexeddb',
+    ...(optionalField(options.projectId) ? { projectId: optionalField(options.projectId) } : {}),
+    ...(optionalField(options.chapterId) ? { chapterId: optionalField(options.chapterId) } : {}),
+    ...(optionalField(options.sceneId) ? { sceneId: optionalField(options.sceneId) } : {}),
+    ...(optionalField(options.canonicalId) ? { canonicalId: optionalField(options.canonicalId) } : {}),
+    ...(optionalField(options.sourcePrompt) ? { sourcePrompt: optionalField(options.sourcePrompt) } : {}),
+    ...(optionalField(options.filePath) ? { filePath: optionalField(options.filePath) } : {}),
+    mimeType: blob.type || 'application/octet-stream',
+    createdAt: now,
+    updatedAt: now,
+  };
 };
 
 const openAssetDb = () =>
@@ -57,22 +108,53 @@ const withAssetStore = async <Result>(
   }
 };
 
-export const saveLocalAssetBlob = async (blob: Blob, kind: LocalAssetKind, assetId = createId()) => {
+export const saveAssetBlob = async (
+  blob: Blob,
+  mediaKind: AssetMediaKind,
+  options: SaveLocalAssetOptions = {},
+) => {
+  const reference = createLocalAssetReference(blob, mediaKind, options);
   const asset: StoredAsset = {
-    id: assetId,
-    kind,
+    id: reference.assetId,
+    kind: mediaKind,
     blob,
-    mimeType: blob.type || 'application/octet-stream',
-    createdAt: new Date().toISOString(),
+    mimeType: reference.mimeType ?? 'application/octet-stream',
+    createdAt: reference.createdAt,
+    reference,
   };
   await withAssetStore('readwrite', (store) => store.put(asset));
-  return asset.id;
+  return reference;
 };
 
-export const saveLocalAssetFromUrl = async (url: string, kind: LocalAssetKind, assetId?: string) => {
+export const saveLocalAssetBlob = async (blob: Blob, kind: LocalAssetKind, assetId = createId()) =>
+  (await saveAssetBlob(blob, kind, { assetId })).assetId;
+
+export const saveAssetFromUrl = async (
+  url: string,
+  mediaKind: AssetMediaKind,
+  options: SaveLocalAssetOptions = {},
+) => {
   const response = await fetch(url);
-  if (!response.ok) throw new Error(`Cannot read generated ${kind}: ${response.status}`);
-  return saveLocalAssetBlob(await response.blob(), kind, assetId);
+  if (!response.ok) throw new Error(`Cannot read generated ${mediaKind}: ${response.status}`);
+  return saveAssetBlob(await response.blob(), mediaKind, options);
+};
+
+export const saveLocalAssetFromUrl = async (url: string, kind: LocalAssetKind, assetId?: string) =>
+  (await saveAssetFromUrl(url, kind, { assetId })).assetId;
+
+const getStoredAssetReference = (asset: StoredAsset): AssetReference => asset.reference ?? {
+  assetId: asset.id,
+  assetKind: getDefaultAssetKind(asset.kind),
+  mediaKind: asset.kind,
+  scope: 'project',
+  storage: 'indexeddb',
+  mimeType: asset.mimeType || asset.blob.type || 'application/octet-stream',
+  createdAt: asset.createdAt,
+};
+
+export const loadLocalAssetReference = async (assetId: string) => {
+  const asset = await withAssetStore<StoredAsset | undefined>('readonly', (store) => store.get(assetId));
+  return asset?.blob ? getStoredAssetReference(asset) : null;
 };
 
 export const loadLocalAssetObjectUrl = async (assetId: string) => {

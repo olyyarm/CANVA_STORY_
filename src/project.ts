@@ -30,8 +30,14 @@ import {
   ISEKAI_PROLOG_REQUIREMENT,
 } from './constants';
 import {
+  AssetKind,
+  AssetMediaKind,
+  AssetReference,
+  AssetScope,
+  AssetStorageDriver,
   ImagePipeline,
   NodeData,
+  NodeAssetReferences,
   NodesState,
   NodeType,
   ProjectDocument,
@@ -67,6 +73,22 @@ const imagePipelines = new Set<ImagePipeline>([
   'nano_banana_2_lite_compose',
 ]);
 
+const assetKinds = new Set<AssetKind>([
+  'character_reference',
+  'location_reference',
+  'scene_frame',
+  'system_insert',
+  'chapter_backdrop',
+  'narration_audio',
+  'scene_clip',
+  'chapter_video',
+  'other',
+]);
+const assetMediaKinds = new Set<AssetMediaKind>(['image', 'audio', 'video']);
+const assetScopes = new Set<AssetScope>(['project', 'chapter', 'scene', 'character', 'location']);
+const assetStorageDrivers = new Set<AssetStorageDriver>(['indexeddb', 'file']);
+const LEGACY_ASSET_CREATED_AT = '1970-01-01T00:00:00.000Z';
+
 const newId = () => {
   if (typeof crypto !== 'undefined' && 'randomUUID' in crypto) return crypto.randomUUID();
   return `${Date.now()}-${Math.random().toString(36).slice(2, 9)}`;
@@ -74,6 +96,123 @@ const newId = () => {
 
 const isRecord = (value: unknown): value is Record<string, unknown> =>
   Boolean(value) && typeof value === 'object' && !Array.isArray(value);
+
+const optionalString = (value: unknown) => typeof value === 'string' && value.trim()
+  ? value.trim()
+  : undefined;
+
+const sanitizeAssetReference = (value: unknown): AssetReference | null => {
+  if (!isRecord(value)) return null;
+  const assetId = optionalString(value.assetId);
+  const createdAt = optionalString(value.createdAt);
+  if (
+    !assetId
+    || !createdAt
+    || !assetKinds.has(value.assetKind as AssetKind)
+    || !assetMediaKinds.has(value.mediaKind as AssetMediaKind)
+    || !assetScopes.has(value.scope as AssetScope)
+    || !assetStorageDrivers.has(value.storage as AssetStorageDriver)
+  ) {
+    return null;
+  }
+
+  return {
+    assetId,
+    assetKind: value.assetKind as AssetKind,
+    mediaKind: value.mediaKind as AssetMediaKind,
+    scope: value.scope as AssetScope,
+    storage: value.storage as AssetStorageDriver,
+    ...(optionalString(value.projectId) ? { projectId: optionalString(value.projectId) } : {}),
+    ...(optionalString(value.chapterId) ? { chapterId: optionalString(value.chapterId) } : {}),
+    ...(optionalString(value.sceneId) ? { sceneId: optionalString(value.sceneId) } : {}),
+    ...(optionalString(value.canonicalId) ? { canonicalId: optionalString(value.canonicalId) } : {}),
+    ...(optionalString(value.sourcePrompt) ? { sourcePrompt: optionalString(value.sourcePrompt) } : {}),
+    ...(optionalString(value.filePath) ? { filePath: optionalString(value.filePath) } : {}),
+    ...(optionalString(value.mimeType) ? { mimeType: optionalString(value.mimeType) } : {}),
+    createdAt,
+    ...(optionalString(value.updatedAt) ? { updatedAt: optionalString(value.updatedAt) } : {}),
+  };
+};
+
+const inferLegacyAssetKind = (
+  metadata: Record<string, unknown>,
+  mediaKind: AssetMediaKind,
+  nodeType: NodeType,
+): AssetKind => {
+  if (mediaKind === 'audio') return 'narration_audio';
+  if (mediaKind === 'video') return nodeType === 'video_output' ? 'chapter_video' : 'scene_clip';
+  const legacyKind = optionalString(metadata.assetKind) ?? '';
+  if (legacyKind.startsWith('character_asset')) return 'character_reference';
+  if (legacyKind.startsWith('location_asset') || legacyKind === 'scene_location') return 'location_reference';
+  if (legacyKind.startsWith('system_insert')) return 'system_insert';
+  if (legacyKind === 'chapter_backdrop') return 'chapter_backdrop';
+  if (legacyKind.includes('frame')) return 'scene_frame';
+  return 'other';
+};
+
+const inferLegacyAssetScope = (assetKind: AssetKind, nodeType: NodeType): AssetScope => {
+  if (assetKind === 'character_reference') return 'character';
+  if (assetKind === 'location_reference') return 'location';
+  if (assetKind === 'chapter_backdrop' || assetKind === 'chapter_video') return 'chapter';
+  if (nodeType === 'scene' || assetKind === 'scene_frame' || assetKind === 'system_insert') return 'scene';
+  return 'project';
+};
+
+const getLegacyAssetReference = (
+  value: Record<string, unknown>,
+  metadata: Record<string, unknown>,
+  nodeId: string,
+  mediaKind: AssetMediaKind,
+): AssetReference | null => {
+  const idKey = mediaKind === 'image'
+    ? 'localAssetId'
+    : mediaKind === 'audio' ? 'localAudioAssetId' : 'localVideoAssetId';
+  const savedAtKey = mediaKind === 'image'
+    ? 'localAssetSavedAt'
+    : mediaKind === 'audio' ? 'localAudioAssetSavedAt' : 'localVideoAssetSavedAt';
+  const assetId = optionalString(metadata[idKey]);
+  if (!assetId) return null;
+
+  const nodeType = value.nodeType as NodeType;
+  const assetKind = inferLegacyAssetKind(metadata, mediaKind, nodeType);
+  const parentId = optionalString(value.parentId);
+  const sceneId = optionalString(metadata.sceneId)
+    ?? (nodeType === 'scene' ? nodeId : undefined)
+    ?? ((assetKind === 'scene_frame' || assetKind === 'system_insert') ? parentId : undefined);
+  const sourcePrompt = optionalString(value.assetPrompt) ?? optionalString(value.masterPrompt);
+  const canonicalId = optionalString(metadata.canonicalId) ?? optionalString(metadata.characterTag);
+
+  return {
+    assetId,
+    assetKind,
+    mediaKind,
+    scope: inferLegacyAssetScope(assetKind, nodeType),
+    storage: 'indexeddb',
+    ...(optionalString(metadata.projectId) ? { projectId: optionalString(metadata.projectId) } : {}),
+    ...(optionalString(metadata.chapterId) ? { chapterId: optionalString(metadata.chapterId) } : {}),
+    ...(sceneId ? { sceneId } : {}),
+    ...(canonicalId ? { canonicalId } : {}),
+    ...(sourcePrompt ? { sourcePrompt } : {}),
+    ...(optionalString(metadata.filePath) ? { filePath: optionalString(metadata.filePath) } : {}),
+    createdAt: optionalString(metadata[savedAtKey]) ?? LEGACY_ASSET_CREATED_AT,
+  };
+};
+
+const sanitizeNodeAssetReferences = (
+  value: unknown,
+  nodeValue: Record<string, unknown>,
+  metadata: Record<string, unknown>,
+  nodeId: string,
+): NodeAssetReferences | undefined => {
+  const source = isRecord(value) ? value : {};
+  const assets: NodeAssetReferences = {};
+  assetMediaKinds.forEach((mediaKind) => {
+    const reference = sanitizeAssetReference(source[mediaKind])
+      ?? getLegacyAssetReference(nodeValue, metadata, nodeId, mediaKind);
+    if (reference) assets[mediaKind] = reference;
+  });
+  return Object.keys(assets).length > 0 ? assets : undefined;
+};
 
 const finiteNumber = (value: unknown, fallback: number) =>
   typeof value === 'number' && Number.isFinite(value) ? value : fallback;
@@ -402,11 +541,12 @@ export const createProjectDocument = (title = 'Новый проект'): Projec
   };
 };
 
-const sanitizeNode = (value: unknown): NodeData | null => {
+const sanitizeNode = (value: unknown, nodeId: string): NodeData | null => {
   if (!isRecord(value) || !nodeTypes.has(value.nodeType as NodeType)) return null;
   if (typeof value.label !== 'string') return null;
   const imagePipeline = getStoredImagePipeline(value);
   const metadata = isRecord(value.metadata) ? value.metadata : {};
+  const assets = sanitizeNodeAssetReferences(value.assets, value, metadata, nodeId);
   const sourceKind = typeof metadata.sourceKind === 'string' ? metadata.sourceKind : '';
   const label = sourceKind === 'chapter_topic' && value.label === 'Тема главы'
     ? 'Зерно истории'
@@ -427,6 +567,7 @@ const sanitizeNode = (value: unknown): NodeData | null => {
     imageUrl: undefined,
     audioUrl: undefined,
     videoUrl: undefined,
+    assets,
     systemPrompt: getStoredSystemPrompt(value),
     ...(imagePipeline ? { imagePipeline } : {}),
   };
@@ -437,7 +578,7 @@ const sanitizeNodes = (value: unknown): NodesState => {
   if (!isRecord(value)) throw new Error('В файле нет объекта nodes.');
   const nodes: NodesState = {};
   Object.entries(value).forEach(([nodeId, nodeValue]) => {
-    const node = sanitizeNode(nodeValue);
+    const node = sanitizeNode(nodeValue, nodeId);
     if (node) nodes[nodeId] = node;
   });
   return nodes;
@@ -449,6 +590,21 @@ const sanitizeViewport = (value: unknown): ViewportState => {
     x: finiteNumber(value.x, 48),
     y: finiteNumber(value.y, 48),
     zoom: Math.min(2, Math.max(0.35, finiteNumber(value.zoom, 1))),
+  };
+};
+
+const sanitizeProjectExtensions = (value: unknown): ProjectDocument['extensions'] => {
+  const extensions = isRecord(value) ? value : {};
+  const assets = Array.isArray(extensions.assets)
+    ? extensions.assets
+      .map(sanitizeAssetReference)
+      .filter((asset): asset is AssetReference => Boolean(asset))
+    : [];
+  return {
+    characters: Array.isArray(extensions.characters) ? extensions.characters : [],
+    locations: Array.isArray(extensions.locations) ? extensions.locations : [],
+    episodes: Array.isArray(extensions.episodes) ? extensions.episodes : [],
+    assets,
   };
 };
 
@@ -475,9 +631,7 @@ export const parseProjectJson = (json: string): ProjectDocument => {
     updatedAt: new Date().toISOString(),
     nodes: ensureManagedPromptSnippetNodes(sanitizeNodes(value.nodes)),
     viewport: sanitizeViewport(value.viewport),
-    extensions: isRecord(value.extensions)
-      ? value.extensions as ProjectDocument['extensions']
-      : { characters: [], locations: [], episodes: [], assets: [] },
+    extensions: sanitizeProjectExtensions(value.extensions),
   };
 };
 

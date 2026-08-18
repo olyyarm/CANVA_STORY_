@@ -185,6 +185,7 @@ export const restoreImageAssetUrlsForProject = async (projectId: string, nodes: 
     Object.entries(nodes).map(async ([nodeId, node]) => {
       if (node.nodeType !== 'pollinations_image' || node.imageUrl) return null;
       const savedAssetIds = [
+        node.assets?.image?.assetId ?? '',
         typeof node.metadata?.localAssetId === 'string' ? node.metadata.localAssetId : '',
         getNodeAssetId(projectId, nodeId, 'image'),
       ].filter((assetId, index, assetIds) => assetId && assetIds.indexOf(assetId) === index);
@@ -219,6 +220,7 @@ export const restoreMediaAssetUrlsForProject = async (projectId: string, nodes: 
       return plans.map(async (plan) => {
         const metadataAssetId = node.metadata?.[plan.metadataIdKey];
         const savedAssetIds = [
+          node.assets?.[plan.kind]?.assetId ?? '',
           typeof metadataAssetId === 'string' ? metadataAssetId : '',
           getNodeAssetId(projectId, nodeId, plan.kind),
         ].filter((assetId, index, assetIds) => assetId && assetIds.indexOf(assetId) === index);

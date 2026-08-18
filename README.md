@@ -155,6 +155,7 @@ Vite использует базовый путь `/CANVA_STORY_/`. Workflow `.g
 - `src/App.tsx` — оболочка проекта, канва и действия пользователя;
 - `src/components/NodeRenderer.tsx` — содержимое и состояния нод;
 - `src/hooks/useNodeManagement.ts` — основной сценарий и операции генерации;
+- `src/hooks/useAssetPersistence.ts` — сохранение и восстановление изображений, аудио и видео;
 - `src/hooks/useCanvasNavigation.ts` — pan, zoom, fit и center;
 - `src/hooks/useDraggableNodes.ts` — drag, selection и resize;
 - `src/api.ts` — выбор тестового, Mistral или LM Studio-режима;

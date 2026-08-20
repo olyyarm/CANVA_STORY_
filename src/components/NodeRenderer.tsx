@@ -61,7 +61,9 @@ interface NodeRendererProps {
   onSpeakNarration: (nodeId: string) => void;
   onStopSpeech: () => void;
   onGenerateOmniVoiceNarration: (nodeId: string) => Promise<void>;
+  onGenerateAlternateOmniVoiceNarration: (nodeId: string) => Promise<void>;
   onGenerateSceneOmniVoiceNarration: (nodeId: string) => Promise<void>;
+  onGenerateAlternateSceneOmniVoiceNarration: (nodeId: string) => Promise<void>;
   onBuildSceneVideoClip: (nodeId: string) => Promise<void>;
   onGenerateChapterBackdrop: (nodeId: string) => Promise<void>;
   onGenerateTimelineMissingAssets: (nodeId: string) => Promise<void>;
@@ -463,7 +465,9 @@ const NodeRenderer: React.FC<NodeRendererProps> = ({
   onSpeakNarration,
   onStopSpeech,
   onGenerateOmniVoiceNarration,
+  onGenerateAlternateOmniVoiceNarration,
   onGenerateSceneOmniVoiceNarration,
+  onGenerateAlternateSceneOmniVoiceNarration,
   onBuildSceneVideoClip,
   onGenerateChapterBackdrop,
   onGenerateTimelineMissingAssets,
@@ -1398,6 +1402,14 @@ const NodeRenderer: React.FC<NodeRendererProps> = ({
         {node.nodeType === 'script_detail' && node.audioUrl && (
           <div className="node-audio-player" onMouseDown={stopMouseDown}>
             <audio controls src={node.audioUrl} />
+            <button
+              type="button"
+              className="node-secondary-button"
+              onClick={(event) => runWithoutDrag(event, () => void onGenerateAlternateOmniVoiceNarration(id))}
+              disabled={Boolean(node.isLoading || node.isLoadingImage || node.isLoadingAudio || node.isSpeaking)}
+            >
+              Другой дубль
+            </button>
           </div>
         )}
 
@@ -1518,8 +1530,7 @@ const NodeRenderer: React.FC<NodeRendererProps> = ({
                 </button>
               )}
             </div>
-            {imageProvider === 'comfyui' && (
-              <div className="node-segmented-actions node-segmented-actions--voice scene-node__media-actions">
+            <div className="node-segmented-actions node-segmented-actions--voice scene-node__media-actions">
                 <button
                   type="button"
                   onMouseDown={stopMouseDown}
@@ -1530,6 +1541,16 @@ const NodeRenderer: React.FC<NodeRendererProps> = ({
                 >
                   {node.isLoadingAudio ? 'Отменить озвучку' : 'Озвучить сцену'}
                 </button>
+                {node.audioUrl && (
+                  <button
+                    type="button"
+                    onMouseDown={stopMouseDown}
+                    onClick={(event) => runWithoutDrag(event, () => void onGenerateAlternateSceneOmniVoiceNarration(id))}
+                    disabled={Boolean(node.isLoading || node.isLoadingImage || node.isLoadingAudio || node.isLoadingVideo)}
+                  >
+                    Другой дубль
+                  </button>
+                )}
                 <button
                   type="button"
                   onMouseDown={stopMouseDown}
@@ -1541,7 +1562,6 @@ const NodeRenderer: React.FC<NodeRendererProps> = ({
                   {node.isLoadingVideo ? 'Отменить клип' : 'Клип 16:9'}
                 </button>
               </div>
-            )}
             {node.audioUrl && (
               <div className="node-audio-player" onMouseDown={stopMouseDown}>
                 <audio controls src={node.audioUrl} />
@@ -1765,16 +1785,24 @@ const NodeRenderer: React.FC<NodeRendererProps> = ({
                               Banana
                             </button>
                           )}
-                          {imageProvider === 'comfyui' && (
+                          <button
+                            type="button"
+                            onMouseDown={stopMouseDown}
+                            onClick={(event) => runWithoutDrag(event, () => scene.isLoadingAudio
+                              ? onCancelGeneration(sceneId)
+                              : void onGenerateSceneOmniVoiceNarration(sceneId))}
+                            disabled={Boolean(scene.isLoading || scene.isLoadingImage || scene.isLoadingVideo)}
+                          >
+                            Озвучка
+                          </button>
+                          {scene.audioUrl && (
                             <button
                               type="button"
                               onMouseDown={stopMouseDown}
-                              onClick={(event) => runWithoutDrag(event, () => scene.isLoadingAudio
-                                ? onCancelGeneration(sceneId)
-                                : void onGenerateSceneOmniVoiceNarration(sceneId))}
-                              disabled={Boolean(scene.isLoading || scene.isLoadingImage || scene.isLoadingVideo)}
+                              onClick={(event) => runWithoutDrag(event, () => void onGenerateAlternateSceneOmniVoiceNarration(sceneId))}
+                              disabled={Boolean(scene.isLoading || scene.isLoadingImage || scene.isLoadingAudio || scene.isLoadingVideo)}
                             >
-                              Озвучка
+                              Другой дубль
                             </button>
                           )}
                           {imageProvider === 'comfyui' && (

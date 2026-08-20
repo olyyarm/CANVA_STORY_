@@ -94,6 +94,10 @@ if errorlevel 1 (
   exit /b 1
 )
 
+if exist "%COMFY_ROOT%\ComfyUI\custom_nodes\was-node-suite-comfyui\ffmpeg\ffmpeg.exe" (
+  set "PATH=%COMFY_ROOT%\ComfyUI\custom_nodes\was-node-suite-comfyui\ffmpeg;%PATH%"
+)
+
 echo Opening ComfyUI in a separate window...
 start "ComfyUI for CANVA STORY" /D "%COMFY_ROOT%" cmd /k ".\python_embeded\python.exe -s ComfyUI\main.py --windows-standalone-build --front-end-version Comfy-Org/ComfyUI_frontend@latest --listen 127.0.0.1 --port %COMFY_PORT% --enable-cors-header *"
 

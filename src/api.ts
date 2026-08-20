@@ -1,6 +1,7 @@
 import { createMockCompletion } from './mockData';
 import { COMFY_GEMINI_MODELS } from './constants';
-import { ChatApiResponse, GenerationRequest, ImagePipeline, ImagePromptKind } from './types';
+import { getOmniVoiceSteps, OMNIVOICE_DEFAULT_VOICE_INSTRUCT } from './narrationSettings';
+import { ChatApiResponse, GenerationRequest, ImagePipeline, ImagePromptKind, NarrationSettings } from './types';
 
 const MISTRAL_ENDPOINT = 'https://api.mistral.ai/v1/chat/completions';
 export const LM_STUDIO_DEFAULT_ENDPOINT = 'http://localhost:1234/v1/chat/completions';
@@ -1062,54 +1063,142 @@ export const unloadComfyModels = async (settings: ImageGenerationSettings, signa
   await freeComfyModels(getComfyBaseUrl(settings.comfyEndpoint), signal);
 };
 
+export interface OmniVoiceReferenceInput {
+  blob: Blob;
+  fileName: string;
+  assetId: string;
+  transcript: string;
+}
+
+const getComfyOmniVoiceModelName = (settings: NarrationSettings) =>
+  `${settings.model} (auto download)`;
+
+const getComfyOmniVoiceCommonInputs = (settings: NarrationSettings, seed: number) => ({
+  model: getComfyOmniVoiceModelName(settings),
+  steps: getOmniVoiceSteps(settings.quality),
+  guidance_scale: 2,
+  t_shift: 0.1,
+  speed: 0.9,
+  duration: 0,
+  device: 'auto',
+  dtype: settings.model === 'OmniVoice' ? 'fp32' : 'bf16',
+  attention: 'auto',
+  seed,
+  position_temperature: 0,
+  class_temperature: 0,
+  layer_penalty_factor: 5,
+  denoise: true,
+  postprocess_output: true,
+  keep_model_loaded: true,
+});
+
 const buildComfyOmniVoiceDesignWorkflow = (
   text: string,
-  voiceInstruct: string,
+  settings: NarrationSettings,
+  seed: number,
+) => ({
+  '1': {
+    class_type: 'OmniVoiceVoiceDesignTTS',
+    inputs: {
+      ...getComfyOmniVoiceCommonInputs(settings, seed),
+      text,
+      voice_instruct: settings.voiceInstruct.trim() || OMNIVOICE_DEFAULT_VOICE_INSTRUCT,
+    },
+  },
+  '2': {
+    class_type: 'PreviewAudio',
+    inputs: {
+      audio: ['1', 0],
+    },
+  },
+});
+
+const buildComfyOmniVoiceCloneWorkflow = (
+  text: string,
+  settings: NarrationSettings,
+  seed: number,
+  uploadedAudioPath: string,
+  transcript: string,
+) => ({
+  '0': {
+    class_type: 'LoadAudio',
+    inputs: {
+      audio: uploadedAudioPath,
+    },
+  },
+  '1': {
+    class_type: 'OmniVoiceVoiceCloneTTS',
+    inputs: {
+      ...getComfyOmniVoiceCommonInputs(settings, seed),
+      text,
+      ref_audio: ['0', 0],
+      ref_text: transcript,
+      preprocess_prompt: true,
+      instruct: '',
+    },
+  },
+  '2': {
+    class_type: 'PreviewAudio',
+    inputs: {
+      audio: ['1', 0],
+    },
+  },
+});
+
+const uploadComfyOmniVoiceReference = async (
+  baseUrl: string,
+  reference: OmniVoiceReferenceInput,
+  signal?: AbortSignal,
 ) => {
-  const seed = Math.floor(Math.random() * 2_000_000_000);
-  return {
-    '1': {
-      class_type: 'OmniVoiceVoiceDesignTTS',
-      inputs: {
-        model: 'OmniVoice-bf16',
-        text,
-        voice_instruct: voiceInstruct,
-        steps: 32,
-        guidance_scale: 2,
-        t_shift: 0.1,
-        speed: 0.9,
-        duration: 0,
-        device: 'auto',
-        dtype: 'auto',
-        attention: 'auto',
-        seed,
-        position_temperature: 5,
-        class_temperature: 0,
-        layer_penalty_factor: 5,
-        denoise: true,
-        postprocess_output: true,
-        keep_model_loaded: true,
-      },
-    },
-    '2': {
-      class_type: 'PreviewAudio',
-      inputs: {
-        audio: ['1', 0],
-      },
-    },
-  };
+  const extensionMatch = reference.fileName.match(/\.[a-z0-9]{1,8}$/iu);
+  const extension = extensionMatch?.[0]?.toLowerCase() ?? '.wav';
+  const safeAssetId = reference.assetId.replace(/[^a-z0-9._-]+/giu, '-').slice(-96) || 'narrator';
+  const formData = new FormData();
+  formData.append('image', reference.blob, `${safeAssetId}${extension}`);
+  formData.append('type', 'input');
+  formData.append('subfolder', 'canva_story/voice_references');
+  formData.append('overwrite', 'true');
+  const response = await fetch(`${baseUrl}/upload/image`, getComfyFetchOptions({
+    method: 'POST',
+    signal,
+    body: formData,
+  }));
+  if (!response.ok) {
+    throw new Error(getComfyError('ComfyUI не принял референс голоса', response, await readResponseDetails(response)));
+  }
+  const uploaded = await response.json() as { name?: string; subfolder?: string };
+  if (!uploaded.name) throw new Error('ComfyUI не вернул имя загруженного голосового референса.');
+  return uploaded.subfolder ? `${uploaded.subfolder}/${uploaded.name}` : uploaded.name;
 };
 
-export const generateComfyOmniVoiceDesignAudio = async (
+export const generateComfyOmniVoiceAudio = async (
   text: string,
-  voiceInstruct: string,
+  narrationSettings: NarrationSettings,
   settings: ImageGenerationSettings,
+  reference: OmniVoiceReferenceInput | undefined,
+  seedOverride?: number,
   signal?: AbortSignal,
 ) => {
   const baseUrl = getComfyBaseUrl(settings.comfyEndpoint);
   try {
-    if (settings.provider !== 'comfyui') throw new Error('OmniVoice работает только через ComfyUI.');
-    const workflow = buildComfyOmniVoiceDesignWorkflow(text, voiceInstruct);
+    const seed = seedOverride ?? narrationSettings.seed;
+    let workflow: Record<string, { class_type: string; inputs: Record<string, unknown> }>;
+    if (narrationSettings.mode === 'clone') {
+      if (!reference?.blob) throw new Error('Для Voice Clone выберите референс голоса длительностью 3–15 секунд.');
+      if (!reference.transcript.trim()) {
+        throw new Error('Для Voice Clone добавьте точную расшифровку референса. Так OmniVoice не будет загружать Whisper и точнее сохранит голос.');
+      }
+      const uploadedAudioPath = await uploadComfyOmniVoiceReference(baseUrl, reference, signal);
+      workflow = buildComfyOmniVoiceCloneWorkflow(
+        text,
+        narrationSettings,
+        seed,
+        uploadedAudioPath,
+        reference.transcript.trim(),
+      );
+    } else {
+      workflow = buildComfyOmniVoiceDesignWorkflow(text, narrationSettings, seed);
+    }
     const clientId = typeof crypto.randomUUID === 'function'
       ? crypto.randomUUID()
       : `canva-story-omnivoice-${Date.now()}`;

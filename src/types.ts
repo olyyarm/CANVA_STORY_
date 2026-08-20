@@ -43,6 +43,7 @@ export type AssetKind =
   | 'scene_frame'
   | 'system_insert'
   | 'chapter_backdrop'
+  | 'voice_reference'
   | 'narration_audio'
   | 'scene_clip'
   | 'chapter_video'
@@ -68,6 +69,21 @@ export interface AssetReference {
 }
 
 export type NodeAssetReferences = Partial<Record<AssetMediaKind, AssetReference>>;
+
+export type OmniVoiceMode = 'design' | 'clone';
+export type OmniVoiceModel = 'OmniVoice-bf16' | 'OmniVoice';
+export type OmniVoiceQuality = 'fast' | 'balanced' | 'quality';
+
+export interface NarrationSettings {
+  mode: OmniVoiceMode;
+  model: OmniVoiceModel;
+  quality: OmniVoiceQuality;
+  seed: number;
+  voiceInstruct: string;
+  referenceAudio?: AssetReference;
+  referenceFileName?: string;
+  referenceText?: string;
+}
 
 export interface NodeData {
   x: number;
@@ -149,6 +165,7 @@ export interface ProjectDocument {
     locations?: unknown[];
     episodes?: unknown[];
     assets?: AssetReference[];
+    narration?: NarrationSettings;
   };
 }
 

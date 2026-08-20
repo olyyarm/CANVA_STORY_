@@ -84,6 +84,7 @@ const collectAssetReferences = (project: ProjectDocument) => {
     addReference(node.assets?.audio);
     addReference(node.assets?.video);
   });
+  addReference(project.extensions?.narration?.referenceAudio);
   project.extensions?.assets?.forEach(addReference);
   return [...references.values()];
 };
@@ -120,6 +121,17 @@ const normalizeImportedProjectStorage = (project: ProjectDocument): ProjectDocum
   ])),
   extensions: {
     ...project.extensions,
+    ...(project.extensions?.narration ? {
+      narration: {
+        ...project.extensions.narration,
+        ...(project.extensions.narration.referenceAudio ? {
+          referenceAudio: {
+            ...project.extensions.narration.referenceAudio,
+            storage: 'indexeddb' as const,
+          },
+        } : {}),
+      },
+    } : {}),
     assets: collectAssetReferences(project).map((reference) => ({
       ...reference,
       storage: 'indexeddb',

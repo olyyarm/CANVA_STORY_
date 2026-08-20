@@ -29,6 +29,7 @@ import {
   SYSTEM_INSERTS_DETAIL_SYSTEM_PROMPT,
   ISEKAI_PROLOG_REQUIREMENT,
 } from './constants';
+import { createDefaultNarrationSettings, sanitizeNarrationSettings } from './narrationSettings';
 import {
   AssetKind,
   AssetMediaKind,
@@ -79,6 +80,7 @@ const assetKinds = new Set<AssetKind>([
   'scene_frame',
   'system_insert',
   'chapter_backdrop',
+  'voice_reference',
   'narration_audio',
   'scene_clip',
   'chapter_video',
@@ -537,6 +539,7 @@ export const createProjectDocument = (title = 'Новый проект'): Projec
       locations: [],
       episodes: [],
       assets: [],
+      narration: createDefaultNarrationSettings(),
     },
   };
 };
@@ -600,11 +603,17 @@ const sanitizeProjectExtensions = (value: unknown): ProjectDocument['extensions'
       .map(sanitizeAssetReference)
       .filter((asset): asset is AssetReference => Boolean(asset))
     : [];
+  const narrationValue = isRecord(extensions.narration) ? extensions.narration : {};
+  const narrationReference = sanitizeAssetReference(narrationValue.referenceAudio);
   return {
     characters: Array.isArray(extensions.characters) ? extensions.characters : [],
     locations: Array.isArray(extensions.locations) ? extensions.locations : [],
     episodes: Array.isArray(extensions.episodes) ? extensions.episodes : [],
     assets,
+    narration: sanitizeNarrationSettings(
+      narrationValue,
+      narrationReference?.mediaKind === 'audio' ? narrationReference : undefined,
+    ),
   };
 };
 

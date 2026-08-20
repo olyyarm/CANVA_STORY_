@@ -10,13 +10,14 @@ import {
   Flux2CharacterReference,
   generateComfyFlux2ComposeImage,
   generateComfyNanoBanana2LiteComposeImage,
-  generateComfyOmniVoiceDesignAudio,
+  generateComfyOmniVoiceAudio,
   generateImage,
   generateText,
   GenerationSettings,
   ImageGenerationSettings,
   unloadLmStudioModels,
 } from '../api';
+import { loadLocalAssetRecord } from '../assetStorage';
 import {
   ASSOCIATE_SYSTEM_PROMPT,
   CHARACTER_ASSET_PROMPT_SYSTEM_PROMPT,
@@ -59,6 +60,7 @@ import {
   SYSTEM_INSERTS_DETAIL_SYSTEM_PROMPT,
   TTS_CLEANUP_SYSTEM_PROMPT,
 } from '../constants';
+import { getNextNarrationSeed } from '../narrationSettings';
 import { SCENE_WRITER_CHARACTER_TAG_CONTRACT, SCENE_WRITER_SHOT_SCALE_CONTRACT, SCENE_WRITER_SPLIT_SYSTEM_PROMPT } from '../promptPresets';
 import {
   AppNotice,
@@ -67,6 +69,7 @@ import {
   GenerationRequest,
   ImagePipeline,
   ImagePromptKind,
+  NarrationSettings,
   NodeData,
   NodesState,
 } from '../types';
@@ -154,7 +157,9 @@ interface UseNodeManagementReturn {
   handleSpeakNarration: (detailNodeId: string) => void;
   handleStopSpeech: () => void;
   handleGenerateOmniVoiceNarration: (detailNodeId: string) => Promise<void>;
+  handleGenerateAlternateOmniVoiceNarration: (detailNodeId: string) => Promise<void>;
   handleGenerateSceneOmniVoiceNarration: (sceneNodeId: string) => Promise<void>;
+  handleGenerateAlternateSceneOmniVoiceNarration: (sceneNodeId: string) => Promise<void>;
   handleBuildSceneVideoClip: (sceneNodeId: string) => Promise<void>;
   handleGenerateChapterBackdrop: (timelineNodeId: string) => Promise<void>;
   handleGenerateTimelineMissingAssets: (timelineNodeId: string) => Promise<void>;
@@ -689,9 +694,6 @@ const splitSpeechText = (text: string) => {
   if (current) chunks.push(current);
   return chunks;
 };
-
-const OMNIVOICE_NARRATOR_VOICE =
-  'male, middle-aged, low pitch, russian accent';
 
 const getSceneNumber = (label: string) => {
   const match = label.match(/\d+/u);
@@ -1570,6 +1572,8 @@ export const useNodeManagement = (
   initialNodes: NodesState,
   generationSettings: GenerationSettings,
   imageGenerationSettings: ImageGenerationSettings,
+  narrationSettings: NarrationSettings,
+  onNarrationSeedChange: (seed: number) => void,
 ): UseNodeManagementReturn => {
   const [nodes, setNodesState] = useState<NodesState>(initialNodes);
   const [notice, setNotice] = useState<AppNotice | null>(null);
@@ -4638,7 +4642,25 @@ export const useNodeManagement = (
     speakChunk(0);
   }, [showNotice, updateNode]);
 
-  const handleGenerateOmniVoiceNarration = useCallback(async (detailNodeId: string) => {
+  const getOmniVoiceReferenceInput = useCallback(async () => {
+    if (narrationSettings.mode !== 'clone') return undefined;
+    const reference = narrationSettings.referenceAudio;
+    if (!reference?.assetId) {
+      throw new Error('Для Voice Clone выберите голосовой референс длительностью 3–15 секунд в настройках озвучки.');
+    }
+    const record = await loadLocalAssetRecord(reference.assetId);
+    if (!record) {
+      throw new Error('Голосовой референс не найден в локальном хранилище. Выберите аудиофайл заново или откройте переносимый пакет проекта.');
+    }
+    return {
+      blob: record.blob,
+      fileName: narrationSettings.referenceFileName || reference.filePath || 'narrator-reference.wav',
+      assetId: reference.assetId,
+      transcript: narrationSettings.referenceText?.trim() ?? '',
+    };
+  }, [narrationSettings]);
+
+  const handleGenerateOmniVoiceNarration = useCallback(async (detailNodeId: string, seedOverride?: number) => {
     const detailNode = nodesRef.current[detailNodeId];
     const rawText = detailNode?.inputValue?.trim();
     if (!detailNode || detailNode.nodeType !== 'script_detail') return;
@@ -4657,6 +4679,7 @@ export const useNodeManagement = (
     if (activeRequests.current.has(requestId)) return;
     const controller = new AbortController();
     activeRequests.current.set(requestId, controller);
+    const effectiveSeed = seedOverride ?? narrationSettings.seed;
 
     try {
       updateNode(detailNodeId, {
@@ -4664,13 +4687,17 @@ export const useNodeManagement = (
         loadingProvider: 'comfyui',
         error: undefined,
         pollinationsApiError: undefined,
-        statusMessage: 'OmniVoice поставлен в очередь ComfyUI и готовит озвучку...',
+        statusMessage: narrationSettings.mode === 'clone'
+          ? 'OmniVoice загружает голосовой референс и готовит стабильную озвучку...'
+          : 'OmniVoice поставлен в очередь ComfyUI и готовит озвучку...',
       });
 
-      const audioUrl = await generateComfyOmniVoiceDesignAudio(
+      const audioUrl = await generateComfyOmniVoiceAudio(
         text,
-        OMNIVOICE_NARRATOR_VOICE,
+        narrationSettings,
         imageGenerationSettings,
+        await getOmniVoiceReferenceInput(),
+        effectiveSeed,
         controller.signal,
       );
 
@@ -4689,7 +4716,11 @@ export const useNodeManagement = (
             metadata: {
               ...currentNode.metadata,
               ttsProvider: 'omnivoice',
-              voiceInstruct: OMNIVOICE_NARRATOR_VOICE,
+              voiceInstruct: narrationSettings.voiceInstruct,
+              ttsMode: narrationSettings.mode,
+              ttsModel: narrationSettings.model,
+              ttsQuality: narrationSettings.quality,
+              ttsSeed: effectiveSeed,
               ttsGeneratedAt: new Date().toISOString(),
             },
           },
@@ -4712,9 +4743,9 @@ export const useNodeManagement = (
         statusMessage: undefined,
       });
     }
-  }, [imageGenerationSettings, setNodes, showNotice, updateNode]);
+  }, [getOmniVoiceReferenceInput, imageGenerationSettings, narrationSettings, setNodes, showNotice, updateNode]);
 
-  const handleGenerateSceneOmniVoiceNarration = useCallback(async (sceneNodeId: string) => {
+  const handleGenerateSceneOmniVoiceNarration = useCallback(async (sceneNodeId: string, seedOverride?: number) => {
     const currentNodes = nodesRef.current;
     const sceneNode = currentNodes[sceneNodeId];
     const outputNode = sceneNode?.parentId ? currentNodes[sceneNode.parentId] : undefined;
@@ -4743,19 +4774,24 @@ export const useNodeManagement = (
     if (activeRequests.current.has(requestId)) return;
     const controller = new AbortController();
     activeRequests.current.set(requestId, controller);
+    const effectiveSeed = seedOverride ?? narrationSettings.seed;
 
     try {
       updateNode(sceneNodeId, {
         isLoadingAudio: true,
         loadingProvider: 'comfyui',
         pollinationsApiError: undefined,
-        statusMessage: 'OmniVoice озвучивает эту сцену мужским голосом...',
+        statusMessage: narrationSettings.mode === 'clone'
+          ? 'OmniVoice озвучивает сцену голосом из референса...'
+          : 'OmniVoice озвучивает эту сцену голосом проекта...',
       });
 
-      const audioUrl = await generateComfyOmniVoiceDesignAudio(
+      const audioUrl = await generateComfyOmniVoiceAudio(
         text,
-        OMNIVOICE_NARRATOR_VOICE,
+        narrationSettings,
         imageGenerationSettings,
+        await getOmniVoiceReferenceInput(),
+        effectiveSeed,
         controller.signal,
       );
 
@@ -4783,7 +4819,11 @@ export const useNodeManagement = (
             metadata: {
               ...metadataWithoutStaleVideo,
               ttsProvider: 'omnivoice',
-              voiceInstruct: OMNIVOICE_NARRATOR_VOICE,
+              voiceInstruct: narrationSettings.voiceInstruct,
+              ttsMode: narrationSettings.mode,
+              ttsModel: narrationSettings.model,
+              ttsQuality: narrationSettings.quality,
+              ttsSeed: effectiveSeed,
               sceneNarrationText: text,
               ttsGeneratedAt: new Date().toISOString(),
             },
@@ -4807,7 +4847,19 @@ export const useNodeManagement = (
         statusMessage: undefined,
       });
     }
-  }, [imageGenerationSettings, setNodes, showNotice, updateNode]);
+  }, [getOmniVoiceReferenceInput, imageGenerationSettings, narrationSettings, setNodes, showNotice, updateNode]);
+
+  const handleGenerateAlternateOmniVoiceNarration = useCallback(async (detailNodeId: string) => {
+    const nextSeed = getNextNarrationSeed(narrationSettings.seed);
+    onNarrationSeedChange(nextSeed);
+    await handleGenerateOmniVoiceNarration(detailNodeId, nextSeed);
+  }, [handleGenerateOmniVoiceNarration, narrationSettings.seed, onNarrationSeedChange]);
+
+  const handleGenerateAlternateSceneOmniVoiceNarration = useCallback(async (sceneNodeId: string) => {
+    const nextSeed = getNextNarrationSeed(narrationSettings.seed);
+    onNarrationSeedChange(nextSeed);
+    await handleGenerateSceneOmniVoiceNarration(sceneNodeId, nextSeed);
+  }, [handleGenerateSceneOmniVoiceNarration, narrationSettings.seed, onNarrationSeedChange]);
 
   const handleBuildSceneVideoClip = useCallback(async (sceneNodeId: string) => {
     const currentNodes = nodesRef.current;
@@ -5983,7 +6035,9 @@ export const useNodeManagement = (
     handleSpeakNarration,
     handleStopSpeech,
     handleGenerateOmniVoiceNarration,
+    handleGenerateAlternateOmniVoiceNarration,
     handleGenerateSceneOmniVoiceNarration,
+    handleGenerateAlternateSceneOmniVoiceNarration,
     handleBuildSceneVideoClip,
     handleGenerateChapterBackdrop,
     handleGenerateTimelineMissingAssets,

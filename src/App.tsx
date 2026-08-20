@@ -22,6 +22,7 @@ import {
 import {
   deleteLocalAsset,
   getNodeAssetId,
+  saveAssetBlob,
 } from './assetStorage';
 import NodeRenderer from './components/NodeRenderer';
 import { useAssetPersistence } from './hooks/useAssetPersistence';
@@ -43,7 +44,24 @@ import {
   importPortableProjectPackage,
   isPortableProjectPackageFile,
 } from './portableProject';
-import { AppNotice, NodeData, NodesState, ProjectDocument, ViewportState } from './types';
+import {
+  createDefaultNarrationSettings,
+  getNextNarrationSeed,
+  getRandomOmniVoiceNarratorPreset,
+  isOmniVoiceNarratorPreset,
+  OMNIVOICE_MAX_SEED,
+  OMNIVOICE_MODEL_OPTIONS,
+  OMNIVOICE_NARRATOR_PRESETS,
+  OMNIVOICE_QUALITY_OPTIONS,
+} from './narrationSettings';
+import {
+  AppNotice,
+  NarrationSettings,
+  NodeData,
+  NodesState,
+  ProjectDocument,
+  ViewportState,
+} from './types';
 import { errorMessage } from './utils';
 import './App.css';
 
@@ -190,6 +208,17 @@ const downloadBlob = (blob: Blob, fileName: string) => {
   window.setTimeout(() => URL.revokeObjectURL(url), 0);
 };
 
+const withNarrationSettings = (
+  project: ProjectDocument,
+  narration: NarrationSettings,
+): ProjectDocument => ({
+  ...project,
+  extensions: {
+    ...project.extensions,
+    narration,
+  },
+});
+
 const App = () => {
   const [bootstrap] = useState(() => {
     const savedProject = loadSavedProject();
@@ -197,6 +226,7 @@ const App = () => {
   });
   const canvasRef = useRef<HTMLDivElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const voiceReferenceInputRef = useRef<HTMLInputElement>(null);
   const projectRef = useRef<ProjectDocument>(bootstrap.project);
   const previousNodeCount = useRef(0);
   const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null);
@@ -214,9 +244,15 @@ const App = () => {
   const [lmStudioModelsStatus, setLmStudioModelsStatus] = useState<'idle' | 'loading' | 'ready' | 'error'>('idle');
   const [lmStudioModelsError, setLmStudioModelsError] = useState('');
   const [imageGenerationSettings, setImageGenerationSettings] = useState<ImageGenerationSettings>(loadImageGenerationSettings);
+  const [narrationSettings, setNarrationSettings] = useState<NarrationSettings>(
+    () => bootstrap.project.extensions?.narration ?? createDefaultNarrationSettings(),
+  );
   const [viewport, setViewport] = useState<ViewportState>(bootstrap.project.viewport);
   const [timelineFocusMode, setTimelineFocusMode] = useState(false);
   const [expandedFocusNodeIds, setExpandedFocusNodeIds] = useState<Set<string>>(() => new Set());
+  const handleNarrationSeedChange = useCallback((seed: number) => {
+    setNarrationSettings((settings) => ({ ...settings, seed }));
+  }, []);
   const {
     nodes,
     setNodes,
@@ -272,7 +308,9 @@ const App = () => {
     handleSpeakNarration,
     handleStopSpeech,
     handleGenerateOmniVoiceNarration,
+    handleGenerateAlternateOmniVoiceNarration,
     handleGenerateSceneOmniVoiceNarration,
+    handleGenerateAlternateSceneOmniVoiceNarration,
     handleBuildSceneVideoClip,
     handleGenerateChapterBackdrop,
     handleGenerateTimelineMissingAssets,
@@ -285,7 +323,13 @@ const App = () => {
     handleToggleReferenceImage,
     handleSetCharacterCanonicalAsset,
     handleCancelGeneration,
-  } = useNodeManagement(bootstrap.project.nodes, generationSettings, imageGenerationSettings);
+  } = useNodeManagement(
+    bootstrap.project.nodes,
+    generationSettings,
+    imageGenerationSettings,
+    narrationSettings,
+    handleNarrationSeedChange,
+  );
 
   const clearSelection = useCallback(() => {
     setSelectedNodeId(null);
@@ -561,7 +605,12 @@ const App = () => {
     setSaveStatus('saving');
     const timer = window.setTimeout(() => {
       try {
-        const snapshot = projectSnapshot(projectRef.current, nodes, viewport, projectTitle);
+        const snapshot = projectSnapshot(
+          withNarrationSettings(projectRef.current, narrationSettings),
+          nodes,
+          viewport,
+          projectTitle,
+        );
         saveProject(snapshot);
         projectRef.current = snapshot;
         setSaveStatus('saved');
@@ -570,19 +619,24 @@ const App = () => {
       }
     }, 550);
     return () => window.clearTimeout(timer);
-  }, [nodes, projectTitle, viewport]);
+  }, [narrationSettings, nodes, projectTitle, viewport]);
 
   useEffect(() => {
     const saveBeforeUnload = () => {
       try {
-        saveProject(projectSnapshot(projectRef.current, nodes, viewport, projectTitle));
+        saveProject(projectSnapshot(
+          withNarrationSettings(projectRef.current, narrationSettings),
+          nodes,
+          viewport,
+          projectTitle,
+        ));
       } catch {
         // The visible save indicator reports quota or storage failures during normal work.
       }
     };
     window.addEventListener('beforeunload', saveBeforeUnload);
     return () => window.removeEventListener('beforeunload', saveBeforeUnload);
-  }, [nodes, projectTitle, viewport]);
+  }, [narrationSettings, nodes, projectTitle, viewport]);
 
   useEffect(() => {
     const nodeCount = nodeEntries.length;
@@ -646,6 +700,7 @@ const App = () => {
     setNodes(project.nodes);
     setViewport(project.viewport);
     setProjectTitle(project.title);
+    setNarrationSettings(project.extensions?.narration ?? createDefaultNarrationSettings());
     setSelectedNodeId(null);
     setDeleteCandidateId(null);
     setPendingProjectAction(null);
@@ -680,7 +735,12 @@ const App = () => {
     if (isSavingPackage) return;
     setIsSavingPackage(true);
     try {
-      const snapshot = projectSnapshot(projectRef.current, nodes, viewport, projectTitle);
+      const snapshot = projectSnapshot(
+        withNarrationSettings(projectRef.current, narrationSettings),
+        nodes,
+        viewport,
+        projectTitle,
+      );
       const result = await buildPortableProjectPackage(snapshot);
       downloadBlob(result.blob, `${getSafeProjectFileName(snapshot.title)}.canva-story.zip`);
       if (result.missingAssetIds.length > 0) {
@@ -699,14 +759,19 @@ const App = () => {
     } finally {
       setIsSavingPackage(false);
     }
-  }, [isSavingPackage, nodes, projectTitle, showProjectNotice, viewport]);
+  }, [isSavingPackage, narrationSettings, nodes, projectTitle, showProjectNotice, viewport]);
 
   const handleExportJson = useCallback(() => {
-    const snapshot = projectSnapshot(projectRef.current, nodes, viewport, projectTitle);
+    const snapshot = projectSnapshot(
+      withNarrationSettings(projectRef.current, narrationSettings),
+      nodes,
+      viewport,
+      projectTitle,
+    );
     const blob = new Blob([projectToJson(snapshot)], { type: 'application/json;charset=utf-8' });
     downloadBlob(blob, `${getSafeProjectFileName(snapshot.title)}.canva-story.json`);
     showProjectNotice('success', 'Проект экспортирован в JSON без тяжёлых изображений.');
-  }, [nodes, projectTitle, showProjectNotice, viewport]);
+  }, [narrationSettings, nodes, projectTitle, showProjectNotice, viewport]);
 
   const handleImport = useCallback(async (event: React.ChangeEvent<HTMLInputElement>) => {
     const file = event.target.files?.[0];
@@ -740,6 +805,90 @@ const App = () => {
       setIsImportingProject(false);
     }
   }, [applyProject, isImportingProject, showProjectNotice]);
+
+  const handleVoiceReferenceImport = useCallback(async (event: React.ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0];
+    event.target.value = '';
+    if (!file) return;
+    const hasSupportedAudioExtension = /\.(?:wav|mp3|flac|m4a|ogg)$/iu.test(file.name);
+    if (!file.type.startsWith('audio/') && !hasSupportedAudioExtension) {
+      showProjectNotice('error', 'Для Voice Clone нужен аудиофайл WAV, MP3, FLAC, M4A или OGG.');
+      return;
+    }
+
+    try {
+      const projectId = projectRef.current.id;
+      const referenceAudio = await saveAssetBlob(file, 'audio', {
+        assetId: `${projectId}:audio:narrator-reference`,
+        assetKind: 'voice_reference',
+        scope: 'project',
+        projectId,
+        canonicalId: 'narrator',
+        filePath: file.name,
+      });
+      setNarrationSettings((settings) => ({
+        ...settings,
+        mode: 'clone',
+        referenceAudio,
+        referenceFileName: file.name,
+      }));
+      showProjectNotice('success', `Референс голоса «${file.name}» сохранён вместе с проектом.`);
+    } catch (error) {
+      showProjectNotice('error', errorMessage(error));
+    }
+  }, [showProjectNotice]);
+
+  const handleNarrationModeChange = useCallback((event: React.ChangeEvent<HTMLSelectElement>) => {
+    const mode = event.target.value;
+    if (mode !== 'design' && mode !== 'clone') return;
+    setNarrationSettings((settings) => ({ ...settings, mode }));
+  }, []);
+
+  const handleNarrationModelChange = useCallback((event: React.ChangeEvent<HTMLSelectElement>) => {
+    const model = event.target.value;
+    if (model !== 'OmniVoice-bf16' && model !== 'OmniVoice') return;
+    setNarrationSettings((settings) => ({ ...settings, model }));
+  }, []);
+
+  const handleNarrationQualityChange = useCallback((event: React.ChangeEvent<HTMLSelectElement>) => {
+    const quality = event.target.value;
+    if (quality !== 'fast' && quality !== 'balanced' && quality !== 'quality') return;
+    setNarrationSettings((settings) => ({ ...settings, quality }));
+  }, []);
+
+  const handleNarrationSeedInputChange = useCallback((event: React.ChangeEvent<HTMLInputElement>) => {
+    const value = Number(event.target.value);
+    if (!Number.isFinite(value)) return;
+    handleNarrationSeedChange(Math.min(OMNIVOICE_MAX_SEED, Math.max(1, Math.floor(value))));
+  }, [handleNarrationSeedChange]);
+
+  const handleNarrationVoicePresetChange = useCallback((event: React.ChangeEvent<HTMLSelectElement>) => {
+    const voiceInstruct = event.target.value;
+    if (!isOmniVoiceNarratorPreset(voiceInstruct)) return;
+    setNarrationSettings((settings) => ({ ...settings, voiceInstruct }));
+  }, []);
+
+  const handleNarrationVoiceRoulette = useCallback(() => {
+    setNarrationSettings((settings) => {
+      const preset = getRandomOmniVoiceNarratorPreset(settings.voiceInstruct);
+      return {
+        ...settings,
+        voiceInstruct: preset.value,
+        seed: getNextNarrationSeed(settings.seed),
+      };
+    });
+  }, []);
+
+  const handleRemoveVoiceReference = useCallback(() => {
+    setNarrationSettings((settings) => ({
+      ...settings,
+      mode: 'design',
+      referenceAudio: undefined,
+      referenceFileName: undefined,
+      referenceText: undefined,
+    }));
+    showProjectNotice('info', 'Референс отключён. Выбран синтетический голос.');
+  }, [showProjectNotice]);
 
   const handleGenerationModeChange = useCallback((event: React.ChangeEvent<HTMLSelectElement>) => {
     const mode = event.target.value;
@@ -823,13 +972,11 @@ const App = () => {
     const results: string[] = [];
     const failures: string[] = [];
 
-    if (imageGenerationSettings.provider === 'comfyui') {
-      try {
-        await unloadComfyModels(imageGenerationSettings);
-        results.push('ComfyUI очищен');
-      } catch (error) {
-        failures.push(`ComfyUI: ${errorMessage(error)}`);
-      }
+    try {
+      await unloadComfyModels(imageGenerationSettings);
+      results.push('ComfyUI очищен');
+    } catch (error) {
+      failures.push(`ComfyUI: ${errorMessage(error)}`);
     }
 
     if (generationSettings.mode === 'lmstudio') {
@@ -843,9 +990,6 @@ const App = () => {
 
     if (results.length) showProjectNotice('success', results.join(' · '));
     if (failures.length) showProjectNotice(results.length ? 'info' : 'error', failures.join(' · '));
-    if (!results.length && !failures.length) {
-      showProjectNotice('info', 'Выберите ComfyUI или LM Studio, чтобы выгрузить локальные модели.');
-    }
     setIsUnloadingModels(false);
   }, [generationSettings, imageGenerationSettings, isUnloadingModels, showProjectNotice]);
 
@@ -1083,6 +1227,123 @@ const App = () => {
               </>
             )}
           </div>
+          <details className="narration-generation-controls">
+            <summary>
+              Озвучка · {narrationSettings.mode === 'clone' ? 'Voice Clone' : 'Голос по описанию'} ·{' '}
+              {narrationSettings.model === 'OmniVoice' ? 'FP32' : 'BF16'}
+            </summary>
+            <div className="narration-settings-grid">
+              <label>
+                Режим голоса
+                <select value={narrationSettings.mode} onChange={handleNarrationModeChange}>
+                  <option value="design">Голос по описанию</option>
+                  <option value="clone">Voice Clone</option>
+                </select>
+              </label>
+              <label>
+                Модель
+                <select value={narrationSettings.model} onChange={handleNarrationModelChange}>
+                  {OMNIVOICE_MODEL_OPTIONS.map((option) => (
+                    <option key={option.value} value={option.value}>{option.label}</option>
+                  ))}
+                </select>
+              </label>
+              <label>
+                Качество
+                <select value={narrationSettings.quality} onChange={handleNarrationQualityChange}>
+                  {OMNIVOICE_QUALITY_OPTIONS.map((option) => (
+                    <option key={option.value} value={option.value}>{option.label}</option>
+                  ))}
+                </select>
+              </label>
+              <label>
+                Seed дубля
+                <span className="narration-seed-control">
+                  <input
+                    type="number"
+                    min="1"
+                    max={OMNIVOICE_MAX_SEED}
+                    step="1"
+                    value={narrationSettings.seed}
+                    onChange={handleNarrationSeedInputChange}
+                  />
+                  <button
+                    type="button"
+                    onClick={() => handleNarrationSeedChange(getNextNarrationSeed(narrationSettings.seed))}
+                    title="Подготовить новый вариант голоса для следующей генерации"
+                  >
+                    Новый
+                  </button>
+                </span>
+              </label>
+            </div>
+            {narrationSettings.mode === 'design' ? (
+              <label className="narration-wide-field">
+                Голос рассказчика
+                <span className="narration-voice-preset-row">
+                  <select
+                  value={narrationSettings.voiceInstruct}
+                    onChange={handleNarrationVoicePresetChange}
+                    aria-label="Пресет голоса рассказчика OmniVoice"
+                  >
+                    {!isOmniVoiceNarratorPreset(narrationSettings.voiceInstruct) && (
+                      <option value={narrationSettings.voiceInstruct}>Сохранённая комбинация тегов</option>
+                    )}
+                    {OMNIVOICE_NARRATOR_PRESETS.map((preset) => (
+                      <option key={preset.value} value={preset.value}>{preset.label}</option>
+                    ))}
+                  </select>
+                  <button
+                    type="button"
+                    onClick={handleNarrationVoiceRoulette}
+                    title="Выбрать другую допустимую комбинацию тегов и новый seed"
+                  >
+                    🎲 Рулетка
+                  </button>
+                </span>
+                <code className="narration-voice-tags">{narrationSettings.voiceInstruct}</code>
+              </label>
+            ) : (
+              <div className="narration-clone-settings">
+                <div className="narration-reference-row">
+                  <button type="button" onClick={() => voiceReferenceInputRef.current?.click()}>
+                    {narrationSettings.referenceAudio ? 'Заменить аудио' : 'Выбрать аудио'}
+                  </button>
+                  <span className="narration-reference-name">
+                    {narrationSettings.referenceFileName || 'Референс ещё не выбран'}
+                  </span>
+                  {narrationSettings.referenceAudio && (
+                    <button type="button" onClick={handleRemoveVoiceReference}>Убрать</button>
+                  )}
+                </div>
+                <label className="narration-wide-field">
+                  Точный текст, произнесённый в референсе
+                  <textarea
+                    rows={2}
+                    value={narrationSettings.referenceText ?? ''}
+                    onChange={(event) => setNarrationSettings((settings) => ({
+                      ...settings,
+                      referenceText: event.target.value,
+                    }))}
+                    placeholder="Впишите дословную расшифровку аудиофайла — так не потребуется Whisper."
+                  />
+                </label>
+              </div>
+            )}
+            <p className="narration-settings-hint">
+              Рулетка использует только официальные теги OmniVoice. Отдельного тега хрипотцы у модели нет: низкий возрастной голос — ближайший синтетический вариант, а точную хрипотцу лучше задавать через Voice Clone. Один seed сохраняет голос одинаковым во всей главе.
+            </p>
+            <input
+              ref={voiceReferenceInputRef}
+              type="file"
+              accept="audio/*,.wav,.mp3,.flac,.m4a,.ogg"
+              onChange={handleVoiceReferenceImport}
+              className="visually-hidden"
+              hidden
+              tabIndex={-1}
+              aria-hidden="true"
+            />
+          </details>
           {hasComfyMixedContentRisk && (
             <div className="generation-warning" role="status">
               GitHub Pages по HTTPS может блокировать HTTP ComfyUI в домашней сети. Для такого режима лучше локальный запуск или HTTPS/proxy.
@@ -1231,7 +1492,9 @@ const App = () => {
               onSpeakNarration={handleSpeakNarration}
               onStopSpeech={handleStopSpeech}
               onGenerateOmniVoiceNarration={handleGenerateOmniVoiceNarration}
+              onGenerateAlternateOmniVoiceNarration={handleGenerateAlternateOmniVoiceNarration}
               onGenerateSceneOmniVoiceNarration={handleGenerateSceneOmniVoiceNarration}
+              onGenerateAlternateSceneOmniVoiceNarration={handleGenerateAlternateSceneOmniVoiceNarration}
               onBuildSceneVideoClip={handleBuildSceneVideoClip}
               onGenerateChapterBackdrop={handleGenerateChapterBackdrop}
               onGenerateTimelineMissingAssets={handleGenerateTimelineMissingAssets}

@@ -2019,7 +2019,7 @@ const buildComfyNanoBanana2LiteShotGridWorkflow = (
         prompt,
         model: 'Nano Banana 2 Lite',
         'model.aspect_ratio': '16:9',
-        'model.resolution': '2K',
+        'model.resolution': '1K',
         'model.thinking_level': 'MINIMAL',
         seed,
         response_modalities: 'IMAGE',

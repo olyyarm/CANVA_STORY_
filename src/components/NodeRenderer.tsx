@@ -171,6 +171,17 @@ const findSceneShotImageNodes = (nodes: NodesState, sceneId: string) =>
       && getSceneShotIndex(candidate) !== null)
     .sort((first, second) => (getSceneShotIndex(first) ?? 0) - (getSceneShotIndex(second) ?? 0));
 
+const findTimelineBackdropImageNode = (nodes: NodesState, timelineNodeId: string) =>
+  Object.values(nodes)
+    .filter((candidate) =>
+      candidate.nodeType === 'pollinations_image'
+      && candidate.parentId === timelineNodeId
+      && Boolean(candidate.imageUrl)
+      && getAssetKind(candidate) === 'chapter_backdrop')
+    .sort((first, second) =>
+      String(second.metadata?.chapterBackdropGeneratedAt ?? '')
+        .localeCompare(String(first.metadata?.chapterBackdropGeneratedAt ?? '')))[0];
+
 const getDescendantNodeIds = (nodes: NodesState, rootId: string) => {
   const descendants = new Set<string>();
   let changed = true;
@@ -615,6 +626,17 @@ const NodeRenderer: React.FC<NodeRendererProps> = ({
   const safeDownloadName = `${node.label.replace(/[^\p{L}\p{N}_-]+/gu, '-').replace(/^-+|-+$/gu, '') || 'scene'}.webm`;
   const sceneShotNodes = node.nodeType === 'scene' ? findSceneShotImageNodes(allNodes, id) : [];
   const timelineScenes = node.nodeType === 'chapter_timeline' ? getSortedTimelineScenes(allNodes, node) : [];
+  const timelineBackdrop = node.nodeType === 'chapter_timeline'
+    ? findTimelineBackdropImageNode(allNodes, id)
+    : undefined;
+  const timelineBackdropGeneratedAt = typeof timelineBackdrop?.metadata?.chapterBackdropGeneratedAt === 'string'
+    ? timelineBackdrop.metadata.chapterBackdropGeneratedAt
+    : '';
+  const timelineBackdropAppliedCount = timelineBackdropGeneratedAt
+    ? timelineScenes.filter(({ scene }) =>
+      Boolean(scene.videoUrl)
+      && scene.metadata?.chapterBackdropGeneratedAt === timelineBackdropGeneratedAt).length
+    : 0;
   const timelineSystemInserts = node.nodeType === 'chapter_timeline'
     ? parseSystemInsertsByScene(getSystemInsertDetail(allNodes, node)?.inputValue)
     : new Map<number, string>();
@@ -1677,6 +1699,9 @@ const NodeRenderer: React.FC<NodeRendererProps> = ({
               <span><strong>{timelineStats.audio}</strong> озвучек</span>
               <span><strong>{timelineStats.clips}</strong> клипов</span>
               <span><strong>{timelineStats.inserts}</strong> вставок</span>
+              <span title={timelineBackdrop?.imageUrl ? 'Клипы с текущей версией фона главы' : 'Фон главы ещё не создан'}>
+                <strong>{timelineBackdropAppliedCount}/{timelineStats.clips}</strong> с фоном
+              </span>
               <button
                 type="button"
                 className={`node-secondary-button chapter-timeline__refresh${node.isLoadingImage ? ' node-secondary-button--cancel' : ''}`}
@@ -1686,7 +1711,7 @@ const NodeRenderer: React.FC<NodeRendererProps> = ({
                   : void onGenerateChapterBackdrop(id))}
                 disabled={Boolean(node.isLoading || node.isLoadingAudio || node.isLoadingVideo)}
               >
-                {node.isLoadingImage ? 'Отменить фон' : 'Фон главы'}
+                {node.isLoadingImage ? 'Отменить фон' : timelineBackdrop?.imageUrl ? 'Пересоздать фон' : 'Фон главы'}
               </button>
               <button
                 type="button"
@@ -1707,8 +1732,15 @@ const NodeRenderer: React.FC<NodeRendererProps> = ({
                   ? onCancelGeneration(id)
                   : void onBuildChapterSceneClips(id))}
                 disabled={Boolean(node.isLoading || node.isLoadingImage || node.isLoadingAudio || timelineStats.scenes === 0)}
+                title={timelineBackdrop?.imageUrl
+                  ? 'Повторно закодировать все клипы главы с текущим фоновым изображением'
+                  : 'Собрать или пересобрать клипы сцен'}
               >
-                {node.isLoadingVideo ? 'Отменить очередь' : timelineStats.clips > 0 ? 'Пересобрать клипы' : 'Клипы по очереди'}
+                {node.isLoadingVideo
+                  ? 'Отменить очередь'
+                  : timelineBackdrop?.imageUrl
+                    ? timelineStats.clips > 0 ? 'Применить фон к клипам' : 'Собрать клипы с фоном'
+                    : timelineStats.clips > 0 ? 'Пересобрать клипы' : 'Клипы по очереди'}
               </button>
               <button
                 type="button"

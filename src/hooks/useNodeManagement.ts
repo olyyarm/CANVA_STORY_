@@ -1136,6 +1136,11 @@ const findChapterBackdropImageNode = (
       || first.label.localeCompare(second.label, 'ru', { numeric: true }))[0];
 };
 
+const getChapterBackdropGeneratedAt = (node?: NodeData) =>
+  typeof node?.metadata?.chapterBackdropGeneratedAt === 'string'
+    ? node.metadata.chapterBackdropGeneratedAt
+    : '';
+
 const getReferenceLabelFromNodeTitle = (label: string) =>
   label
     .replace(/^Ассет\s+\d+\s*[·:.-]\s*/iu, '')
@@ -5130,6 +5135,7 @@ export const useNodeManagement = (
       const chapterBackdropNode = timelineEntry
         ? findChapterBackdropImageNode(currentNodes, timelineEntry[0], timelineEntry[1])
         : undefined;
+      const chapterBackdropGeneratedAt = getChapterBackdropGeneratedAt(chapterBackdropNode);
       const sceneShotUrls = findSceneShotNodes(currentNodes, sceneNodeId)
         .map((shotNode) => shotNode.imageUrl)
         .filter((imageUrl): imageUrl is string => Boolean(imageUrl));
@@ -5164,7 +5170,8 @@ export const useNodeManagement = (
               videoFrameSource: frameNode.label,
               sceneShotCountUsed: sceneShotUrls.length,
               ...(systemInsertNode ? { systemInsertSource: systemInsertNode.label } : {}),
-              ...(chapterBackdropNode ? { chapterBackdropSource: chapterBackdropNode.label } : {}),
+              chapterBackdropSource: chapterBackdropNode?.label ?? null,
+              chapterBackdropGeneratedAt: chapterBackdropGeneratedAt || null,
               ...(audioGeneratedAt ? { videoAudioGeneratedAt: audioGeneratedAt } : {}),
               videoGeneratedAt: new Date().toISOString(),
             },
@@ -5225,6 +5232,7 @@ export const useNodeManagement = (
       return { sceneId, scene, frameNode, shotNodes, systemInsertNode };
     });
     const chapterBackdropNode = findChapterBackdropImageNode(currentNodes, timelineNodeId, timelineNode);
+    const chapterBackdropGeneratedAt = getChapterBackdropGeneratedAt(chapterBackdropNode);
     const missingSourceLabels = scenePlans
       .filter((plan) => !plan.scene.videoUrl && (!plan.scene.audioUrl || !plan.frameNode?.imageUrl))
       .map((plan) => plan.scene.label);
@@ -5310,7 +5318,8 @@ export const useNodeManagement = (
                 videoFrameSource: plan.frameNode.label,
                 sceneShotCountUsed: shotUrls.length,
                 ...(plan.systemInsertNode ? { systemInsertSource: plan.systemInsertNode.label } : {}),
-                ...(chapterBackdropNode ? { chapterBackdropSource: chapterBackdropNode.label } : {}),
+                chapterBackdropSource: chapterBackdropNode?.label ?? null,
+                chapterBackdropGeneratedAt: chapterBackdropGeneratedAt || null,
                 ...(audioGeneratedAt ? { videoAudioGeneratedAt: audioGeneratedAt } : {}),
                 videoGeneratedAt: new Date().toISOString(),
               },
@@ -5321,9 +5330,13 @@ export const useNodeManagement = (
 
       updateNode(timelineNodeId, {
         isLoadingVideo: false,
-        statusMessage: `Клипы главы готовы: ${plansToBuild.length}.`,
+        statusMessage: chapterBackdropNode
+          ? `Клипы главы с фоном готовы: ${plansToBuild.length}.`
+          : `Клипы главы готовы: ${plansToBuild.length}.`,
       });
-      showNotice('success', `Клипы главы готовы: ${plansToBuild.length}.`);
+      showNotice('success', chapterBackdropNode
+        ? `Фон главы применён к клипам: ${plansToBuild.length}.`
+        : `Клипы главы готовы: ${plansToBuild.length}.`);
     } catch (error) {
       if (isAbortError(error)) {
         showNotice('info', 'Очередь клипов остановлена.');
@@ -5368,6 +5381,8 @@ export const useNodeManagement = (
         (getSceneNumber(first.label) ?? 0) - (getSceneNumber(second.label) ?? 0)
         || first.label.localeCompare(second.label, 'ru', { numeric: true }));
 
+    const chapterBackdropNode = findChapterBackdropImageNode(currentNodes, timelineNodeId, timelineNode);
+    const chapterBackdropGeneratedAt = getChapterBackdropGeneratedAt(chapterBackdropNode);
     const scenePlans = sceneEntries.map(([sceneId, scene]) => {
       const sceneNumber = getSceneNumber(scene.label) ?? 0;
       const systemInsertNode = sceneNumber
@@ -5376,10 +5391,23 @@ export const useNodeManagement = (
       const frameNode = findBestSceneFrameNode(currentNodes, sceneId);
       const shotNodes = findSceneShotNodes(currentNodes, sceneId);
       const canBuildFromSources = Boolean(scene.audioUrl && frameNode?.imageUrl);
-      const shouldBuildFromSources = canBuildFromSources && (Boolean(systemInsertNode?.imageUrl) || !scene.videoUrl);
+      const appliedBackdropGeneratedAt = typeof scene.metadata?.chapterBackdropGeneratedAt === 'string'
+        ? scene.metadata.chapterBackdropGeneratedAt
+        : '';
+      const backdropNeedsRefresh = Boolean(
+        chapterBackdropNode?.imageUrl
+        && (
+          scene.metadata?.chapterBackdropSource !== chapterBackdropNode.label
+          || appliedBackdropGeneratedAt !== chapterBackdropGeneratedAt
+        ),
+      );
+      const shouldBuildFromSources = canBuildFromSources && (
+        Boolean(systemInsertNode?.imageUrl)
+        || !scene.videoUrl
+        || backdropNeedsRefresh
+      );
       return { sceneId, scene, frameNode, shotNodes, systemInsertNode, canBuildFromSources, shouldBuildFromSources };
     });
-    const chapterBackdropNode = findChapterBackdropImageNode(currentNodes, timelineNodeId, timelineNode);
     const missingClipLabels = scenePlans
       .filter((plan) => !plan.scene.videoUrl && !plan.canBuildFromSources)
       .map((plan) => plan.scene.label);
@@ -5444,7 +5472,8 @@ export const useNodeManagement = (
                   videoFrameSource: plan.frameNode.label,
                   sceneShotCountUsed: shotUrls.length,
                   ...(plan.systemInsertNode ? { systemInsertSource: plan.systemInsertNode.label } : {}),
-                  ...(chapterBackdropNode ? { chapterBackdropSource: chapterBackdropNode.label } : {}),
+                  chapterBackdropSource: chapterBackdropNode?.label ?? null,
+                  chapterBackdropGeneratedAt: chapterBackdropGeneratedAt || null,
                   videoGeneratedAt: new Date().toISOString(),
                 },
               },
@@ -5535,6 +5564,7 @@ export const useNodeManagement = (
     const systemInsertsNode = findScopedDetailNode('Системные вставки');
     const locationsNode = findScopedDetailNode('Локации');
     const heroesNode = findScopedDetailNode('Герои');
+    const moodNode = findScopedDetailNode('Настроение');
     const sceneSummary = sceneEntries
       .map(([, scene]) => `${scene.label}\n${scene.sceneText || scene.inputValue || ''}`.trim())
       .filter(Boolean)
@@ -5551,9 +5581,10 @@ export const useNodeManagement = (
       sceneSummary ? `Сцены главы:\n${sceneSummary}` : '',
       heroesNode?.inputValue ? `Персонажи главы:\n${heroesNode.inputValue.slice(0, 3000)}` : '',
       locationsNode?.inputValue ? `Локации главы:\n${locationsNode.inputValue.slice(0, 3000)}` : '',
+      moodNode?.inputValue ? `Настроение главы:\n${moodNode.inputValue.slice(0, 3000)}` : '',
       narrationNode?.inputValue ? `Закадр главы:\n${narrationNode.inputValue.slice(0, 4000)}` : '',
       systemInsertsNode?.inputValue ? `Системные вставки главы:\n${systemInsertsNode.inputValue.slice(0, 4000)}` : '',
-      'Задача: придумай одну декоративную тематическую подложку главы для фона видеоклипов.',
+      'Задача: придумай одну тёмную низкоконтрастную декоративную подложку главы для фона видеоклипов. Она должна поддерживать основной кадр и не перетягивать внимание.',
     ].filter(Boolean).join('\n\n');
 
     if (!promptContext.trim()) {
@@ -5580,7 +5611,10 @@ export const useNodeManagement = (
         systemPrompt: CHAPTER_BACKDROP_ASSET_PROMPT_SYSTEM_PROMPT,
         model: timelineTextModel,
       }, controller.signal, generationSettings);
-      const styledAssetPrompt = appendProjectVisualStyleToImagePrompt(assetPrompt, nodesRef.current);
+      const styledAssetPrompt = [
+        appendProjectVisualStyleToImagePrompt(assetPrompt, nodesRef.current),
+        'Non-negotiable backdrop treatment: deliberately dark low-key 16:9 background, deep muted colors, restrained highlights, soft low contrast, subdued decorative edges, calm darker center, visually secondary to the foreground frame.',
+      ].join('\n\n');
 
       updateNode(timelineNodeId, {
         assetPrompt: styledAssetPrompt,
@@ -5611,9 +5645,9 @@ export const useNodeManagement = (
         },
       );
       updateNode(timelineNodeId, {
-        statusMessage: 'Фон главы готов. Пересоберите клипы, чтобы он попал в видео.',
+        statusMessage: 'Фон главы готов. Примените его к клипам или соберите ролик главы.',
       });
-      showNotice('success', 'Фон главы готов. Теперь он будет использоваться как подложка при сборке клипов.');
+      showNotice('success', 'Фон главы готов. Новые клипы получат его автоматически; старые можно обновить кнопкой «Применить фон к клипам».');
     } catch (error) {
       if (isAbortError(error)) {
         showNotice('info', 'Генерация фона главы отменена.');

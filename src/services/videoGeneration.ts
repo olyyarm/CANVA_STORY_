@@ -44,27 +44,40 @@ const drawAnimatedStillFrame = (
   const easedProgress = Math.min(1, Math.max(0, progress));
   const centerX = width / 2;
   const centerY = height / 2;
-  const backdrop = backgroundImage ?? image;
-  const coverScale = Math.max(width / backdrop.naturalWidth, height / backdrop.naturalHeight);
-  const backgroundScale = coverScale * 1.5;
-  const backgroundDrift = (easedProgress - 0.5) * 28;
 
   context.fillStyle = '#101318';
   context.fillRect(0, 0, width, height);
-  context.save();
-  context.filter = 'blur(28px)';
-  drawCenteredImage(
-    context,
-    backdrop,
-    centerX + backgroundDrift,
-    centerY - backgroundDrift * 0.35,
-    backdrop.naturalWidth * backgroundScale,
-    backdrop.naturalHeight * backgroundScale,
-  );
-  context.restore();
-
-  context.fillStyle = 'rgba(0, 0, 0, 0.2)';
-  context.fillRect(0, 0, width, height);
+  if (backgroundImage) {
+    const backgroundScale = Math.min(
+      width / backgroundImage.naturalWidth,
+      height / backgroundImage.naturalHeight,
+    );
+    drawCenteredImage(
+      context,
+      backgroundImage,
+      centerX,
+      centerY,
+      backgroundImage.naturalWidth * backgroundScale,
+      backgroundImage.naturalHeight * backgroundScale,
+    );
+  } else {
+    const coverScale = Math.max(width / image.naturalWidth, height / image.naturalHeight);
+    const fallbackScale = coverScale * 1.5;
+    const fallbackDrift = (easedProgress - 0.5) * 28;
+    context.save();
+    context.filter = 'blur(28px)';
+    drawCenteredImage(
+      context,
+      image,
+      centerX + fallbackDrift,
+      centerY - fallbackDrift * 0.35,
+      image.naturalWidth * fallbackScale,
+      image.naturalHeight * fallbackScale,
+    );
+    context.restore();
+    context.fillStyle = 'rgba(0, 0, 0, 0.2)';
+    context.fillRect(0, 0, width, height);
+  }
 
   const containScale = Math.min(width / image.naturalWidth, height / image.naturalHeight);
   const foregroundScale = containScale * (0.78 - easedProgress * 0.08);

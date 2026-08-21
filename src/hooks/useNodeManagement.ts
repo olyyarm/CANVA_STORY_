@@ -5224,6 +5224,7 @@ export const useNodeManagement = (
               sourceFrameNodeId: frameNodeId,
               contactSheetNodeId: sheetNodeId,
               shotAspectRatio: '16:9',
+              hiddenOnCanvas: true,
               generatedAt,
               imageProvider: 'comfy_nano_banana',
               localAssetId: null,

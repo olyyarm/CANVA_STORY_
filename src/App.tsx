@@ -194,6 +194,12 @@ const collectNodeFamily = (nodes: NodesState, rootId: string) => {
   return ids;
 };
 
+const isHiddenTechnicalCanvasNode = (node: NodeData) => {
+  if (node.metadata?.hiddenOnCanvas === true) return true;
+  const assetKind = typeof node.metadata?.assetKind === 'string' ? node.metadata.assetKind : '';
+  return node.nodeType === 'pollinations_image' && /^scene_shot:\d+$/u.test(assetKind);
+};
+
 const getSafeProjectFileName = (title: string) =>
   title.replace(/[\\/:*?"<>|]+/g, '-').trim() || 'canva-story-project';
 
@@ -337,6 +343,14 @@ const App = () => {
     setSelectedNodeId(null);
     setPendingOutputNodeId(null);
   }, []);
+  const canvasNodeEntries = useMemo(
+    () => Object.entries(nodes).filter(([, node]) => !isHiddenTechnicalCanvasNode(node)),
+    [nodes],
+  );
+  const canvasNodes = useMemo(
+    () => Object.fromEntries(canvasNodeEntries),
+    [canvasNodeEntries],
+  );
   const {
     isPanning,
     handleCanvasMouseDown,
@@ -348,7 +362,7 @@ const App = () => {
     resetZoom,
   } = useCanvasNavigation({
     canvasRef,
-    nodes,
+    nodes: canvasNodes,
     viewport,
     setViewport,
     onBackgroundClick: clearSelection,
@@ -374,12 +388,12 @@ const App = () => {
   }, []);
 
   const visibleNodeEntries = useMemo(() => {
-    if (!timelineFocusMode) return nodeEntries;
+    if (!timelineFocusMode) return canvasNodeEntries;
     const expandedIds = new Set(expandedFocusNodeIds);
     let changed = true;
     while (changed) {
       changed = false;
-      nodeEntries.forEach(([nodeId, node]) => {
+      canvasNodeEntries.forEach(([nodeId, node]) => {
         if (!node.parentId || !expandedIds.has(node.parentId) || expandedIds.has(nodeId)) return;
         expandedIds.add(nodeId);
         changed = true;
@@ -390,7 +404,7 @@ const App = () => {
       && /^\s*(?:<<<SPLIT>>>\s*)?(?:ГЛАВА|CHAPTER)\b/iu.test(`${node.label}\n${node.inputValue ?? ''}`);
     const isSceneWriterNode = (node: NodeData) =>
       node.nodeType === 'prompt_node' && /Scene Writer/iu.test(node.label);
-    return nodeEntries.filter(([nodeId, node]) =>
+    return canvasNodeEntries.filter(([nodeId, node]) =>
       node.nodeType === 'chapter_timeline'
       || node.nodeType === 'chapter_collector'
       || node.nodeType === 'video_output'
@@ -400,7 +414,7 @@ const App = () => {
       || isSceneWriterNode(node)
       || expandedIds.has(nodeId)
       || selectedNodeId === nodeId);
-  }, [expandedFocusNodeIds, nodeEntries, selectedNodeId, timelineFocusMode]);
+  }, [canvasNodeEntries, expandedFocusNodeIds, selectedNodeId, timelineFocusMode]);
   const visibleNodeIds = useMemo(
     () => new Set(visibleNodeEntries.map(([nodeId]) => nodeId)),
     [visibleNodeEntries],
@@ -1359,7 +1373,7 @@ const App = () => {
           </div>
         </div>
         <div className="project-actions" aria-label="Действия с проектом">
-          <span className="node-count">{nodeEntries.length} нод</span>
+          <span className="node-count">{canvasNodeEntries.length} нод</span>
           <button type="button" onClick={handleEnsureStoryReferenceNodes}>Базы</button>
           <button type="button" onClick={handleEnsureCharacterRegistry}>Реестр персонажей</button>
           <button type="button" onClick={() => handleEnsureChapterTimeline(selectedNodeId ?? undefined)}>Таймлайн</button>

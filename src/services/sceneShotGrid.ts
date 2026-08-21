@@ -49,6 +49,7 @@ export const buildSceneShotGridPrompt = ({
   'Do not add non-diegetic editorial text or storyboard annotations. Text is allowed only when it exists inside the story world and is explicitly required by the scene or visible in the source frame, for example a system window, phone/computer interface, sign, document, label on a physical object, or message read by a character. Preserve such story-required text and interfaces; do not replace them with panel captions.',
   '',
   'All four quadrants belong to the SAME story scene and preserve the exact characters, faces, clothing, location, time of day, lighting, color style, and continuity from the source frame.',
+  'If the source frame contains a non-diegetic caption, shot title, panel label, frame number, subtitle, black title strip, storyboard annotation, watermark, or similar editorial overlay, treat it as unwanted contamination: do not copy it into any quadrant and reconstruct the covered image area naturally. This cleanup rule does not apply to story-required system windows, screens, signs, documents, or messages that exist inside the scene.',
   'The four panels must be visibly different shots. Never repeat the same framing, shot size, camera height, camera direction, pose, or composition in two panels.',
   'Exactly TWO panels must primarily reveal the LOCATION and exactly TWO panels must primarily reveal the CHARACTER.',
   'Do not invent new characters, plot events, injuries, costume changes, clues, weapons, documents, tools, or handheld props.',

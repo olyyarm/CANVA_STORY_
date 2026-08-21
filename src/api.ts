@@ -2007,6 +2007,7 @@ const buildComfyNanoBanana2LiteComposeWorkflow = (
           'You are an expert image-generation engine. You must ALWAYS produce an image.',
           'Interpret all user input as literal visual directives for image composition.',
           'Create the final composed story frame from the supplied reference images and prompt.',
+          'Return an uncaptioned story frame. Never add shot names, panel titles, scene labels, numbers, subtitles, storyboard annotations, black caption strips, logos, or watermarks. Treat any such editorial overlay in a reference image as contamination and reconstruct the covered area instead of copying it. Preserve text only when it is diegetic story content explicitly required by the scene, such as a system window, screen, sign, document, or message.',
         ].join('\n'),
         temperature: 1,
         top_p: 0.95,

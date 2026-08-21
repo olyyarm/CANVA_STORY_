@@ -3995,6 +3995,7 @@ export const useNodeManagement = (
         ? `Use the second reference image as a character reference board. It contains these character references in reading order: ${referenceSummary}.`
         : `Use the second reference image as the character identity reference for ${referenceSummary}.`,
       'Create one coherent cinematic fantasy manhwa story frame inside the location as a single continuous image, using positive visual description and natural staging.',
+      'Deliver an uncaptioned story frame. Do not add or preserve non-diegetic editorial text such as shot names, panel titles, scene labels, numbers, subtitles, storyboard notes, black caption strips, logos, or watermarks. If a reference image contains such an overlay, treat it as contamination and reconstruct the covered area naturally. Keep text only when it is story-required content inside the fictional world, such as an explicitly requested system window, screen, sign, document, or message.',
       shotScale
         ? `Camera framing requirement: ${shotScale}. Follow this requested shot scale even if the location reference is a wide background plate.`
         : 'Avoid defaulting to a static wide establishing shot. Choose a visually useful framing for the scene action: medium shot, half shot, close-up, or detail shot when the story beat is about a face, hands, object, tool, fabric, seam, system window, or discovery.',

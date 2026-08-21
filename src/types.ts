@@ -41,6 +41,8 @@ export type AssetKind =
   | 'character_reference'
   | 'location_reference'
   | 'scene_frame'
+  | 'scene_contact_sheet'
+  | 'scene_shot'
   | 'system_insert'
   | 'chapter_backdrop'
   | 'voice_reference'
@@ -50,6 +52,8 @@ export type AssetKind =
   | 'other';
 export type AssetScope = 'project' | 'chapter' | 'scene' | 'character' | 'location';
 export type AssetStorageDriver = 'indexeddb' | 'file';
+
+export type SceneShotRole = 'detail' | 'emotion' | 'angle' | 'pov';
 
 export interface AssetReference {
   assetId: string;
@@ -114,7 +118,7 @@ export interface NodeData {
   sceneCount?: number;
   sceneText?: string;
   isLoading?: boolean;
-  loadingProvider?: 'mock' | 'mistral' | 'lmstudio' | 'comfygemini' | 'pollinations' | 'comfyui';
+  loadingProvider?: 'mock' | 'mistral' | 'lmstudio' | 'comfygemini' | 'pollinations' | 'comfyui' | 'comfy_nano_banana';
   isSpeaking?: boolean;
   isGenerated?: boolean;
   canContinue?: boolean;

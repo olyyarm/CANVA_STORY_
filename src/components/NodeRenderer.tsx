@@ -64,6 +64,7 @@ interface NodeRendererProps {
   onGenerateAlternateOmniVoiceNarration: (nodeId: string) => Promise<void>;
   onGenerateSceneOmniVoiceNarration: (nodeId: string) => Promise<void>;
   onGenerateAlternateSceneOmniVoiceNarration: (nodeId: string) => Promise<void>;
+  onGenerateSceneShotGrid: (nodeId: string) => Promise<void>;
   onBuildSceneVideoClip: (nodeId: string) => Promise<void>;
   onGenerateChapterBackdrop: (nodeId: string) => Promise<void>;
   onGenerateTimelineMissingAssets: (nodeId: string) => Promise<void>;
@@ -153,6 +154,22 @@ const findSceneImageNode = (nodes: NodesState, sceneId: string, assetKinds: stri
     .sort((first, second) =>
       assetKinds.indexOf(String(first.metadata?.assetKind))
       - assetKinds.indexOf(String(second.metadata?.assetKind)))[0];
+
+const getSceneShotIndex = (node: NodeData) => {
+  const metadataIndex = node.metadata?.sceneShotIndex;
+  if (typeof metadataIndex === 'number' && Number.isInteger(metadataIndex)) return metadataIndex;
+  const match = getAssetKind(node).match(/^scene_shot:(\d+)$/u);
+  return match ? Number(match[1]) : null;
+};
+
+const findSceneShotImageNodes = (nodes: NodesState, sceneId: string) =>
+  Object.values(nodes)
+    .filter((candidate) =>
+      candidate.nodeType === 'pollinations_image'
+      && candidate.parentId === sceneId
+      && Boolean(candidate.imageUrl)
+      && getSceneShotIndex(candidate) !== null)
+    .sort((first, second) => (getSceneShotIndex(first) ?? 0) - (getSceneShotIndex(second) ?? 0));
 
 const getDescendantNodeIds = (nodes: NodesState, rootId: string) => {
   const descendants = new Set<string>();
@@ -355,6 +372,7 @@ const getSortedTimelineScenes = (nodes: NodesState, timelineNode: NodeData) => {
       location: findTimelineLocationNode(nodes, sceneId, scene),
       characters: findSceneImageNode(nodes, sceneId, ['scene_characters']),
       frame: findSceneImageNode(nodes, sceneId, ['scene_flux2_frame', 'scene_frame']),
+      shots: findSceneShotImageNodes(nodes, sceneId),
       systemFrame: findSystemInsertImageNode(nodes, getSceneNumberFromLabel(scene.label), timelineScope.scopedIds),
     }));
 };
@@ -468,6 +486,7 @@ const NodeRenderer: React.FC<NodeRendererProps> = ({
   onGenerateAlternateOmniVoiceNarration,
   onGenerateSceneOmniVoiceNarration,
   onGenerateAlternateSceneOmniVoiceNarration,
+  onGenerateSceneShotGrid,
   onBuildSceneVideoClip,
   onGenerateChapterBackdrop,
   onGenerateTimelineMissingAssets,
@@ -565,7 +584,9 @@ const NodeRenderer: React.FC<NodeRendererProps> = ({
       : node.isLoadingImage
       ? node.loadingProvider === 'comfyui'
         ? 'ComfyUI загружает модель или рендерит кадр...'
-        : 'Pollinations создаёт кадр...'
+        : node.loadingProvider === 'comfy_nano_banana'
+          ? 'Nano Banana создаёт изображения через Comfy API...'
+          : 'Pollinations создаёт кадр...'
       : node.loadingProvider === 'lmstudio'
         ? 'LM Studio загружает модель и готовит ответ...'
         : node.loadingProvider === 'comfygemini'
@@ -592,6 +613,7 @@ const NodeRenderer: React.FC<NodeRendererProps> = ({
     ? node.imagePipeline
     : 'sdxl';
   const safeDownloadName = `${node.label.replace(/[^\p{L}\p{N}_-]+/gu, '-').replace(/^-+|-+$/gu, '') || 'scene'}.webm`;
+  const sceneShotNodes = node.nodeType === 'scene' ? findSceneShotImageNodes(allNodes, id) : [];
   const timelineScenes = node.nodeType === 'chapter_timeline' ? getSortedTimelineScenes(allNodes, node) : [];
   const timelineSystemInserts = node.nodeType === 'chapter_timeline'
     ? parseSystemInsertsByScene(getSystemInsertDetail(allNodes, node)?.inputValue)
@@ -601,6 +623,7 @@ const NodeRenderer: React.FC<NodeRendererProps> = ({
     locations: timelineScenes.filter(({ location }) => Boolean(location?.imageUrl)).length,
     characters: timelineScenes.filter(({ characters }) => Boolean(characters?.imageUrl)).length,
     frames: timelineScenes.filter(({ frame }) => Boolean(frame?.imageUrl)).length,
+    shots: timelineScenes.reduce((count, sceneEntry) => count + sceneEntry.shots.length, 0),
     audio: timelineScenes.filter(({ scene }) => Boolean(scene.audioUrl)).length,
     clips: timelineScenes.filter(({ scene }) => Boolean(scene.videoUrl)).length,
     inserts: timelineSystemInserts.size,
@@ -1529,7 +1552,28 @@ const NodeRenderer: React.FC<NodeRendererProps> = ({
                   {isBusy ? 'Отменить Banana' : 'Собрать кадр Nano Banana'}
                 </button>
               )}
+              {imageProvider === 'comfyui' && (
+                <button
+                  type="button"
+                  className={`node-secondary-button${node.isLoadingImage ? ' node-secondary-button--cancel' : ''}`}
+                  onMouseDown={stopMouseDown}
+                  onClick={(event) => runWithoutDrag(event, () => node.isLoadingImage
+                    ? onCancelGeneration(id)
+                    : void onGenerateSceneShotGrid(id))}
+                  disabled={Boolean(node.isLoading || node.isLoadingAudio || node.isLoadingVideo)}
+                >
+                  {node.isLoadingImage
+                    ? 'Отменить 4 плана'
+                    : sceneShotNodes.length === 4 ? 'Пересобрать 4 плана' : '4 дополнительных плана'}
+                </button>
+              )}
             </div>
+            {sceneShotNodes.length > 0 && (
+              <div className="scene-node__shot-summary" onMouseDown={stopMouseDown}>
+                <strong>{sceneShotNodes.length}/4 дополнительных планов</strong>
+                <span>Они будут автоматически добавлены между основным кадром и системной вставкой.</span>
+              </div>
+            )}
             <div className="node-segmented-actions node-segmented-actions--voice scene-node__media-actions">
                 <button
                   type="button"
@@ -1629,6 +1673,7 @@ const NodeRenderer: React.FC<NodeRendererProps> = ({
               <span><strong>{timelineStats.locations}</strong> локаций</span>
               <span><strong>{timelineStats.characters}</strong> героев</span>
               <span><strong>{timelineStats.frames}</strong> кадров</span>
+              <span><strong>{timelineStats.shots}</strong> доп. планов</span>
               <span><strong>{timelineStats.audio}</strong> озвучек</span>
               <span><strong>{timelineStats.clips}</strong> клипов</span>
               <span><strong>{timelineStats.inserts}</strong> вставок</span>
@@ -1694,7 +1739,7 @@ const NodeRenderer: React.FC<NodeRendererProps> = ({
               </div>
             ) : (
               <div className="chapter-timeline__rail" onMouseDown={stopMouseDown}>
-                {timelineScenes.map(({ sceneId, scene, location, characters, frame, systemFrame }) => {
+                {timelineScenes.map(({ sceneId, scene, location, characters, frame, shots, systemFrame }) => {
                   const sceneText = scene.sceneText || scene.inputValue || '';
                   const sceneNumber = getSceneNumberFromLabel(scene.label);
                   const systemInsert = timelineSystemInserts.get(sceneNumber);
@@ -1722,11 +1767,27 @@ const NodeRenderer: React.FC<NodeRendererProps> = ({
                               : <span>Кадр</span>}
                           </div>
                         </div>
+                        {shots.length > 0 && (
+                          <div className="chapter-timeline__shot-grid" aria-label={`Дополнительные планы ${scene.label}`}>
+                            {shots.map((shot) => (
+                              <div className="chapter-timeline__shot" key={`${sceneId}-${getSceneShotIndex(shot) ?? shot.label}`}>
+                                <img
+                                  src={shot.imageUrl}
+                                  alt={`${shot.label}`}
+                                  draggable={false}
+                                  loading="lazy"
+                                  decoding="async"
+                                />
+                              </div>
+                            ))}
+                          </div>
+                        )}
                         <div className="chapter-timeline__badges">
                           {renderTimelineBadge('Текст', Boolean(sceneText), 'Описание сцены')}
                           {renderTimelineBadge('Локация', Boolean(location?.imageUrl), location?.label)}
                           {renderTimelineBadge('Герои', Boolean(characters?.imageUrl), characters?.label)}
                           {renderTimelineBadge('Кадр', Boolean(frame?.imageUrl), frame?.label)}
+                          {renderTimelineBadge('Планы', shots.length === 4, `${shots.length}/4 дополнительных планов`)}
                           {renderTimelineBadge('Аудио', Boolean(scene.audioUrl), 'Озвучка сцены')}
                           {renderTimelineBadge('Клип', Boolean(scene.videoUrl), '16:9 фрагмент')}
                           {renderTimelineBadge('Вставка', Boolean(systemInsert), systemInsert)}
@@ -1783,6 +1844,19 @@ const NodeRenderer: React.FC<NodeRendererProps> = ({
                                 : void onComposeSceneFlux2(sceneId, 'nano_banana_2_lite_compose'))}
                             >
                               Banana
+                            </button>
+                          )}
+                          {imageProvider === 'comfyui' && (
+                            <button
+                              type="button"
+                              onMouseDown={stopMouseDown}
+                              onClick={(event) => runWithoutDrag(event, () => scene.isLoadingImage
+                                ? onCancelGeneration(sceneId)
+                                : void onGenerateSceneShotGrid(sceneId))}
+                              disabled={Boolean(scene.isLoading || scene.isLoadingAudio || scene.isLoadingVideo || !frame?.imageUrl)}
+                              title={frame?.imageUrl ? 'Создать четыре дополнительных горизонтальных плана 16:9' : 'Сначала создайте основной кадр'}
+                            >
+                              {scene.isLoadingImage ? 'Отмена 4 планов' : shots.length === 4 ? 'Новые 4 плана' : '4 плана'}
                             </button>
                           )}
                           <button

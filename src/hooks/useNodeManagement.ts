@@ -10,6 +10,7 @@ import {
   Flux2CharacterReference,
   generateComfyFlux2ComposeImage,
   generateComfyNanoBanana2LiteComposeImage,
+  generateComfyNanoBanana2LiteShotGrid,
   generateComfyOmniVoiceAudio,
   generateImage,
   generateText,
@@ -75,6 +76,7 @@ import {
 } from '../types';
 import { extractTextFromDocumentFile } from '../pdfImport';
 import { buildChapterVideoFromClips, buildStillImagesVideoClip } from '../services/videoGeneration';
+import { buildSceneShotGridPrompt, splitSceneShotGrid } from '../services/sceneShotGrid';
 import {
   CHARACTER_REGISTRY_SOURCE_KIND,
   createCharacterTag,
@@ -160,6 +162,7 @@ interface UseNodeManagementReturn {
   handleGenerateAlternateOmniVoiceNarration: (detailNodeId: string) => Promise<void>;
   handleGenerateSceneOmniVoiceNarration: (sceneNodeId: string) => Promise<void>;
   handleGenerateAlternateSceneOmniVoiceNarration: (sceneNodeId: string) => Promise<void>;
+  handleGenerateSceneShotGrid: (sceneNodeId: string) => Promise<void>;
   handleBuildSceneVideoClip: (sceneNodeId: string) => Promise<void>;
   handleGenerateChapterBackdrop: (timelineNodeId: string) => Promise<void>;
   handleGenerateTimelineMissingAssets: (timelineNodeId: string) => Promise<void>;
@@ -1055,18 +1058,37 @@ const isCharacterReferenceNode = (node: NodeData) =>
   node.metadata?.isReference === true
   || (getAssetKind(node).startsWith('character_asset') && node.metadata?.isReference !== false);
 
-const findBestSceneFrameNode = (nodes: NodesState, sceneNodeId: string) => {
+const findBestSceneFrameEntry = (nodes: NodesState, sceneNodeId: string) => {
   const priorityByAssetKind: Record<string, number> = {
     scene_flux2_frame: 4,
     scene_frame: 3,
     scene_location: 2,
   };
-  const candidates = Object.values(nodes)
-    .filter((node) => node.parentId === sceneNodeId && node.nodeType === 'pollinations_image' && Boolean(node.imageUrl))
-    .sort((first, second) =>
+  const candidates = Object.entries(nodes)
+    .filter(([, node]) => node.parentId === sceneNodeId && node.nodeType === 'pollinations_image' && Boolean(node.imageUrl))
+    .sort(([, first], [, second]) =>
     (priorityByAssetKind[getAssetKind(second)] ?? 1) - (priorityByAssetKind[getAssetKind(first)] ?? 1));
   return candidates[0];
 };
+
+const findBestSceneFrameNode = (nodes: NodesState, sceneNodeId: string) =>
+  findBestSceneFrameEntry(nodes, sceneNodeId)?.[1];
+
+const getSceneShotIndex = (node: NodeData) => {
+  const metadataIndex = node.metadata?.sceneShotIndex;
+  if (typeof metadataIndex === 'number' && Number.isInteger(metadataIndex)) return metadataIndex;
+  const match = getAssetKind(node).match(/^scene_shot:(\d+)$/u);
+  return match ? Number(match[1]) : null;
+};
+
+const findSceneShotNodes = (nodes: NodesState, sceneNodeId: string) =>
+  Object.values(nodes)
+    .filter((node) =>
+      node.parentId === sceneNodeId
+      && node.nodeType === 'pollinations_image'
+      && Boolean(node.imageUrl)
+      && getSceneShotIndex(node) !== null)
+    .sort((first, second) => (getSceneShotIndex(first) ?? 0) - (getSceneShotIndex(second) ?? 0));
 
 const findSystemInsertImageNodeForScene = (nodes: NodesState, sceneNumber: number, sourceScenarioId = '') =>
   Object.entries(nodes)
@@ -4861,6 +4883,195 @@ export const useNodeManagement = (
     await handleGenerateSceneOmniVoiceNarration(sceneNodeId, nextSeed);
   }, [handleGenerateSceneOmniVoiceNarration, narrationSettings.seed, onNarrationSeedChange]);
 
+  const handleGenerateSceneShotGrid = useCallback(async (sceneNodeId: string) => {
+    const currentNodes = nodesRef.current;
+    const sceneNode = currentNodes[sceneNodeId];
+    const frameEntry = findBestSceneFrameEntry(currentNodes, sceneNodeId);
+    const frameNodeId = frameEntry?.[0] ?? '';
+    const frameNode = frameEntry?.[1];
+    if (!sceneNode || sceneNode.nodeType !== 'scene' || sceneNode.isLoadingImage) return;
+    if (!frameNode?.imageUrl) {
+      updateNode(sceneNodeId, {
+        pollinationsApiError: 'Сначала создайте основной кадр сцены. Из него Nano Banana соберёт четыре дополнительных плана.',
+      });
+      return;
+    }
+
+    const requestId = `scene-shot-grid:${sceneNodeId}`;
+    if (activeRequests.current.has(requestId)) return;
+    const controller = new AbortController();
+    activeRequests.current.set(requestId, controller);
+    let sheetImageUrl = '';
+    let generatedShotUrls: string[] = [];
+    let committed = false;
+
+    try {
+      const narrationEntry = Object.entries(currentNodes).find(
+        ([, candidate]) => candidate.parentId === sceneNode.parentId
+          && candidate.nodeType === 'script_detail'
+          && candidate.label === 'Закадр',
+      );
+      const narrationText = getPreparedSceneNarrationText(sceneNode)
+        || (narrationEntry?.[1].inputValue
+          ? extractSceneNarration(narrationEntry[1].inputValue, sceneNode.label)
+          : '');
+      const sceneText = sceneNode.sceneText || sceneNode.inputValue || sceneNode.label;
+      const gridPrompt = buildSceneShotGridPrompt({
+        sceneLabel: sceneNode.label,
+        sceneText,
+        visualPrompt: frameNode.masterPrompt || sceneNode.masterPrompt || '',
+        narrationText,
+      });
+
+      updateNode(sceneNodeId, {
+        isLoadingImage: true,
+        loadingProvider: 'comfy_nano_banana',
+        pollinationsApiError: undefined,
+        statusMessage: 'Nano Banana собирает горизонтальный лист 16:9 из четырёх дополнительных планов...',
+      });
+      sheetImageUrl = await generateComfyNanoBanana2LiteShotGrid(
+        gridPrompt,
+        frameNode.imageUrl,
+        imageGenerationSettings,
+        controller.signal,
+      );
+      updateNode(sceneNodeId, {
+        statusMessage: 'Лист готов. Разрезаем его на четыре горизонтальных кадра 16:9...',
+      });
+      const crops = await splitSceneShotGrid(sheetImageUrl, controller.signal);
+      generatedShotUrls = crops.map((crop) => crop.imageUrl);
+      const generatedAt = new Date().toISOString();
+
+      setNodes((previousNodes) => {
+        const currentScene = previousNodes[sceneNodeId];
+        if (!currentScene) return previousNodes;
+        const nextNodes = { ...previousNodes };
+        const existingSheetEntry = Object.entries(previousNodes).find(([, candidate]) =>
+          candidate.parentId === sceneNodeId
+          && candidate.nodeType === 'pollinations_image'
+          && getAssetKind(candidate) === 'scene_contact_sheet');
+        const sheetNodeId = existingSheetEntry?.[0] ?? generateNodeId();
+        const existingSheetNode = existingSheetEntry?.[1];
+        if (existingSheetNode?.imageUrl?.startsWith('blob:')) URL.revokeObjectURL(existingSheetNode.imageUrl);
+        if (currentScene.videoUrl?.startsWith('blob:')) URL.revokeObjectURL(currentScene.videoUrl);
+
+        const parentWidth = currentScene.width ?? 400;
+        const sheetX = currentScene.x + parentWidth + 36;
+        const sheetY = currentScene.y + 340;
+        nextNodes[sheetNodeId] = {
+          ...existingSheetNode,
+          nodeType: 'pollinations_image',
+          label: `Лист 2×2 · ${currentScene.label}`,
+          x: existingSheetNode?.x ?? sheetX,
+          y: existingSheetNode?.y ?? sheetY,
+          width: existingSheetNode?.width ?? 520,
+          height: existingSheetNode?.height ?? 330,
+          parentId: sceneNodeId,
+          imageUrl: sheetImageUrl,
+          masterPrompt: gridPrompt,
+          imagePipeline: 'nano_banana_2_lite_compose',
+          productionStatus: 'ready',
+          level: (currentScene.level ?? 0) + 1,
+          metadata: {
+            ...existingSheetNode?.metadata,
+            assetKind: 'scene_contact_sheet',
+            sceneId: sceneNodeId,
+            sourceFrameNodeId: frameNodeId,
+            gridColumns: 2,
+            gridRows: 2,
+            sheetAspectRatio: '16:9',
+            generatedAt,
+            imageProvider: 'comfy_nano_banana',
+            localAssetId: null,
+            localAssetKind: null,
+            localAssetSavedAt: null,
+          },
+        };
+
+        crops.forEach((crop, arrayIndex) => {
+          const existingShotEntry = Object.entries(previousNodes).find(([, candidate]) =>
+            candidate.parentId === sceneNodeId
+            && candidate.nodeType === 'pollinations_image'
+            && getSceneShotIndex(candidate) === crop.index);
+          const shotNodeId = existingShotEntry?.[0] ?? generateNodeId();
+          const existingShotNode = existingShotEntry?.[1];
+          if (existingShotNode?.imageUrl?.startsWith('blob:')) URL.revokeObjectURL(existingShotNode.imageUrl);
+          const column = arrayIndex % 2;
+          const row = Math.floor(arrayIndex / 2);
+          nextNodes[shotNodeId] = {
+            ...existingShotNode,
+            nodeType: 'pollinations_image',
+            label: `План ${crop.index}: ${crop.label} · ${currentScene.label}`,
+            x: existingShotNode?.x ?? sheetX + column * 350,
+            y: existingShotNode?.y ?? sheetY + 370 + row * 250,
+            width: existingShotNode?.width ?? 330,
+            height: existingShotNode?.height ?? 215,
+            parentId: sceneNodeId,
+            imageUrl: crop.imageUrl,
+            masterPrompt: gridPrompt,
+            imagePipeline: 'nano_banana_2_lite_compose',
+            productionStatus: 'ready',
+            level: (currentScene.level ?? 0) + 1,
+            metadata: {
+              ...existingShotNode?.metadata,
+              assetKind: `scene_shot:${crop.index}`,
+              sceneId: sceneNodeId,
+              sceneShotIndex: crop.index,
+              sceneShotRole: crop.role,
+              sourceFrameNodeId: frameNodeId,
+              contactSheetNodeId: sheetNodeId,
+              shotAspectRatio: '16:9',
+              generatedAt,
+              imageProvider: 'comfy_nano_banana',
+              localAssetId: null,
+              localAssetKind: null,
+              localAssetSavedAt: null,
+            },
+          };
+        });
+
+        nextNodes[sceneNodeId] = {
+          ...currentScene,
+          videoUrl: undefined,
+          isLoadingImage: false,
+          loadingProvider: undefined,
+          pollinationsApiError: undefined,
+          statusMessage: 'Четыре дополнительных плана готовы. Старый клип сброшен.',
+          metadata: {
+            ...currentScene.metadata,
+            sceneShotCount: crops.length,
+            sceneShotGridGeneratedAt: generatedAt,
+            sceneShotGridPrompt: gridPrompt,
+          },
+        };
+        return nextNodes;
+      });
+      committed = true;
+      showNotice('success', `Для «${sceneNode.label}» готовы четыре дополнительных плана 16:9.`);
+    } catch (error) {
+      if (isAbortError(error)) {
+        showNotice('info', 'Генерация дополнительных планов отменена.');
+      } else {
+        const message = errorMessage(error);
+        updateNode(sceneNodeId, { pollinationsApiError: message });
+        showNotice('error', message);
+      }
+    } finally {
+      if (!committed) {
+        if (sheetImageUrl.startsWith('blob:')) URL.revokeObjectURL(sheetImageUrl);
+        generatedShotUrls.forEach((imageUrl) => {
+          if (imageUrl.startsWith('blob:')) URL.revokeObjectURL(imageUrl);
+        });
+      }
+      activeRequests.current.delete(requestId);
+      updateNode(sceneNodeId, {
+        isLoadingImage: false,
+        loadingProvider: undefined,
+        statusMessage: undefined,
+      });
+    }
+  }, [imageGenerationSettings, setNodes, showNotice, updateNode]);
+
   const handleBuildSceneVideoClip = useCallback(async (sceneNodeId: string) => {
     const currentNodes = nodesRef.current;
     const sceneNode = currentNodes[sceneNodeId];
@@ -4901,9 +5112,14 @@ export const useNodeManagement = (
       const chapterBackdropNode = timelineEntry
         ? findChapterBackdropImageNode(currentNodes, timelineEntry[0], timelineEntry[1])
         : undefined;
-      const clipImageUrls = systemInsertNode?.imageUrl
-        ? [frameNode.imageUrl, systemInsertNode.imageUrl]
-        : [frameNode.imageUrl];
+      const sceneShotUrls = findSceneShotNodes(currentNodes, sceneNodeId)
+        .map((shotNode) => shotNode.imageUrl)
+        .filter((imageUrl): imageUrl is string => Boolean(imageUrl));
+      const clipImageUrls = [
+        frameNode.imageUrl,
+        ...sceneShotUrls,
+        ...(systemInsertNode?.imageUrl ? [systemInsertNode.imageUrl] : []),
+      ];
       const videoUrl = await buildStillImagesVideoClip(clipImageUrls, sceneNode.audioUrl, {
         signal: controller.signal,
         backgroundImageUrl: chapterBackdropNode?.imageUrl,
@@ -4928,6 +5144,7 @@ export const useNodeManagement = (
               videoFormat: 'webm',
               videoAspectRatio: '16:9',
               videoFrameSource: frameNode.label,
+              sceneShotCountUsed: sceneShotUrls.length,
               ...(systemInsertNode ? { systemInsertSource: systemInsertNode.label } : {}),
               ...(chapterBackdropNode ? { chapterBackdropSource: chapterBackdropNode.label } : {}),
               ...(audioGeneratedAt ? { videoAudioGeneratedAt: audioGeneratedAt } : {}),
@@ -4986,7 +5203,8 @@ export const useNodeManagement = (
         ? findSystemInsertImageNodeForScene(currentNodes, sceneNumber, sourceScenarioId ?? '')
         : undefined;
       const frameNode = findBestSceneFrameNode(currentNodes, sceneId);
-      return { sceneId, scene, frameNode, systemInsertNode };
+      const shotNodes = findSceneShotNodes(currentNodes, sceneId);
+      return { sceneId, scene, frameNode, shotNodes, systemInsertNode };
     });
     const chapterBackdropNode = findChapterBackdropImageNode(currentNodes, timelineNodeId, timelineNode);
     const missingSourceLabels = scenePlans
@@ -5040,9 +5258,14 @@ export const useNodeManagement = (
           statusMessage: 'Клип поставлен в очередь таймлайна...',
         });
 
-        const imageUrls = plan.systemInsertNode?.imageUrl
-          ? [plan.frameNode.imageUrl, plan.systemInsertNode.imageUrl]
-          : [plan.frameNode.imageUrl];
+        const shotUrls = plan.shotNodes
+          .map((shotNode) => shotNode.imageUrl)
+          .filter((imageUrl): imageUrl is string => Boolean(imageUrl));
+        const imageUrls = [
+          plan.frameNode.imageUrl,
+          ...shotUrls,
+          ...(plan.systemInsertNode?.imageUrl ? [plan.systemInsertNode.imageUrl] : []),
+        ];
         const videoUrl = await buildStillImagesVideoClip(imageUrls, plan.scene.audioUrl, {
           signal: controller.signal,
           backgroundImageUrl: chapterBackdropNode?.imageUrl,
@@ -5067,6 +5290,7 @@ export const useNodeManagement = (
                 videoFormat: 'webm',
                 videoAspectRatio: '16:9',
                 videoFrameSource: plan.frameNode.label,
+                sceneShotCountUsed: shotUrls.length,
                 ...(plan.systemInsertNode ? { systemInsertSource: plan.systemInsertNode.label } : {}),
                 ...(chapterBackdropNode ? { chapterBackdropSource: chapterBackdropNode.label } : {}),
                 ...(audioGeneratedAt ? { videoAudioGeneratedAt: audioGeneratedAt } : {}),
@@ -5132,9 +5356,10 @@ export const useNodeManagement = (
         ? findSystemInsertImageNodeForScene(currentNodes, sceneNumber, sourceScenarioId ?? '')
         : undefined;
       const frameNode = findBestSceneFrameNode(currentNodes, sceneId);
+      const shotNodes = findSceneShotNodes(currentNodes, sceneId);
       const canBuildFromSources = Boolean(scene.audioUrl && frameNode?.imageUrl);
       const shouldBuildFromSources = canBuildFromSources && (Boolean(systemInsertNode?.imageUrl) || !scene.videoUrl);
-      return { sceneId, scene, frameNode, systemInsertNode, canBuildFromSources, shouldBuildFromSources };
+      return { sceneId, scene, frameNode, shotNodes, systemInsertNode, canBuildFromSources, shouldBuildFromSources };
     });
     const chapterBackdropNode = findChapterBackdropImageNode(currentNodes, timelineNodeId, timelineNode);
     const missingClipLabels = scenePlans
@@ -5172,9 +5397,14 @@ export const useNodeManagement = (
           updateNode(timelineNodeId, {
             statusMessage: `Готовим клип ${index + 1}/${scenePlans.length}: ${plan.scene.label}`,
           });
-          const imageUrls = plan.systemInsertNode?.imageUrl
-            ? [plan.frameNode.imageUrl, plan.systemInsertNode.imageUrl]
-            : [plan.frameNode.imageUrl];
+          const shotUrls = plan.shotNodes
+            .map((shotNode) => shotNode.imageUrl)
+            .filter((imageUrl): imageUrl is string => Boolean(imageUrl));
+          const imageUrls = [
+            plan.frameNode.imageUrl,
+            ...shotUrls,
+            ...(plan.systemInsertNode?.imageUrl ? [plan.systemInsertNode.imageUrl] : []),
+          ];
           const sceneClipUrl = await buildStillImagesVideoClip(imageUrls, plan.scene.audioUrl, {
             signal: controller.signal,
             backgroundImageUrl: chapterBackdropNode?.imageUrl,
@@ -5194,6 +5424,7 @@ export const useNodeManagement = (
                   videoFormat: 'webm',
                   videoAspectRatio: '16:9',
                   videoFrameSource: plan.frameNode.label,
+                  sceneShotCountUsed: shotUrls.length,
                   ...(plan.systemInsertNode ? { systemInsertSource: plan.systemInsertNode.label } : {}),
                   ...(chapterBackdropNode ? { chapterBackdropSource: chapterBackdropNode.label } : {}),
                   videoGeneratedAt: new Date().toISOString(),
@@ -5956,6 +6187,7 @@ export const useNodeManagement = (
     activeRequests.current.get(`detail-asset:${nodeId}`)?.abort();
     activeRequests.current.get(`tts:${nodeId}`)?.abort();
     activeRequests.current.get(`tts-scene:${nodeId}`)?.abort();
+    activeRequests.current.get(`scene-shot-grid:${nodeId}`)?.abort();
     activeRequests.current.get(`scene-video:${nodeId}`)?.abort();
     activeRequests.current.get(`chapter-backdrop:${nodeId}`)?.abort();
     activeRequests.current.get(`timeline-missing:${nodeId}`)?.abort();
@@ -6038,6 +6270,7 @@ export const useNodeManagement = (
     handleGenerateAlternateOmniVoiceNarration,
     handleGenerateSceneOmniVoiceNarration,
     handleGenerateAlternateSceneOmniVoiceNarration,
+    handleGenerateSceneShotGrid,
     handleBuildSceneVideoClip,
     handleGenerateChapterBackdrop,
     handleGenerateTimelineMissingAssets,

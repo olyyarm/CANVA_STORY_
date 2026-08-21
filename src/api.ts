@@ -2007,6 +2007,52 @@ const buildComfyNanoBanana2LiteComposeWorkflow = (
   };
 };
 
+const buildComfyNanoBanana2LiteShotGridWorkflow = (
+  prompt: string,
+  sourceFrameName: string,
+) => {
+  const seed = Math.floor(Math.random() * 1_000_000_000_000_000);
+  return {
+    '3': {
+      class_type: 'GeminiNanoBanana2V2',
+      inputs: {
+        prompt,
+        model: 'Nano Banana 2 Lite',
+        'model.aspect_ratio': '16:9',
+        'model.resolution': '2K',
+        'model.thinking_level': 'MINIMAL',
+        seed,
+        response_modalities: 'IMAGE',
+        system_prompt: [
+          'You create a single exact horizontal 16:9 cinematic contact sheet from the supplied source frame.',
+          'The result is a strict 2 by 2 grid whose four equal quadrants are independently usable horizontal 16:9 story frames.',
+          'Preserve visual and story continuity. Follow the requested quadrant order exactly.',
+          'Return an image only. Never add captions, labels, borders, gutters, logos, watermarks, or interface elements.',
+        ].join('\n'),
+        temperature: 1,
+        top_p: 0.95,
+        'model.images.image_1': ['8', 0],
+      },
+    },
+    '4': {
+      class_type: 'SaveImageAdvanced',
+      inputs: {
+        filename_prefix: 'CANVA_STORY_SCENE_SHOT_GRID',
+        format: 'png',
+        'format.bit_depth': '8-bit',
+        'format.input_color_space': 'sRGB',
+        images: ['3', 0],
+      },
+    },
+    '8': {
+      class_type: 'LoadImage',
+      inputs: {
+        image: sourceFrameName,
+      },
+    },
+  };
+};
+
 export const generateComfyFlux2ComposeImage = async (
   prompt: string,
   backgroundImageUrl: string,
@@ -2137,6 +2183,70 @@ export const generateComfyNanoBanana2LiteComposeImage = async (
     throw error;
   } finally {
     if (referenceBoardUrl) URL.revokeObjectURL(referenceBoardUrl);
+  }
+};
+
+export const generateComfyNanoBanana2LiteShotGrid = async (
+  prompt: string,
+  sourceFrameUrl: string,
+  settings: ImageGenerationSettings,
+  signal?: AbortSignal,
+) => {
+  const baseUrl = getComfyBaseUrl(settings.comfyEndpoint);
+  try {
+    if (settings.provider !== 'comfyui') {
+      throw new Error('Дополнительные планы Nano Banana работают только через ComfyUI API.');
+    }
+    const sourceFrameName = await uploadComfyInputImage(
+      baseUrl,
+      sourceFrameUrl,
+      'canva-story-scene-shot-source',
+      signal,
+    );
+    const workflow = buildComfyNanoBanana2LiteShotGridWorkflow(prompt, sourceFrameName);
+    const clientId = typeof crypto.randomUUID === 'function'
+      ? crypto.randomUUID()
+      : `canva-story-scene-shot-grid-${Date.now()}`;
+    const promptResponse = await fetch(`${baseUrl}/prompt`, getComfyFetchOptions({
+      method: 'POST',
+      signal,
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(createComfyPromptPayload(clientId, workflow, settings)),
+    }));
+    if (!promptResponse.ok) {
+      throw new Error(getComfyError(
+        'ComfyUI не принял Nano Banana workflow дополнительных планов',
+        promptResponse,
+        await readResponseDetails(promptResponse),
+      ));
+    }
+    const promptData: ComfyPromptResponse = await promptResponse.json();
+    if (!promptData.prompt_id) throw new Error('ComfyUI не вернул prompt_id для листа дополнительных планов.');
+
+    const image = await waitForComfyImage(baseUrl, promptData.prompt_id, COMFY_NANO_BANANA_TIMEOUT_MS, signal);
+    if (!image) {
+      throw new Error('Nano Banana не вернула лист дополнительных планов за 45 минут. Проверьте очередь ComfyUI.');
+    }
+    const params = new URLSearchParams({
+      filename: image.filename,
+      subfolder: image.subfolder ?? '',
+      type: image.type ?? 'output',
+    });
+    const viewResponse = await fetch(`${baseUrl}/view?${params.toString()}`, getComfyFetchOptions({ signal }));
+    if (!viewResponse.ok) {
+      throw new Error(getComfyError(
+        'ComfyUI не отдал готовый лист дополнительных планов',
+        viewResponse,
+        await readResponseDetails(viewResponse),
+      ));
+    }
+    return URL.createObjectURL(await viewResponse.blob());
+  } catch (error) {
+    if (error instanceof DOMException && error.name === 'AbortError') throw error;
+    if (error instanceof TypeError) {
+      throw new Error(`Не удалось подключиться к ComfyUI по адресу ${baseUrl}. Проверьте ComfyUI и CORS.`);
+    }
+    throw error;
   }
 };
 

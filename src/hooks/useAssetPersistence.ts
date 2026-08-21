@@ -81,6 +81,8 @@ const getSemanticAssetKind = (node: NodeData, mediaKind: AssetMediaKind): AssetK
   const legacyKind = getMetadataString(node, 'assetKind') ?? '';
   if (legacyKind.startsWith('character_asset')) return 'character_reference';
   if (legacyKind.startsWith('location_asset') || legacyKind === 'scene_location') return 'location_reference';
+  if (legacyKind === 'scene_contact_sheet') return 'scene_contact_sheet';
+  if (legacyKind.startsWith('scene_shot')) return 'scene_shot';
   if (legacyKind.startsWith('system_insert')) return 'system_insert';
   if (legacyKind === 'chapter_backdrop') return 'chapter_backdrop';
   if (legacyKind.includes('frame')) return 'scene_frame';
@@ -91,7 +93,13 @@ const getAssetScope = (node: NodeData, assetKind: AssetKind): AssetScope => {
   if (assetKind === 'character_reference') return 'character';
   if (assetKind === 'location_reference') return 'location';
   if (assetKind === 'chapter_backdrop' || assetKind === 'chapter_video') return 'chapter';
-  if (node.nodeType === 'scene' || assetKind === 'scene_frame' || assetKind === 'system_insert') return 'scene';
+  if (
+    node.nodeType === 'scene'
+    || assetKind === 'scene_frame'
+    || assetKind === 'scene_contact_sheet'
+    || assetKind === 'scene_shot'
+    || assetKind === 'system_insert'
+  ) return 'scene';
   return 'project';
 };
 
@@ -105,7 +113,12 @@ const getAssetSaveOptions = (
   const parentId = typeof node.parentId === 'string' ? node.parentId : undefined;
   const sceneId = getMetadataString(node, 'sceneId')
     ?? (node.nodeType === 'scene' ? nodeId : undefined)
-    ?? ((assetKind === 'scene_frame' || assetKind === 'system_insert') ? parentId : undefined);
+    ?? ((
+      assetKind === 'scene_frame'
+      || assetKind === 'scene_contact_sheet'
+      || assetKind === 'scene_shot'
+      || assetKind === 'system_insert'
+    ) ? parentId : undefined);
   const sourcePrompt = node.assetPrompt?.trim() || node.masterPrompt?.trim() || undefined;
   return {
     assetId: getNodeAssetId(projectId, nodeId, mediaKind),

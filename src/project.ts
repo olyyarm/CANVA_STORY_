@@ -78,6 +78,8 @@ const assetKinds = new Set<AssetKind>([
   'character_reference',
   'location_reference',
   'scene_frame',
+  'scene_contact_sheet',
+  'scene_shot',
   'system_insert',
   'chapter_backdrop',
   'voice_reference',
@@ -146,6 +148,8 @@ const inferLegacyAssetKind = (
   const legacyKind = optionalString(metadata.assetKind) ?? '';
   if (legacyKind.startsWith('character_asset')) return 'character_reference';
   if (legacyKind.startsWith('location_asset') || legacyKind === 'scene_location') return 'location_reference';
+  if (legacyKind === 'scene_contact_sheet') return 'scene_contact_sheet';
+  if (legacyKind.startsWith('scene_shot')) return 'scene_shot';
   if (legacyKind.startsWith('system_insert')) return 'system_insert';
   if (legacyKind === 'chapter_backdrop') return 'chapter_backdrop';
   if (legacyKind.includes('frame')) return 'scene_frame';
@@ -156,7 +160,13 @@ const inferLegacyAssetScope = (assetKind: AssetKind, nodeType: NodeType): AssetS
   if (assetKind === 'character_reference') return 'character';
   if (assetKind === 'location_reference') return 'location';
   if (assetKind === 'chapter_backdrop' || assetKind === 'chapter_video') return 'chapter';
-  if (nodeType === 'scene' || assetKind === 'scene_frame' || assetKind === 'system_insert') return 'scene';
+  if (
+    nodeType === 'scene'
+    || assetKind === 'scene_frame'
+    || assetKind === 'scene_contact_sheet'
+    || assetKind === 'scene_shot'
+    || assetKind === 'system_insert'
+  ) return 'scene';
   return 'project';
 };
 
@@ -180,7 +190,12 @@ const getLegacyAssetReference = (
   const parentId = optionalString(value.parentId);
   const sceneId = optionalString(metadata.sceneId)
     ?? (nodeType === 'scene' ? nodeId : undefined)
-    ?? ((assetKind === 'scene_frame' || assetKind === 'system_insert') ? parentId : undefined);
+    ?? ((
+      assetKind === 'scene_frame'
+      || assetKind === 'scene_contact_sheet'
+      || assetKind === 'scene_shot'
+      || assetKind === 'system_insert'
+    ) ? parentId : undefined);
   const sourcePrompt = optionalString(value.assetPrompt) ?? optionalString(value.masterPrompt);
   const canonicalId = optionalString(metadata.canonicalId) ?? optionalString(metadata.characterTag);
 

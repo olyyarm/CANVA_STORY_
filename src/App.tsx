@@ -311,6 +311,7 @@ const App = () => {
     handleGenerateAlternateOmniVoiceNarration,
     handleGenerateSceneOmniVoiceNarration,
     handleGenerateAlternateSceneOmniVoiceNarration,
+    handleGenerateSceneShotGrid,
     handleBuildSceneVideoClip,
     handleGenerateChapterBackdrop,
     handleGenerateTimelineMissingAssets,
@@ -1495,6 +1496,7 @@ const App = () => {
               onGenerateAlternateOmniVoiceNarration={handleGenerateAlternateOmniVoiceNarration}
               onGenerateSceneOmniVoiceNarration={handleGenerateSceneOmniVoiceNarration}
               onGenerateAlternateSceneOmniVoiceNarration={handleGenerateAlternateSceneOmniVoiceNarration}
+              onGenerateSceneShotGrid={handleGenerateSceneShotGrid}
               onBuildSceneVideoClip={handleBuildSceneVideoClip}
               onGenerateChapterBackdrop={handleGenerateChapterBackdrop}
               onGenerateTimelineMissingAssets={handleGenerateTimelineMissingAssets}

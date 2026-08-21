@@ -1454,6 +1454,23 @@
   margin-top: 0;
 }
 
+.scene-node__shot-summary {
+  display: grid;
+  gap: 3px;
+  padding: 8px 10px;
+  border: 1px solid rgba(101, 174, 218, 0.3);
+  border-radius: 8px;
+  color: #c7dbea;
+  background: rgba(48, 93, 124, 0.14);
+  font-size: 10px;
+  line-height: 1.35;
+}
+
+.scene-node__shot-summary strong {
+  color: #8fd0f4;
+  font-size: 11px;
+}
+
 .generated-image {
   display: grid;
   min-height: 0;
@@ -1761,6 +1778,32 @@
 }
 
 .chapter-timeline__thumb img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  pointer-events: none;
+}
+
+.chapter-timeline__shot-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 5px;
+  padding: 6px;
+  border: 1px solid rgba(101, 174, 218, 0.24);
+  border-radius: 7px;
+  background: rgba(31, 59, 78, 0.2);
+}
+
+.chapter-timeline__shot {
+  aspect-ratio: 16 / 9;
+  overflow: hidden;
+  border: 1px solid #344654;
+  border-radius: 5px;
+  background: #0e1216;
+}
+
+.chapter-timeline__shot img {
+  display: block;
   width: 100%;
   height: 100%;
   object-fit: cover;

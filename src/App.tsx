@@ -279,6 +279,7 @@ const App = () => {
     handleImagePipelineChange,
     handleTimelineAssetPipelineChange,
     handleTimelineSystemInsertPipelineChange,
+    handleTimelineMasterChange,
     handleSceneCountChange,
     handleContinueAssociation,
     handleScriptVisualization,
@@ -1466,6 +1467,7 @@ const App = () => {
               onImagePipelineChange={handleImagePipelineChange}
               onTimelineAssetPipelineChange={handleTimelineAssetPipelineChange}
               onTimelineSystemInsertPipelineChange={handleTimelineSystemInsertPipelineChange}
+              onTimelineMasterChange={handleTimelineMasterChange}
               onSceneCountChange={handleSceneCountChange}
               onContinueAssociation={handleContinueAssociation}
               onScriptVisualize={handleScriptVisualization}

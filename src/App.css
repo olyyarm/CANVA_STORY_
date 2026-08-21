@@ -1506,6 +1506,46 @@
   flex: 0 0 auto;
 }
 
+.chapter-timeline__master {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  align-content: center;
+  align-items: center;
+  column-gap: 8px;
+  min-height: 54px;
+  padding: 8px 11px;
+  border: 1px solid #343c46;
+  border-radius: 8px;
+  color: var(--text-faint);
+  background: #171b20;
+  cursor: pointer;
+}
+
+.chapter-timeline__master input {
+  width: 17px;
+  height: 17px;
+  margin: 0;
+  accent-color: #df9144;
+}
+
+.chapter-timeline__master span {
+  color: var(--text-secondary);
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.chapter-timeline__master small {
+  grid-column: 2;
+  color: var(--text-faint);
+  font-size: 9px;
+}
+
+.chapter-timeline__master--active {
+  border-color: #c97d37;
+  background: #211b16;
+  box-shadow: inset 0 0 0 1px rgb(223 145 68 / 14%);
+}
+
 .chapter-timeline__summary {
   display: grid;
   grid-template-columns: repeat(7, minmax(72px, 1fr)) repeat(4, minmax(104px, auto));

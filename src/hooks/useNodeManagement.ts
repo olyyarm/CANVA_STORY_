@@ -130,6 +130,7 @@ interface UseNodeManagementReturn {
   handleImagePipelineChange: (event: React.ChangeEvent<HTMLSelectElement>, nodeId: string) => void;
   handleTimelineAssetPipelineChange: (event: React.ChangeEvent<HTMLSelectElement>, nodeId: string) => void;
   handleTimelineSystemInsertPipelineChange: (event: React.ChangeEvent<HTMLSelectElement>, nodeId: string) => void;
+  handleTimelineMasterChange: (event: React.ChangeEvent<HTMLInputElement>, nodeId: string) => void;
   handleSceneCountChange: (event: React.ChangeEvent<HTMLInputElement>, nodeId: string) => void;
   handleContinueAssociation: (sourceNodeId: string) => Promise<void>;
   handleScriptVisualization: (sourceNodeId: string) => Promise<void>;
@@ -1648,6 +1649,49 @@ export const useNodeManagement = (
     });
   }, [setNodes]);
 
+  useEffect(() => {
+    setNodes((previousNodes) => {
+      const timelineEntries = Object.entries(previousNodes)
+        .filter(([, node]) => node.nodeType === 'chapter_timeline');
+      if (
+        timelineEntries.length === 0
+        || timelineEntries.some(([, node]) => typeof node.metadata?.isTimelineMaster === 'boolean')
+      ) return previousNodes;
+      const [masterId, masterNode] = timelineEntries[0];
+      const sharedMetadata: NodeData['metadata'] = {
+        ...(masterNode.metadata?.timelineAssetPipeline !== undefined
+          ? { timelineAssetPipeline: masterNode.metadata.timelineAssetPipeline }
+          : {}),
+        ...(masterNode.metadata?.timelineAssetImageProvider !== undefined
+          ? { timelineAssetImageProvider: masterNode.metadata.timelineAssetImageProvider }
+          : {}),
+        ...(masterNode.metadata?.timelineSystemInsertPipeline !== undefined
+          ? { timelineSystemInsertPipeline: masterNode.metadata.timelineSystemInsertPipeline }
+          : {}),
+        ...(masterNode.metadata?.timelineSystemInsertImageProvider !== undefined
+          ? { timelineSystemInsertImageProvider: masterNode.metadata.timelineSystemInsertImageProvider }
+          : {}),
+      };
+      const nextNodes = { ...previousNodes };
+      timelineEntries.forEach(([timelineId, timelineNode]) => {
+        const isMaster = timelineId === masterId;
+        nextNodes[timelineId] = {
+          ...timelineNode,
+          ...(!isMaster ? {
+            selectedModel: masterNode.selectedModel,
+            imagePipeline: masterNode.imagePipeline,
+          } : {}),
+          metadata: {
+            ...timelineNode.metadata,
+            ...(!isMaster ? sharedMetadata : {}),
+            isTimelineMaster: isMaster,
+          },
+        };
+      });
+      return nextNodes;
+    });
+  }, [setNodes]);
+
   const requestText = useCallback(async (
     nodeId: string,
     request: GenerationRequest,
@@ -2126,9 +2170,42 @@ export const useNodeManagement = (
     });
   }, [setNodes]);
 
+  const updateTimelineSetting = useCallback((nodeId: string, updates: Partial<NodeData>) => {
+    setNodes((previousNodes) => {
+      const currentNode = previousNodes[nodeId];
+      if (!currentNode) return previousNodes;
+      const applyUpdates = (node: NodeData): NodeData => ({
+        ...node,
+        ...updates,
+        metadata: updates.metadata
+          ? { ...node.metadata, ...updates.metadata }
+          : node.metadata,
+      });
+      const nextNodes = {
+        ...previousNodes,
+        [nodeId]: applyUpdates(currentNode),
+      };
+      if (currentNode.nodeType !== 'chapter_timeline' || currentNode.metadata?.isTimelineMaster !== true) {
+        return nextNodes;
+      }
+      Object.entries(previousNodes).forEach(([candidateId, candidate]) => {
+        if (candidateId !== nodeId && candidate.nodeType === 'chapter_timeline') {
+          nextNodes[candidateId] = applyUpdates(candidate);
+        }
+      });
+      return nextNodes;
+    });
+  }, [setNodes]);
+
   const handleModelChange = useCallback((event: React.ChangeEvent<HTMLSelectElement>, nodeId: string) => {
-    updateNode(nodeId, { selectedModel: event.target.value, error: undefined });
-  }, [updateNode]);
+    const currentNode = nodesRef.current[nodeId];
+    const updates = { selectedModel: event.target.value, error: undefined };
+    if (currentNode?.nodeType === 'chapter_timeline') {
+      updateTimelineSetting(nodeId, updates);
+    } else {
+      updateNode(nodeId, updates);
+    }
+  }, [updateNode, updateTimelineSetting]);
 
   const handleImagePipelineChange = useCallback((event: React.ChangeEvent<HTMLSelectElement>, nodeId: string) => {
     const value = event.target.value;
@@ -2143,8 +2220,13 @@ export const useNodeManagement = (
             : value === 'nano_banana_2_lite_compose'
               ? 'nano_banana_2_lite_compose'
               : 'sdxl';
-    updateNode(nodeId, { imagePipeline: nextPipeline, pollinationsApiError: undefined });
-  }, [updateNode]);
+    const updates = { imagePipeline: nextPipeline, pollinationsApiError: undefined };
+    if (nodesRef.current[nodeId]?.nodeType === 'chapter_timeline') {
+      updateTimelineSetting(nodeId, updates);
+    } else {
+      updateNode(nodeId, updates);
+    }
+  }, [updateNode, updateTimelineSetting]);
 
   const handleTimelineAssetPipelineChange = useCallback((event: React.ChangeEvent<HTMLSelectElement>, nodeId: string) => {
     const value = event.target.value;
@@ -2153,15 +2235,13 @@ export const useNodeManagement = (
       : value === 'ernie_image_turbo'
         ? 'ernie_image_turbo'
         : 'z_image_turbo';
-    const currentNode = nodesRef.current[nodeId];
-    updateNode(nodeId, {
+    updateTimelineSetting(nodeId, {
       pollinationsApiError: undefined,
       metadata: {
-        ...currentNode?.metadata,
         timelineAssetPipeline: nextPipeline,
       },
     });
-  }, [updateNode]);
+  }, [updateTimelineSetting]);
 
   const handleTimelineSystemInsertPipelineChange = useCallback((event: React.ChangeEvent<HTMLSelectElement>, nodeId: string) => {
     const value = event.target.value;
@@ -2180,15 +2260,52 @@ export const useNodeManagement = (
     const nextProvider = value === 'comfy_openai_gpt_image_2_low'
       ? 'comfy_openai_gpt_image_2_low'
       : 'inherit';
-    updateNode(nodeId, {
+    updateTimelineSetting(nodeId, {
       pollinationsApiError: undefined,
       metadata: {
-        ...currentNode?.metadata,
         timelineSystemInsertPipeline: nextPipeline,
         timelineSystemInsertImageProvider: nextProvider,
       },
     });
-  }, [updateNode]);
+  }, [updateTimelineSetting]);
+
+  const handleTimelineMasterChange = useCallback((event: React.ChangeEvent<HTMLInputElement>, nodeId: string) => {
+    const checked = event.target.checked;
+    setNodes((previousNodes) => {
+      const selectedTimeline = previousNodes[nodeId];
+      if (!selectedTimeline || selectedTimeline.nodeType !== 'chapter_timeline') return previousNodes;
+      const masterMetadata = selectedTimeline.metadata ?? {};
+      const nextNodes = { ...previousNodes };
+      Object.entries(previousNodes).forEach(([candidateId, candidate]) => {
+        if (candidate.nodeType !== 'chapter_timeline') return;
+        const shouldCopySettings = checked && candidateId !== nodeId;
+        nextNodes[candidateId] = {
+          ...candidate,
+          ...(shouldCopySettings ? {
+            selectedModel: selectedTimeline.selectedModel,
+            imagePipeline: selectedTimeline.imagePipeline,
+          } : {}),
+          metadata: {
+            ...candidate.metadata,
+            ...(shouldCopySettings ? {
+              timelineAssetPipeline: masterMetadata.timelineAssetPipeline,
+              timelineAssetImageProvider: masterMetadata.timelineAssetImageProvider,
+              timelineSystemInsertPipeline: masterMetadata.timelineSystemInsertPipeline,
+              timelineSystemInsertImageProvider: masterMetadata.timelineSystemInsertImageProvider,
+            } : {}),
+            isTimelineMaster: checked && candidateId === nodeId,
+          },
+        };
+      });
+      return nextNodes;
+    });
+    showNotice(
+      'info',
+      checked
+        ? 'Эта глава назначена мастером. Её настройки применены ко всем таймлайнам.'
+        : 'Мастер-глава отключена. Настройки глав теперь можно менять независимо.',
+    );
+  }, [setNodes, showNotice]);
 
   const handleSceneCountChange = useCallback((event: React.ChangeEvent<HTMLInputElement>, nodeId: string) => {
     updateNode(nodeId, { sceneCount: clampSceneCount(Number(event.target.value)), error: undefined });
@@ -2497,6 +2614,14 @@ export const useNodeManagement = (
             (sourceScenarioId && node.metadata?.sourceScenarioId === sourceScenarioId)
             || (!sourceScenarioId && sourceChapterId && node.metadata?.sourceChapterId === sourceChapterId)
           ));
+      const timelineEntries = Object.entries(previousNodes)
+        .filter(([, node]) => node.nodeType === 'chapter_timeline');
+      const hasTimelineMasterChoice = timelineEntries
+        .some(([, node]) => typeof node.metadata?.isTimelineMaster === 'boolean');
+      const masterTimelineEntry = timelineEntries
+        .find(([, node]) => node.metadata?.isTimelineMaster === true)
+        ?? (!hasTimelineMasterChoice ? timelineEntries[0] : undefined);
+      const masterTimeline = masterTimelineEntry?.[1];
       const anchor = requestedTimeline
         ?? (sourceChapterId ? previousNodes[sourceChapterId] : undefined)
         ?? scenarioEntry?.[1]
@@ -2520,11 +2645,26 @@ export const useNodeManagement = (
       const preferredWidth = 1260;
       const preferredHeight = Math.min(3200, Math.max(720, 140 + timelineRows * 390));
       const sourceLabel = anchor?.label ?? scenarioEntry?.[1].label ?? 'глава';
+      const inheritedAssetPipeline = existing?.[1].metadata?.timelineAssetPipeline
+        ?? masterTimeline?.metadata?.timelineAssetPipeline;
+      const inheritedAssetProvider = existing?.[1].metadata?.timelineAssetImageProvider
+        ?? masterTimeline?.metadata?.timelineAssetImageProvider;
+      const inheritedInsertPipeline = existing?.[1].metadata?.timelineSystemInsertPipeline
+        ?? masterTimeline?.metadata?.timelineSystemInsertPipeline;
+      const inheritedInsertProvider = existing?.[1].metadata?.timelineSystemInsertImageProvider
+        ?? masterTimeline?.metadata?.timelineSystemInsertImageProvider
+        ?? 'comfy_openai_gpt_image_2_low';
+      const existingMasterValue = existing?.[1].metadata?.isTimelineMaster;
+      const isTimelineMaster = typeof existingMasterValue === 'boolean'
+        ? existingMasterValue
+        : timelineEntries.length === 0;
 
       return {
         ...previousNodes,
         [nodeId]: {
           ...existing?.[1],
+          selectedModel: existing?.[1].selectedModel ?? masterTimeline?.selectedModel,
+          imagePipeline: existing?.[1].imagePipeline ?? masterTimeline?.imagePipeline,
           nodeType: 'chapter_timeline',
           x,
           y,
@@ -2542,14 +2682,21 @@ export const useNodeManagement = (
             : 'В этой ветке пока не найдены рабочие сцены. Сначала соберите сцены главы, потом обновите таймлайн.',
           metadata: {
             ...existing?.[1].metadata,
+            ...(inheritedAssetPipeline !== undefined
+              ? { timelineAssetPipeline: inheritedAssetPipeline }
+              : {}),
+            ...(inheritedAssetProvider !== undefined
+              ? { timelineAssetImageProvider: inheritedAssetProvider }
+              : {}),
+            ...(inheritedInsertPipeline !== undefined
+              ? { timelineSystemInsertPipeline: inheritedInsertPipeline }
+              : {}),
             sourceKind: 'chapter_timeline',
             sourceScenarioId,
             sourceChapterId,
             sourceLabel,
-            timelineSystemInsertImageProvider:
-              existing?.[1].metadata?.timelineSystemInsertImageProvider === 'inherit'
-                ? 'inherit'
-                : 'comfy_openai_gpt_image_2_low',
+            timelineSystemInsertImageProvider: inheritedInsertProvider,
+            isTimelineMaster,
           },
         },
       };
@@ -6325,6 +6472,7 @@ export const useNodeManagement = (
     handleImagePipelineChange,
     handleTimelineAssetPipelineChange,
     handleTimelineSystemInsertPipelineChange,
+    handleTimelineMasterChange,
     handleSceneCountChange,
     handleContinueAssociation,
     handleScriptVisualization,

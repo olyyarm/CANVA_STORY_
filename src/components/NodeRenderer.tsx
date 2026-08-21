@@ -34,6 +34,7 @@ interface NodeRendererProps {
   onImagePipelineChange: (event: React.ChangeEvent<HTMLSelectElement>, nodeId: string) => void;
   onTimelineAssetPipelineChange: (event: React.ChangeEvent<HTMLSelectElement>, nodeId: string) => void;
   onTimelineSystemInsertPipelineChange: (event: React.ChangeEvent<HTMLSelectElement>, nodeId: string) => void;
+  onTimelineMasterChange: (event: React.ChangeEvent<HTMLInputElement>, nodeId: string) => void;
   onSceneCountChange: (event: React.ChangeEvent<HTMLInputElement>, nodeId: string) => void;
   onContinueAssociation: (nodeId: string) => void;
   onScriptVisualize: (nodeId: string) => void;
@@ -467,6 +468,7 @@ const NodeRenderer: React.FC<NodeRendererProps> = ({
   onImagePipelineChange,
   onTimelineAssetPipelineChange,
   onTimelineSystemInsertPipelineChange,
+  onTimelineMasterChange,
   onSceneCountChange,
   onContinueAssociation,
   onScriptVisualize,
@@ -1650,6 +1652,20 @@ const NodeRenderer: React.FC<NodeRendererProps> = ({
         {node.nodeType === 'chapter_timeline' && (
           <div className="chapter-timeline">
             <div className="chapter-timeline__settings">
+              <label
+                className={`chapter-timeline__master${node.metadata?.isTimelineMaster === true ? ' chapter-timeline__master--active' : ''}`}
+                onMouseDown={stopMouseDown}
+                title="Настройки мастер-главы автоматически применяются ко всем таймлайнам сезона"
+              >
+                <input
+                  type="checkbox"
+                  checked={node.metadata?.isTimelineMaster === true}
+                  onChange={(event) => onTimelineMasterChange(event, id)}
+                  disabled={node.isLoadingVideo}
+                />
+                <span>Мастер</span>
+                <small>Настройки для всех глав</small>
+              </label>
               {renderModelSelect(false)}
               {imageProvider === 'comfyui' && (
                 <>

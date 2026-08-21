@@ -152,7 +152,12 @@ interface UseNodeManagementReturn {
   handleGenerateSceneLocationAsset: (sceneNodeId: string, pipelineOverride?: ImagePipeline, modelOverride?: string) => Promise<void>;
   handleGenerateSceneCharacterLayer: (sceneNodeId: string) => Promise<void>;
   handleComposeSceneFlux2: (sceneNodeId: string, pipeline?: Extract<ImagePipeline, 'flux2_compose' | 'flux2_turbo_compose' | 'nano_banana_2_lite_compose'>) => Promise<void>;
-  handleGenerateDetailAsset: (detailNodeId: string, pipelineOverride?: ImagePipeline, modelOverride?: string) => Promise<void>;
+  handleGenerateDetailAsset: (
+    detailNodeId: string,
+    pipelineOverride?: ImagePipeline,
+    modelOverride?: string,
+    providerOverride?: 'inherit' | 'comfy_openai_gpt_image_2_low',
+  ) => Promise<void>;
   handleEditNarration: (detailNodeId: string) => Promise<void>;
   handleStoryStructureEdit: (detailNodeId: string) => Promise<void>;
   handleNarrationEditorialLoop: (detailNodeId: string) => Promise<void>;
@@ -2160,17 +2165,27 @@ export const useNodeManagement = (
 
   const handleTimelineSystemInsertPipelineChange = useCallback((event: React.ChangeEvent<HTMLSelectElement>, nodeId: string) => {
     const value = event.target.value;
-    const nextPipeline: ImagePipeline = value === 'sdxl'
-      ? 'sdxl'
-      : value === 'z_image_turbo'
-        ? 'z_image_turbo'
-        : 'ernie_image_turbo';
     const currentNode = nodesRef.current[nodeId];
+    const currentPipeline = currentNode?.metadata?.timelineSystemInsertPipeline;
+    const fallbackPipeline: ImagePipeline = currentPipeline === 'sdxl'
+      || currentPipeline === 'z_image_turbo'
+      || currentPipeline === 'ernie_image_turbo'
+        ? currentPipeline
+        : 'ernie_image_turbo';
+    const nextPipeline: ImagePipeline = value === 'sdxl'
+      || value === 'z_image_turbo'
+      || value === 'ernie_image_turbo'
+        ? value
+        : fallbackPipeline;
+    const nextProvider = value === 'comfy_openai_gpt_image_2_low'
+      ? 'comfy_openai_gpt_image_2_low'
+      : 'inherit';
     updateNode(nodeId, {
       pollinationsApiError: undefined,
       metadata: {
         ...currentNode?.metadata,
         timelineSystemInsertPipeline: nextPipeline,
+        timelineSystemInsertImageProvider: nextProvider,
       },
     });
   }, [updateNode]);
@@ -2531,6 +2546,10 @@ export const useNodeManagement = (
             sourceScenarioId,
             sourceChapterId,
             sourceLabel,
+            timelineSystemInsertImageProvider:
+              existing?.[1].metadata?.timelineSystemInsertImageProvider === 'inherit'
+                ? 'inherit'
+                : 'comfy_openai_gpt_image_2_low',
           },
         },
       };
@@ -3928,6 +3947,7 @@ export const useNodeManagement = (
     detailNodeId: string,
     pipelineOverride?: ImagePipeline,
     modelOverride?: string,
+    providerOverride?: 'inherit' | 'comfy_openai_gpt_image_2_low',
   ) => {
     const detailNode = nodesRef.current[detailNodeId];
     const description = detailNode?.inputValue?.trim();
@@ -3944,6 +3964,7 @@ export const useNodeManagement = (
     activeRequests.current.set(requestId, controller);
     const isCharacters = detailNode.label === 'Герои';
     const isSystemInserts = detailNode.label === 'Системные вставки';
+    const useGptImage = isSystemInserts && providerOverride === 'comfy_openai_gpt_image_2_low';
 
     try {
       if (isCharacters) {
@@ -4097,7 +4118,9 @@ export const useNodeManagement = (
           });
         }
 
-        await unloadLmStudioBeforeComfyRender(detailNodeId, controller.signal);
+        if (!useGptImage) {
+          await unloadLmStudioBeforeComfyRender(detailNodeId, controller.signal);
+        }
 
         const imagePipeline = pipelineOverride ?? getDetailImagePipeline(detailNode);
         for (let index = 0; index < preparedAssets.length; index += 1) {
@@ -4105,16 +4128,23 @@ export const useNodeManagement = (
           updateNode(detailNodeId, {
             isLoading: false,
             isLoadingImage: true,
-            loadingProvider: imageGenerationSettings.provider,
+            loadingProvider: useGptImage ? 'comfy_openai_image' : imageGenerationSettings.provider,
             statusMessage: `Генерируем системную вставку ${index + 1}/${preparedAssets.length}: сцена ${preparedAsset.sceneNumber}`,
           });
-          const imageUrl = await generateImage(
-            preparedAsset.prompt,
-            imagePipeline,
-            imageGenerationSettings,
-            'system_insert',
-            controller.signal,
-          );
+          const imageUrl = useGptImage
+            ? await generateComfyOpenAiGptImage2LowImage(
+              preparedAsset.prompt,
+              'system_insert',
+              imageGenerationSettings,
+              controller.signal,
+            )
+            : await generateImage(
+              preparedAsset.prompt,
+              imagePipeline,
+              imageGenerationSettings,
+              'system_insert',
+              controller.signal,
+            );
           upsertImageNode(
             detailNodeId,
             imageUrl,
@@ -4127,6 +4157,7 @@ export const useNodeManagement = (
               sceneNumber: preparedAsset.sceneNumber,
               insertTitle: preparedAsset.title,
               imagePipeline,
+              imageProvider: useGptImage ? 'comfy_openai_gpt_image_2_low' : imageGenerationSettings.provider,
             },
           );
         }
@@ -5690,6 +5721,10 @@ export const useNodeManagement = (
       || timelineNode.metadata?.timelineSystemInsertPipeline === 'ernie_image_turbo'
         ? timelineNode.metadata.timelineSystemInsertPipeline
         : 'ernie_image_turbo';
+    const timelineSystemInsertImageProvider =
+      timelineNode.metadata?.timelineSystemInsertImageProvider === 'inherit'
+        ? 'inherit' as const
+        : 'comfy_openai_gpt_image_2_low' as const;
 
     const sourceScenarioId = typeof timelineNode.metadata?.sourceScenarioId === 'string'
       ? timelineNode.metadata.sourceScenarioId
@@ -5807,8 +5842,17 @@ export const useNodeManagement = (
         ? Object.entries(nodesRef.current).find(([, node]) => node === systemInsertsNode)?.[0]
         : undefined;
       if (systemInsertsNode?.inputValue && systemInsertsNodeId && !hasDetailImages(systemInsertsNodeId, 'system_insert')) {
-        updateNode(timelineNodeId, { statusMessage: 'Генерируем системные вставки главы...' });
-        await handleGenerateDetailAsset(systemInsertsNodeId, timelineSystemInsertPipeline, timelineTextModel);
+        updateNode(timelineNodeId, {
+          statusMessage: timelineSystemInsertImageProvider === 'comfy_openai_gpt_image_2_low'
+            ? 'Генерируем системные вставки главы через GPT Image 2 API...'
+            : 'Генерируем системные вставки главы локально...',
+        });
+        await handleGenerateDetailAsset(
+          systemInsertsNodeId,
+          timelineSystemInsertPipeline,
+          timelineTextModel,
+          timelineSystemInsertImageProvider,
+        );
         await waitForState();
       }
       if (isCancelled()) return;

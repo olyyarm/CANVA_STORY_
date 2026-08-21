@@ -677,6 +677,11 @@ const NodeRenderer: React.FC<NodeRendererProps> = ({
     )
       ? node.metadata.timelineSystemInsertPipeline
       : 'ernie_image_turbo';
+  const timelineSystemInsertRendererValue =
+    node.nodeType === 'chapter_timeline'
+    && node.metadata?.timelineSystemInsertImageProvider === 'inherit'
+      ? timelineSystemInsertPipelineValue
+      : 'comfy_openai_gpt_image_2_low';
   const chapterCollectorEntries = node.nodeType === 'chapter_collector'
     ? getChapterCollectorEntries(allNodes)
     : [];
@@ -1664,14 +1669,15 @@ const NodeRenderer: React.FC<NodeRendererProps> = ({
                   <label className="node-field node-field--inline">
                     <span>Вставки</span>
                     <select
-                      value={timelineSystemInsertPipelineValue}
+                      value={timelineSystemInsertRendererValue}
                       onChange={(event) => onTimelineSystemInsertPipelineChange(event, id)}
                       onMouseDown={stopMouseDown}
                       disabled={node.isLoadingVideo}
                     >
-                      <option value="ernie_image_turbo">ERNIE Image Turbo</option>
-                      <option value="z_image_turbo">Z-Image Turbo</option>
-                      <option value="sdxl">SDXL</option>
+                      <option value="comfy_openai_gpt_image_2_low">По умолчанию · GPT Image 2 Low API · ≈ $0.006–0.023</option>
+                      <option value="ernie_image_turbo">Локально · ERNIE Image Turbo</option>
+                      <option value="z_image_turbo">Локально · Z-Image Turbo</option>
+                      <option value="sdxl">Локально · SDXL</option>
                     </select>
                   </label>
                   <label className="node-field node-field--inline">

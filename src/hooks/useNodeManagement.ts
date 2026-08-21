@@ -9,6 +9,7 @@
 import {
   Flux2CharacterReference,
   generateComfyFlux2ComposeImage,
+  generateComfyOpenAiGptImage2LowImage,
   generateComfyNanoBanana2LiteComposeImage,
   generateComfyNanoBanana2LiteShotGrid,
   generateComfyOmniVoiceAudio,
@@ -5541,13 +5542,6 @@ export const useNodeManagement = (
     const timelineTextModel = typeof timelineNode.selectedModel === 'string' && timelineNode.selectedModel.trim()
       ? timelineNode.selectedModel.trim()
       : MISTRAL_MODELS[0];
-    const timelineSystemInsertPipeline: ImagePipeline =
-      timelineNode.metadata?.timelineSystemInsertPipeline === 'sdxl'
-      || timelineNode.metadata?.timelineSystemInsertPipeline === 'z_image_turbo'
-      || timelineNode.metadata?.timelineSystemInsertPipeline === 'ernie_image_turbo'
-        ? timelineNode.metadata.timelineSystemInsertPipeline
-        : 'ernie_image_turbo';
-
     const timelineScope = getScopedNodeIds(currentNodes, [sourceScenarioId ?? '', sourceChapterId]);
     const hasTimelineScope = timelineScope.size > 0;
     const sceneEntries = Object.entries(currentNodes)
@@ -5618,16 +5612,14 @@ export const useNodeManagement = (
 
       updateNode(timelineNodeId, {
         assetPrompt: styledAssetPrompt,
-        loadingProvider: imageGenerationSettings.provider,
-        statusMessage: `Генерируем фон главы через ${timelineSystemInsertPipeline}...`,
+        loadingProvider: 'comfy_openai_image',
+        statusMessage: 'Генерируем тёмный фон главы через GPT Image 2 Low API...',
       });
 
-      await unloadLmStudioBeforeComfyRender(timelineNodeId, controller.signal);
-      const imageUrl = await generateImage(
+      const imageUrl = await generateComfyOpenAiGptImage2LowImage(
         styledAssetPrompt,
-        timelineSystemInsertPipeline,
-        imageGenerationSettings,
         'chapter_backdrop',
+        imageGenerationSettings,
         controller.signal,
       );
 
@@ -5640,7 +5632,8 @@ export const useNodeManagement = (
         styledAssetPrompt,
         promptContext,
         {
-          imagePipeline: timelineSystemInsertPipeline,
+          imagePipeline: 'gpt_image_2_low',
+          imageProvider: 'comfy_openai_gpt_image_2_low',
           chapterBackdropGeneratedAt: new Date().toISOString(),
         },
       );
@@ -5668,7 +5661,6 @@ export const useNodeManagement = (
     generationSettings,
     imageGenerationSettings,
     showNotice,
-    unloadLmStudioBeforeComfyRender,
     updateNode,
     upsertImageNode,
   ]);

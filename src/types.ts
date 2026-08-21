@@ -126,7 +126,7 @@ export interface NodeData {
   sceneCount?: number;
   sceneText?: string;
   isLoading?: boolean;
-  loadingProvider?: 'mock' | 'mistral' | 'lmstudio' | 'comfygemini' | 'pollinations' | 'comfyui' | 'comfy_nano_banana';
+  loadingProvider?: 'mock' | 'mistral' | 'lmstudio' | 'comfygemini' | 'pollinations' | 'comfyui' | 'comfy_openai_image' | 'comfy_nano_banana';
   isSpeaking?: boolean;
   isGenerated?: boolean;
   canContinue?: boolean;

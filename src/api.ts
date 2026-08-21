@@ -28,6 +28,7 @@ const COMFY_Z_IMAGE_TIMEOUT_MS = 45 * 60 * 1000;
 const COMFY_ERNIE_IMAGE_TIMEOUT_MS = 45 * 60 * 1000;
 const COMFY_FLUX2_TIMEOUT_MS = 6 * 60 * 60 * 1000;
 const COMFY_NANO_BANANA_TIMEOUT_MS = 45 * 60 * 1000;
+const COMFY_PARTNER_IMAGE_TIMEOUT_MS = 2 * 60 * 1000;
 const COMFY_TTS_TIMEOUT_MS = 45 * 60 * 1000;
 const COMFY_GEMINI_TEXT_TIMEOUT_MS = 45 * 60 * 1000;
 const WIDE_FRAME_WIDTH = 1344;
@@ -995,6 +996,37 @@ const waitForComfyImage = async (
     if (failure) throw new Error(failure);
   }
   return null;
+};
+
+const getComfyQueuePromptIds = (value: unknown) => (
+  Array.isArray(value)
+    ? value.flatMap((item) => (
+      Array.isArray(item) && typeof item[1] === 'string' ? [item[1]] : []
+    ))
+    : []
+);
+
+const cancelComfyPrompt = async (baseUrl: string, promptId: string) => {
+  try {
+    const queueResponse = await fetch(`${baseUrl}/queue`, getComfyFetchOptions());
+    if (!queueResponse.ok) return;
+    const queue = await queueResponse.json() as Record<string, unknown>;
+    const runningIds = getComfyQueuePromptIds(queue.queue_running);
+    const pendingIds = getComfyQueuePromptIds(queue.queue_pending);
+
+    if (runningIds.includes(promptId)) {
+      await fetch(`${baseUrl}/interrupt`, getComfyFetchOptions({ method: 'POST' }));
+    }
+    if (pendingIds.includes(promptId)) {
+      await fetch(`${baseUrl}/queue`, getComfyFetchOptions({
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ delete: [promptId] }),
+      }));
+    }
+  } catch {
+    // Cancellation is best-effort; the original generation error is more useful to the user.
+  }
 };
 
 const waitForComfyAudio = async (
@@ -2053,6 +2085,40 @@ const buildComfyNanoBanana2LiteShotGridWorkflow = (
   };
 };
 
+const buildComfyOpenAiGptImage2LowWorkflow = (
+  prompt: string,
+  promptKind: Extract<ImagePromptKind, 'character_asset' | 'location_asset' | 'system_insert' | 'chapter_backdrop'>,
+) => {
+  const seed = Math.floor(Math.random() * 2_147_483_648);
+  const imageSize = promptKind === 'character_asset' ? '1152x2048' : '2048x1152';
+  return {
+    '3': {
+      class_type: 'OpenAIGPTImageNodeV2',
+      inputs: {
+        prompt,
+        model: 'gpt-image-2',
+        'model.size': imageSize,
+        'model.custom_width': 1024,
+        'model.custom_height': 1024,
+        'model.background': 'opaque',
+        'model.quality': 'low',
+        n: 1,
+        seed,
+      },
+    },
+    '4': {
+      class_type: 'SaveImageAdvanced',
+      inputs: {
+        filename_prefix: 'CANVA_STORY_GPT_IMAGE_2_LOW',
+        format: 'png',
+        'format.bit_depth': '8-bit',
+        'format.input_color_space': 'sRGB',
+        images: ['3', 0],
+      },
+    },
+  };
+};
+
 export const generateComfyFlux2ComposeImage = async (
   prompt: string,
   backgroundImageUrl: string,
@@ -2245,6 +2311,70 @@ export const generateComfyNanoBanana2LiteShotGrid = async (
     if (error instanceof DOMException && error.name === 'AbortError') throw error;
     if (error instanceof TypeError) {
       throw new Error(`Не удалось подключиться к ComfyUI по адресу ${baseUrl}. Проверьте ComfyUI и CORS.`);
+    }
+    throw error;
+  }
+};
+
+export const generateComfyOpenAiGptImage2LowImage = async (
+  prompt: string,
+  promptKind: Extract<ImagePromptKind, 'character_asset' | 'location_asset' | 'system_insert' | 'chapter_backdrop'>,
+  settings: ImageGenerationSettings,
+  signal?: AbortSignal,
+) => {
+  const baseUrl = getComfyBaseUrl(settings.comfyEndpoint);
+  let promptId: string | null = null;
+  try {
+    const workflow = buildComfyOpenAiGptImage2LowWorkflow(prompt, promptKind);
+    const clientId = typeof crypto.randomUUID === 'function'
+      ? crypto.randomUUID()
+      : `canva-story-gpt-image-2-low-${Date.now()}`;
+
+    const promptResponse = await fetch(`${baseUrl}/prompt`, getComfyFetchOptions({
+      method: 'POST',
+      signal,
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(createComfyPromptPayload(clientId, workflow, settings)),
+    }));
+    if (!promptResponse.ok) {
+      throw new Error(getComfyError(
+        'ComfyUI не принял GPT Image 2 workflow',
+        promptResponse,
+        await readResponseDetails(promptResponse),
+      ));
+    }
+    const promptData: ComfyPromptResponse = await promptResponse.json();
+    if (!promptData.prompt_id) throw new Error('ComfyUI не вернул prompt_id для GPT Image 2.');
+    promptId = promptData.prompt_id;
+
+    const image = await waitForComfyImage(baseUrl, promptId, COMFY_PARTNER_IMAGE_TIMEOUT_MS, signal);
+    if (!image) {
+      await cancelComfyPrompt(baseUrl, promptId);
+      throw new Error('GPT Image 2 не вернул изображение за 2 минуты. Зависшая задача снята с очереди ComfyUI.');
+    }
+
+    const params = new URLSearchParams({
+      filename: image.filename,
+      subfolder: image.subfolder ?? '',
+      type: image.type ?? 'output',
+    });
+    const viewResponse = await fetch(`${baseUrl}/view?${params.toString()}`, getComfyFetchOptions({ signal }));
+    if (!viewResponse.ok) {
+      throw new Error(getComfyError(
+        'ComfyUI не отдал готовое изображение GPT Image 2',
+        viewResponse,
+        await readResponseDetails(viewResponse),
+      ));
+    }
+
+    return URL.createObjectURL(await viewResponse.blob());
+  } catch (error) {
+    if (error instanceof DOMException && error.name === 'AbortError') {
+      if (promptId) await cancelComfyPrompt(baseUrl, promptId);
+      throw error;
+    }
+    if (error instanceof TypeError) {
+      throw new Error(`Не удалось подключиться к ComfyUI по адресу ${baseUrl}. Проверьте ComfyUI, CORS и Comfy.org API key.`);
     }
     throw error;
   }

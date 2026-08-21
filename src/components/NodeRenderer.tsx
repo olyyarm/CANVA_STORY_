@@ -1711,7 +1711,7 @@ const NodeRenderer: React.FC<NodeRendererProps> = ({
                   : void onGenerateChapterBackdrop(id))}
                 disabled={Boolean(node.isLoading || node.isLoadingAudio || node.isLoadingVideo)}
               >
-                {node.isLoadingImage ? 'Отменить фон' : timelineBackdrop?.imageUrl ? 'Пересоздать фон' : 'Фон главы'}
+                {node.isLoadingImage ? 'Отменить фон' : timelineBackdrop?.imageUrl ? 'Пересоздать фон · GPT API' : 'Фон главы · GPT API'}
               </button>
               <button
                 type="button"

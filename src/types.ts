@@ -53,7 +53,15 @@ export type AssetKind =
 export type AssetScope = 'project' | 'chapter' | 'scene' | 'character' | 'location';
 export type AssetStorageDriver = 'indexeddb' | 'file';
 
-export type SceneShotRole = 'detail' | 'emotion' | 'angle' | 'pov';
+export type SceneShotRole =
+  | 'detail'
+  | 'emotion'
+  | 'angle'
+  | 'pov'
+  | 'location_establishing'
+  | 'location_atmosphere'
+  | 'character_context'
+  | 'character_emotion';
 
 export interface AssetReference {
   assetId: string;

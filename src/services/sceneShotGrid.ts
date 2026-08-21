@@ -21,13 +21,15 @@ export interface SceneShotGridPromptInput {
   sceneText: string;
   visualPrompt?: string;
   narrationText?: string;
+  locationText?: string;
+  moodText?: string;
 }
 
 export const SCENE_SHOT_DEFINITIONS: readonly SceneShotDefinition[] = [
-  { index: 1, role: 'detail', label: 'Смысловая деталь' },
-  { index: 2, role: 'emotion', label: 'Эмоция крупно' },
-  { index: 3, role: 'angle', label: 'Другой ракурс' },
-  { index: 4, role: 'pov', label: 'POV или через плечо' },
+  { index: 1, role: 'location_establishing', label: 'Локация · общий план' },
+  { index: 2, role: 'location_atmosphere', label: 'Локация · атмосферная деталь' },
+  { index: 3, role: 'character_context', label: 'Персонаж · действие в пространстве' },
+  { index: 4, role: 'character_emotion', label: 'Персонаж · эмоция крупно' },
 ] as const;
 
 export const buildSceneShotGridPrompt = ({
@@ -35,6 +37,8 @@ export const buildSceneShotGridPrompt = ({
   sceneText,
   visualPrompt = '',
   narrationText = '',
+  locationText = '',
+  moodText = '',
 }: SceneShotGridPromptInput) => [
   'Use the attached source frame as the strict visual continuity reference.',
   'Return exactly ONE horizontal 16:9 contact sheet containing a precise 2 by 2 grid.',
@@ -42,20 +46,27 @@ export const buildSceneShotGridPrompt = ({
   'The grid boundaries must be exactly at 50% of the sheet width and 50% of the sheet height.',
   'Fill all four quadrants edge-to-edge. No outer margins, gutters, borders, captions, labels, UI, logos, or watermarks.',
   '',
-  'All four quadrants belong to the SAME story scene and preserve the exact characters, faces, clothing, location, props, time of day, lighting, color style, and continuity from the source frame.',
-  'Do not invent new characters, objects, actions, plot events, injuries, or changes of costume.',
-  'Vary only camera position, framing, and the immediately visible micro-moment inside the same scene.',
+  'All four quadrants belong to the SAME story scene and preserve the exact characters, faces, clothing, location, time of day, lighting, color style, and continuity from the source frame.',
+  'The four panels must be visibly different shots. Never repeat the same framing, shot size, camera height, camera direction, pose, or composition in two panels.',
+  'Exactly TWO panels must primarily reveal the LOCATION and exactly TWO panels must primarily reveal the CHARACTER.',
+  'Do not invent new characters, plot events, injuries, costume changes, clues, weapons, documents, tools, or handheld props.',
+  'A character may hold an object only when that exact object is explicitly mentioned in the scene or narration, or clearly visible in the source frame. Otherwise keep the hands empty and natural.',
+  'Mood controls light, palette, weather, sound-implied atmosphere, and visual tension. Mood must not create a new story event.',
   '',
   'Quadrants, in reading order from top-left to bottom-right:',
-  '1. A meaningful close detail of an existing action, hand, object, clue, or environmental feature that is genuinely present in the scene.',
-  '2. A close-up reaction or emotion of the most relevant visible character.',
-  '3. A clearly different cinematic angle: high angle, low angle, wide angle, or side view, whichever best fits the scene.',
-  '4. A first-person, over-the-shoulder, or third-person observational view that complements the other three panels.',
+  '1. LOCATION ESTABLISHING SHOT: an extreme-wide or wide master shot that clearly explains what kind of place this is, its scale, architecture, foreground, middle ground, background, entrances, exits, and the character position. The character is small and is not the visual subject.',
+  '2. LOCATION ATMOSPHERE INSERT: a low, high, or close environmental cutaway with no character as the subject. Show material, age, weather, decay, light, sound-implied detail, or a small diegetic micro-detail supported by the narration and mood. For example, a rat near a puddle is acceptable only if the described place genuinely supports damp basement decay. Never turn this detail into a new clue or event.',
+  '3. CHARACTER IN CONTEXT: a medium-wide or full-body shot showing the character posture, physical state, and current action inside the established space. This composition must not resemble panels 1 or 2.',
+  '4. CHARACTER EMOTION: a close-up or medium close-up of the face, gaze, breathing, or a narration-relevant physical reaction. If a face close-up is unsuitable, use a first-person or over-the-shoulder view. Do not repeat a hand close-up or the composition of any other panel.',
+  '',
+  'Before rendering, silently audit the sheet: two location-led panels, two character-led panels, four different shot scales and camera positions, no duplicated composition, and no invented handheld object.',
   '',
   `Scene: ${sceneLabel}`,
   `Scene description:\n${sceneText.trim()}`,
   visualPrompt.trim() ? `Existing visual prompt:\n${visualPrompt.trim()}` : '',
-  narrationText.trim() ? `Narration context (do not add events beyond it):\n${narrationText.trim()}` : '',
+  locationText.trim() ? `Location continuity and spatial context:\n${locationText.trim()}` : '',
+  narrationText.trim() ? `Narration context and storyboard themes (do not add events beyond it):\n${narrationText.trim()}` : '',
+  moodText.trim() ? `Mood direction (atmosphere only, not new story facts):\n${moodText.trim()}` : '',
 ].filter(Boolean).join('\n\n');
 
 const loadImage = async (imageUrl: string, signal?: AbortSignal) => {

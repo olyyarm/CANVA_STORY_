@@ -4911,16 +4911,34 @@ export const useNodeManagement = (
           && candidate.nodeType === 'script_detail'
           && candidate.label === 'Закадр',
       );
+      const moodEntry = Object.entries(currentNodes).find(
+        ([, candidate]) => candidate.parentId === sceneNode.parentId
+          && candidate.nodeType === 'script_detail'
+          && candidate.label === 'Настроение',
+      );
+      const locationFrameNode = Object.values(currentNodes).find((candidate) =>
+        candidate.parentId === sceneNodeId
+          && candidate.nodeType === 'pollinations_image'
+          && getAssetKind(candidate) === 'scene_location');
       const narrationText = getPreparedSceneNarrationText(sceneNode)
         || (narrationEntry?.[1].inputValue
           ? extractSceneNarration(narrationEntry[1].inputValue, sceneNode.label)
           : '');
+      const moodText = moodEntry?.[1].inputValue
+        ? extractSceneNarration(moodEntry[1].inputValue, sceneNode.label)
+        : '';
+      const locationText = locationFrameNode?.masterPrompt
+        || locationFrameNode?.assetPrompt
+        || sceneNode.assetPrompt
+        || '';
       const sceneText = sceneNode.sceneText || sceneNode.inputValue || sceneNode.label;
       const gridPrompt = buildSceneShotGridPrompt({
         sceneLabel: sceneNode.label,
         sceneText,
         visualPrompt: frameNode.masterPrompt || sceneNode.masterPrompt || '',
         narrationText,
+        locationText,
+        moodText,
       });
 
       updateNode(sceneNodeId, {

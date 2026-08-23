@@ -25,6 +25,7 @@ import {
   saveAssetBlob,
 } from './assetStorage';
 import NodeRenderer from './components/NodeRenderer';
+import ChapterNavigator, { ChapterNavigatorItem } from './components/ChapterNavigator';
 import { useAssetPersistence } from './hooks/useAssetPersistence';
 import { useCanvasNavigation } from './hooks/useCanvasNavigation';
 import { useDraggableNodes } from './hooks/useDraggableNodes';
@@ -44,6 +45,13 @@ import {
   importPortableProjectPackage,
   isPortableProjectPackageFile,
 } from './portableProject';
+import {
+  isFolderProjectSupported,
+  loadProjectFolderHandle,
+  openProjectFromFolder,
+  pickProjectDirectory,
+  saveProjectToFolder,
+} from './folderProject';
 import {
   createDefaultNarrationSettings,
   getNextNarrationSeed,
@@ -67,6 +75,100 @@ import './App.css';
 
 const GENERATION_SETTINGS_STORAGE_KEY = 'canva-story.generation-settings.v1';
 const IMAGE_GENERATION_SETTINGS_STORAGE_KEY = 'canva-story.image-generation-settings.v1';
+
+const chapterPattern = /^\s*(?:<<<SPLIT>>>\s*)?(?:blocks\s*[·:]\s*)?(?:ГЛАВА|CHAPTER)\s*0*(\d+)\b/iu;
+
+const getChapterNumber = (node: NodeData) => {
+  const sourceLabel = typeof node.metadata?.sourceLabel === 'string' ? node.metadata.sourceLabel : '';
+  const metadataNumber = node.metadata?.chapterNumber;
+  if (typeof metadataNumber === 'number' && Number.isFinite(metadataNumber)) return metadataNumber;
+  const match = `${node.label}\n${sourceLabel}\n${node.inputValue ?? ''}`.match(/(?:ГЛАВА|CHAPTER)\s*0*(\d+)\b/iu);
+  return match ? Number(match[1]) : null;
+};
+
+const getChapterTitle = (node: NodeData) =>
+  node.label
+    .replace(/^\s*<<<SPLIT>>>\s*[·:]?\s*/iu, '')
+    .replace(/^\s*blocks\s*[·:]\s*/iu, '')
+    .trim();
+
+const getDescendantNodeIds = (nodes: NodesState, rootIds: string[]) => {
+  const descendants = new Set(rootIds.filter(Boolean));
+  let changed = true;
+  while (changed) {
+    changed = false;
+    Object.entries(nodes).forEach(([nodeId, node]) => {
+      if (!node.parentId || !descendants.has(node.parentId) || descendants.has(nodeId)) return;
+      descendants.add(nodeId);
+      changed = true;
+    });
+  }
+  return descendants;
+};
+
+const ROOT_WORKSPACE_ID = 'root';
+
+const getChapterTimelineEntry = (nodes: NodesState, chapterId: string) => {
+  const chapter = nodes[chapterId];
+  const chapterNumber = chapter ? getChapterNumber(chapter) : null;
+  return Object.entries(nodes).find(([, node]) =>
+    node.nodeType === 'chapter_timeline'
+    && (
+      node.metadata?.sourceChapterId === chapterId
+      || node.parentId === chapterId
+      || (chapterNumber !== null && getChapterNumber(node) === chapterNumber)
+    ));
+};
+
+const resolveChapterWorkspaceId = (nodes: NodesState, sourceNodeId: string) => {
+  const sourceNode = nodes[sourceNodeId];
+  if (!sourceNode) return null;
+  if (sourceNode.nodeType === 'chapter_timeline') {
+    const sourceChapterId = typeof sourceNode.metadata?.sourceChapterId === 'string'
+      ? sourceNode.metadata.sourceChapterId
+      : '';
+    if (sourceChapterId && nodes[sourceChapterId]) return sourceChapterId;
+  }
+  if (
+    sourceNode.nodeType === 'split_item'
+    && chapterPattern.test(`${sourceNode.label}\n${sourceNode.inputValue ?? ''}`)
+  ) return sourceNodeId;
+
+  let currentId: string | undefined = sourceNodeId;
+  const visited = new Set<string>();
+  while (currentId && !visited.has(currentId)) {
+    visited.add(currentId);
+    const current: NodeData | undefined = nodes[currentId];
+    if (
+      current?.nodeType === 'split_item'
+      && chapterPattern.test(`${current.label}\n${current.inputValue ?? ''}`)
+    ) return currentId;
+    currentId = current?.parentId;
+  }
+  return sourceNode.nodeType === 'chapter_timeline' ? sourceNodeId : null;
+};
+
+const getChapterWorkspaceNodeIds = (nodes: NodesState, chapterId: string) => {
+  const timelineEntry = getChapterTimelineEntry(nodes, chapterId);
+  const timeline = timelineEntry?.[1];
+  const roots = [chapterId];
+  const sourceScenarioId = typeof timeline?.metadata?.sourceScenarioId === 'string'
+    ? timeline.metadata.sourceScenarioId
+    : '';
+  const sourceChapterId = typeof timeline?.metadata?.sourceChapterId === 'string'
+    ? timeline.metadata.sourceChapterId
+    : '';
+  if (sourceScenarioId) roots.push(sourceScenarioId);
+  if (sourceChapterId) roots.push(sourceChapterId);
+  if (timelineEntry) roots.push(timelineEntry[0]);
+  return getDescendantNodeIds(nodes, roots);
+};
+
+const getNodeAssetKind = (node: NodeData) =>
+  typeof node.metadata?.assetKind === 'string' ? node.metadata.assetKind : '';
+
+const countSystemInsertBlocks = (text = '') =>
+  [...text.matchAll(/(?:^|\n)\s*После\s+сцены\s+\d+\s*:/giu)].length;
 
 const generationModeLabels: Record<GenerationMode, string> = {
   mock: 'Тестовый режим',
@@ -225,6 +327,21 @@ const withNarrationSettings = (
   },
 });
 
+const withCanvasWorkspaceSettings = (
+  project: ProjectDocument,
+  activeChapterId: string | null,
+  viewports: Record<string, ViewportState>,
+): ProjectDocument => ({
+  ...project,
+  extensions: {
+    ...project.extensions,
+    canvasWorkspaces: {
+      ...(activeChapterId ? { activeChapterId } : {}),
+      viewports,
+    },
+  },
+});
+
 const App = () => {
   const [bootstrap] = useState(() => {
     const savedProject = loadSavedProject();
@@ -242,7 +359,11 @@ const App = () => {
   const [projectTitle, setProjectTitle] = useState(bootstrap.project.title);
   const [projectNotice, setProjectNotice] = useState<AppNotice | null>(null);
   const [saveStatus, setSaveStatus] = useState<'saved' | 'saving' | 'error'>('saved');
+  const [saveErrorMessage, setSaveErrorMessage] = useState('');
   const [isSavingPackage, setIsSavingPackage] = useState(false);
+  const [isSavingFolder, setIsSavingFolder] = useState(false);
+  const [isOpeningFolder, setIsOpeningFolder] = useState(false);
+  const [linkedFolderName, setLinkedFolderName] = useState('');
   const [isImportingProject, setIsImportingProject] = useState(false);
   const [isUnloadingModels, setIsUnloadingModels] = useState(false);
   const [generationSettings, setGenerationSettings] = useState<GenerationSettings>(loadGenerationSettings);
@@ -253,9 +374,33 @@ const App = () => {
   const [narrationSettings, setNarrationSettings] = useState<NarrationSettings>(
     () => bootstrap.project.extensions?.narration ?? createDefaultNarrationSettings(),
   );
-  const [viewport, setViewport] = useState<ViewportState>(bootstrap.project.viewport);
-  const [timelineFocusMode, setTimelineFocusMode] = useState(false);
+  const restoredWorkspaceId = bootstrap.project.extensions?.canvasWorkspaces?.activeChapterId;
+  const initialWorkspaceId = restoredWorkspaceId && bootstrap.project.nodes[restoredWorkspaceId]
+    ? restoredWorkspaceId
+    : null;
+
+  useEffect(() => {
+    void loadProjectFolderHandle(bootstrap.project.id)
+      .then((handle) => setLinkedFolderName(handle?.name ?? ''))
+      .catch(() => setLinkedFolderName(''));
+  }, [bootstrap.project.id]);
+
+  const [activeChapterWorkspaceId, setActiveChapterWorkspaceId] = useState<string | null>(initialWorkspaceId);
+  const workspaceViewportsRef = useRef<Record<string, ViewportState>>({
+    ...bootstrap.project.extensions?.canvasWorkspaces?.viewports,
+    [ROOT_WORKSPACE_ID]: bootstrap.project.extensions?.canvasWorkspaces?.viewports?.[ROOT_WORKSPACE_ID]
+      ?? bootstrap.project.viewport,
+  });
+  const [viewport, setViewport] = useState<ViewportState>(
+    (initialWorkspaceId && workspaceViewportsRef.current[initialWorkspaceId])
+      || workspaceViewportsRef.current[ROOT_WORKSPACE_ID]
+      || bootstrap.project.viewport,
+  );
+  const [timelineFocusMode, setTimelineFocusMode] = useState(true);
+  const [chapterNavigatorOpen, setChapterNavigatorOpen] = useState(true);
   const [expandedFocusNodeIds, setExpandedFocusNodeIds] = useState<Set<string>>(() => new Set());
+  const pendingWorkspaceFitRef = useRef(false);
+  const pendingRootFocusNodeRef = useRef<string | null>(null);
   const handleNarrationSeedChange = useCallback((seed: number) => {
     setNarrationSettings((settings) => ({ ...settings, seed }));
   }, []);
@@ -347,26 +492,6 @@ const App = () => {
     () => Object.entries(nodes).filter(([, node]) => !isHiddenTechnicalCanvasNode(node)),
     [nodes],
   );
-  const canvasNodes = useMemo(
-    () => Object.fromEntries(canvasNodeEntries),
-    [canvasNodeEntries],
-  );
-  const {
-    isPanning,
-    handleCanvasMouseDown,
-    handleWheel,
-    fitView,
-    centerView,
-    zoomIn,
-    zoomOut,
-    resetZoom,
-  } = useCanvasNavigation({
-    canvasRef,
-    nodes: canvasNodes,
-    viewport,
-    setViewport,
-    onBackgroundClick: clearSelection,
-  });
   const { handleMouseDown, handleResizeMouseDown } = useDraggableNodes({
     nodes,
     setNodes,
@@ -388,6 +513,13 @@ const App = () => {
   }, []);
 
   const visibleNodeEntries = useMemo(() => {
+    if (activeChapterWorkspaceId) {
+      const workspaceNodeIds = getChapterWorkspaceNodeIds(nodes, activeChapterWorkspaceId);
+      return canvasNodeEntries.filter(([nodeId, node]) =>
+        workspaceNodeIds.has(nodeId)
+        && node.nodeType !== 'chapter_timeline'
+        && node.nodeType !== 'chapter_collector');
+    }
     if (!timelineFocusMode) return canvasNodeEntries;
     const expandedIds = new Set(expandedFocusNodeIds);
     let changed = true;
@@ -414,11 +546,233 @@ const App = () => {
       || isSceneWriterNode(node)
       || expandedIds.has(nodeId)
       || selectedNodeId === nodeId);
-  }, [canvasNodeEntries, expandedFocusNodeIds, selectedNodeId, timelineFocusMode]);
+  }, [activeChapterWorkspaceId, canvasNodeEntries, expandedFocusNodeIds, nodes, selectedNodeId, timelineFocusMode]);
   const visibleNodeIds = useMemo(
     () => new Set(visibleNodeEntries.map(([nodeId]) => nodeId)),
     [visibleNodeEntries],
   );
+  const visibleCanvasNodes = useMemo(
+    () => Object.fromEntries(visibleNodeEntries),
+    [visibleNodeEntries],
+  );
+  const {
+    isPanning,
+    handleCanvasMouseDown,
+    handleWheel,
+    fitView,
+    centerView,
+    focusNode,
+    zoomIn,
+    zoomOut,
+    resetZoom,
+  } = useCanvasNavigation({
+    canvasRef,
+    nodes: visibleCanvasNodes,
+    viewport,
+    setViewport,
+    onBackgroundClick: clearSelection,
+  });
+  const chapterNavigatorItems = useMemo<ChapterNavigatorItem[]>(() => {
+    const chapterEntries = nodeEntries
+      .filter(([, node]) => {
+        const sourceKind = typeof node.metadata?.sourceKind === 'string' ? node.metadata.sourceKind : '';
+        return (
+          node.nodeType === 'split_item'
+          && chapterPattern.test(`${node.label}\n${node.inputValue ?? ''}`)
+        ) || (node.nodeType === 'script_detail' && sourceKind === 'chapter_plan');
+      })
+      .map(([id, node]) => ({ id, node, chapterNumber: getChapterNumber(node) }));
+
+    const timelines = nodeEntries
+      .filter(([, node]) => node.nodeType === 'chapter_timeline')
+      .map(([id, node]) => ({ id, node, chapterNumber: getChapterNumber(node) }));
+
+    const usedTimelineIds = new Set<string>();
+    const items = chapterEntries.map(({ id, node, chapterNumber }) => {
+      const timeline = timelines.find((entry) =>
+        entry.node.metadata?.sourceChapterId === id || entry.node.parentId === id)
+        ?? timelines.find((entry) =>
+          !usedTimelineIds.has(entry.id)
+          && chapterNumber !== null
+          && entry.chapterNumber === chapterNumber);
+      if (timeline) usedTimelineIds.add(timeline.id);
+
+      const scopeRoots = [id];
+      if (timeline) {
+        const sourceScenarioId = timeline.node.metadata?.sourceScenarioId;
+        const sourceChapterId = timeline.node.metadata?.sourceChapterId;
+        if (typeof sourceScenarioId === 'string') scopeRoots.push(sourceScenarioId);
+        if (typeof sourceChapterId === 'string') scopeRoots.push(sourceChapterId);
+      }
+      const scopedIds = getDescendantNodeIds(nodes, scopeRoots);
+      const sceneEntries = nodeEntries.filter(([sceneId, candidate]) =>
+        candidate.nodeType === 'scene' && scopedIds.has(sceneId));
+      const imageEntries = nodeEntries.filter(([imageId, candidate]) =>
+        candidate.nodeType === 'pollinations_image' && scopedIds.has(imageId) && Boolean(candidate.imageUrl));
+      const sharedLocationCount = imageEntries.filter(([, image]) =>
+        getNodeAssetKind(image).startsWith('location_asset')).length;
+      const characterAssets = imageEntries.filter(([, image]) =>
+        getNodeAssetKind(image).startsWith('character_asset')).length;
+      const locations = sceneEntries.filter(([sceneId]) =>
+        sharedLocationCount > 0 || imageEntries.some(([, image]) =>
+          image.parentId === sceneId && getNodeAssetKind(image) === 'scene_location')).length;
+      const frames = sceneEntries.filter(([sceneId]) =>
+        imageEntries.some(([, image]) =>
+          image.parentId === sceneId
+          && ['scene_flux2_frame', 'scene_frame'].includes(getNodeAssetKind(image)))).length;
+      const detailEntries = nodeEntries.filter(([detailId, candidate]) =>
+        candidate.nodeType === 'script_detail' && scopedIds.has(detailId));
+      const systemInsertDetail = detailEntries.find(([, candidate]) => candidate.label === 'Системные вставки')?.[1];
+      const insertsTotal = countSystemInsertBlocks(systemInsertDetail?.inputValue);
+      const insertsReady = imageEntries.filter(([, image]) =>
+        getNodeAssetKind(image).startsWith('system_insert:')
+        || /Системная вставка/iu.test(image.label)).length;
+
+      return {
+        id,
+        title: getChapterTitle(node),
+        chapterNumber,
+        timelineId: timeline?.id,
+        scenes: sceneEntries.length,
+        locations,
+        characterAssets,
+        frames,
+        audio: sceneEntries.filter(([, scene]) => Boolean(scene.audioUrl)).length,
+        clips: sceneEntries.filter(([, scene]) => Boolean(scene.videoUrl)).length,
+        insertsReady: Math.min(insertsReady, insertsTotal),
+        insertsTotal,
+      };
+    });
+
+    timelines
+      .filter((timeline) => !usedTimelineIds.has(timeline.id))
+      .forEach((timeline) => {
+        const scopeRoots = [timeline.id];
+        const sourceScenarioId = timeline.node.metadata?.sourceScenarioId;
+        const sourceChapterId = timeline.node.metadata?.sourceChapterId;
+        if (typeof sourceScenarioId === 'string') scopeRoots.push(sourceScenarioId);
+        if (typeof sourceChapterId === 'string') scopeRoots.push(sourceChapterId);
+        const scopedIds = getDescendantNodeIds(nodes, scopeRoots);
+        const sceneEntries = nodeEntries.filter(([sceneId, candidate]) =>
+          candidate.nodeType === 'scene' && scopedIds.has(sceneId));
+        const imageEntries = nodeEntries.filter(([imageId, candidate]) =>
+          candidate.nodeType === 'pollinations_image' && scopedIds.has(imageId) && Boolean(candidate.imageUrl));
+        const insertsReady = imageEntries.filter(([, image]) =>
+          getNodeAssetKind(image).startsWith('system_insert:')
+          || /Системная вставка/iu.test(image.label)).length;
+        const systemInsertDetail = nodeEntries.find(([detailId, candidate]) =>
+          candidate.nodeType === 'script_detail'
+          && candidate.label === 'Системные вставки'
+          && scopedIds.has(detailId))?.[1];
+        const insertsTotal = countSystemInsertBlocks(systemInsertDetail?.inputValue);
+
+        items.push({
+          id: timeline.id,
+          title: getChapterTitle(timeline.node).replace(/^Таймлайн\s*·\s*/iu, ''),
+          chapterNumber: timeline.chapterNumber,
+          timelineId: timeline.id,
+          scenes: sceneEntries.length,
+          locations: sceneEntries.filter(([sceneId]) => imageEntries.some(([, image]) =>
+            image.parentId === sceneId && getNodeAssetKind(image) === 'scene_location')).length,
+          characterAssets: imageEntries.filter(([, image]) =>
+            getNodeAssetKind(image).startsWith('character_asset')).length,
+          frames: sceneEntries.filter(([sceneId]) => imageEntries.some(([, image]) =>
+            image.parentId === sceneId
+            && ['scene_flux2_frame', 'scene_frame'].includes(getNodeAssetKind(image)))).length,
+          audio: sceneEntries.filter(([, scene]) => Boolean(scene.audioUrl)).length,
+          clips: sceneEntries.filter(([, scene]) => Boolean(scene.videoUrl)).length,
+          insertsReady: Math.min(insertsReady, insertsTotal),
+          insertsTotal,
+        });
+      });
+
+    return items.sort((first, second) =>
+      (first.chapterNumber ?? Number.MAX_SAFE_INTEGER) - (second.chapterNumber ?? Number.MAX_SAFE_INTEGER)
+      || first.title.localeCompare(second.title, 'ru', { numeric: true }));
+  }, [nodeEntries, nodes]);
+  const activeChapterWorkspaceItem = useMemo(
+    () => chapterNavigatorItems.find((item) =>
+      item.id === activeChapterWorkspaceId || item.timelineId === activeChapterWorkspaceId),
+    [activeChapterWorkspaceId, chapterNavigatorItems],
+  );
+  const getCanvasWorkspaceSnapshot = useCallback(() => {
+    const workspaceKey = activeChapterWorkspaceId ?? ROOT_WORKSPACE_ID;
+    const viewports = {
+      ...workspaceViewportsRef.current,
+      [workspaceKey]: viewport,
+    };
+    workspaceViewportsRef.current = viewports;
+    return {
+      viewports,
+      rootViewport: viewports[ROOT_WORKSPACE_ID] ?? bootstrap.project.viewport,
+    };
+  }, [activeChapterWorkspaceId, bootstrap.project.viewport, viewport]);
+  const handleOpenChapterWorkspace = useCallback((sourceNodeId: string) => {
+    const chapterId = resolveChapterWorkspaceId(nodes, sourceNodeId);
+    if (!chapterId) return;
+
+    const currentWorkspaceKey = activeChapterWorkspaceId ?? ROOT_WORKSPACE_ID;
+    workspaceViewportsRef.current[currentWorkspaceKey] = viewport;
+    const savedViewport = workspaceViewportsRef.current[chapterId];
+    setActiveChapterWorkspaceId(chapterId);
+    setSelectedNodeId(null);
+    setPendingOutputNodeId(null);
+    if (savedViewport) {
+      setViewport(savedViewport);
+    } else {
+      setViewport({ x: 48, y: 48, zoom: 0.8 });
+      pendingWorkspaceFitRef.current = true;
+    }
+  }, [activeChapterWorkspaceId, nodes, viewport]);
+  const handleExitChapterWorkspace = useCallback((focusTimeline = false) => {
+    if (!activeChapterWorkspaceId) return;
+    workspaceViewportsRef.current[activeChapterWorkspaceId] = viewport;
+    const timelineId = getChapterTimelineEntry(nodes, activeChapterWorkspaceId)?.[0] ?? null;
+    const rootViewport = workspaceViewportsRef.current[ROOT_WORKSPACE_ID] ?? bootstrap.project.viewport;
+    setActiveChapterWorkspaceId(null);
+    setSelectedNodeId(null);
+    setPendingOutputNodeId(null);
+    setViewport(rootViewport);
+    if (focusTimeline && timelineId) pendingRootFocusNodeRef.current = timelineId;
+  }, [activeChapterWorkspaceId, bootstrap.project.viewport, nodes, viewport]);
+  const handleFocusChapterNode = useCallback((nodeId: string) => {
+    if (activeChapterWorkspaceId) {
+      workspaceViewportsRef.current[activeChapterWorkspaceId] = viewport;
+      workspaceViewportsRef.current[ROOT_WORKSPACE_ID] = workspaceViewportsRef.current[ROOT_WORKSPACE_ID]
+        ?? bootstrap.project.viewport;
+      pendingRootFocusNodeRef.current = nodeId;
+      setActiveChapterWorkspaceId(null);
+      setSelectedNodeId(null);
+      setViewport(workspaceViewportsRef.current[ROOT_WORKSPACE_ID]);
+      return;
+    }
+    setSelectedNodeId(nodeId);
+    focusNode(nodeId);
+  }, [activeChapterWorkspaceId, bootstrap.project.viewport, focusNode, viewport]);
+
+  useEffect(() => {
+    const workspaceKey = activeChapterWorkspaceId ?? ROOT_WORKSPACE_ID;
+    workspaceViewportsRef.current[workspaceKey] = viewport;
+  }, [activeChapterWorkspaceId, viewport]);
+
+  useEffect(() => {
+    if (!pendingWorkspaceFitRef.current || !activeChapterWorkspaceId || visibleNodeEntries.length === 0) return;
+    pendingWorkspaceFitRef.current = false;
+    const frame = window.requestAnimationFrame(() => fitView(0.82));
+    return () => window.cancelAnimationFrame(frame);
+  }, [activeChapterWorkspaceId, fitView, visibleNodeEntries.length]);
+
+  useEffect(() => {
+    if (activeChapterWorkspaceId || !pendingRootFocusNodeRef.current) return;
+    const nodeId = pendingRootFocusNodeRef.current;
+    if (!visibleNodeIds.has(nodeId)) return;
+    pendingRootFocusNodeRef.current = null;
+    const frame = window.requestAnimationFrame(() => {
+      setSelectedNodeId(nodeId);
+      focusNode(nodeId);
+    });
+    return () => window.cancelAnimationFrame(frame);
+  }, [activeChapterWorkspaceId, focusNode, visibleNodeIds]);
   const selectedNode = selectedNodeId ? nodes[selectedNodeId] : undefined;
   const deleteCandidate = deleteCandidateId ? nodes[deleteCandidateId] : undefined;
   const visibleNotice = projectNotice ?? notice;
@@ -619,31 +973,43 @@ const App = () => {
 
   useEffect(() => {
     setSaveStatus('saving');
+    setSaveErrorMessage('');
     const timer = window.setTimeout(() => {
       try {
+        const workspaceState = getCanvasWorkspaceSnapshot();
         const snapshot = projectSnapshot(
-          withNarrationSettings(projectRef.current, narrationSettings),
+          withCanvasWorkspaceSettings(
+            withNarrationSettings(projectRef.current, narrationSettings),
+            activeChapterWorkspaceId,
+            workspaceState.viewports,
+          ),
           nodes,
-          viewport,
+          workspaceState.rootViewport,
           projectTitle,
         );
         saveProject(snapshot);
         projectRef.current = snapshot;
         setSaveStatus('saved');
-      } catch {
+      } catch (error) {
+        setSaveErrorMessage(errorMessage(error));
         setSaveStatus('error');
       }
     }, 550);
     return () => window.clearTimeout(timer);
-  }, [narrationSettings, nodes, projectTitle, viewport]);
+  }, [activeChapterWorkspaceId, getCanvasWorkspaceSnapshot, narrationSettings, nodes, projectTitle]);
 
   useEffect(() => {
     const saveBeforeUnload = () => {
       try {
+        const workspaceState = getCanvasWorkspaceSnapshot();
         saveProject(projectSnapshot(
-          withNarrationSettings(projectRef.current, narrationSettings),
+          withCanvasWorkspaceSettings(
+            withNarrationSettings(projectRef.current, narrationSettings),
+            activeChapterWorkspaceId,
+            workspaceState.viewports,
+          ),
           nodes,
-          viewport,
+          workspaceState.rootViewport,
           projectTitle,
         ));
       } catch {
@@ -652,7 +1018,7 @@ const App = () => {
     };
     window.addEventListener('beforeunload', saveBeforeUnload);
     return () => window.removeEventListener('beforeunload', saveBeforeUnload);
-  }, [narrationSettings, nodes, projectTitle, viewport]);
+  }, [activeChapterWorkspaceId, getCanvasWorkspaceSnapshot, narrationSettings, nodes, projectTitle]);
 
   useEffect(() => {
     const nodeCount = nodeEntries.length;
@@ -713,14 +1079,32 @@ const App = () => {
     });
     projectRef.current = project;
     previousNodeCount.current = Object.keys(project.nodes).length;
+    const restoredWorkspaceId = project.extensions?.canvasWorkspaces?.activeChapterId;
+    const restoredActiveWorkspaceId = restoredWorkspaceId && project.nodes[restoredWorkspaceId]
+      ? restoredWorkspaceId
+      : null;
+    workspaceViewportsRef.current = {
+      ...project.extensions?.canvasWorkspaces?.viewports,
+      [ROOT_WORKSPACE_ID]: project.extensions?.canvasWorkspaces?.viewports?.[ROOT_WORKSPACE_ID]
+        ?? project.viewport,
+    };
     setNodes(project.nodes);
-    setViewport(project.viewport);
+    setActiveChapterWorkspaceId(restoredActiveWorkspaceId);
+    setViewport(
+      (restoredActiveWorkspaceId && workspaceViewportsRef.current[restoredActiveWorkspaceId])
+        || workspaceViewportsRef.current[ROOT_WORKSPACE_ID]
+        || project.viewport,
+    );
     setProjectTitle(project.title);
     setNarrationSettings(project.extensions?.narration ?? createDefaultNarrationSettings());
     setSelectedNodeId(null);
     setDeleteCandidateId(null);
     setPendingProjectAction(null);
+    setPendingOutputNodeId(null);
     setSaveStatus('saved');
+    void loadProjectFolderHandle(project.id)
+      .then((handle) => setLinkedFolderName(handle?.name ?? ''))
+      .catch(() => setLinkedFolderName(''));
   }, [nodes, setNodes]);
 
   const confirmProjectAction = useCallback(() => {
@@ -739,6 +1123,7 @@ const App = () => {
     }
 
     applyProject(project);
+    setLinkedFolderName('');
     showProjectNotice(
       'success',
       pendingProjectAction === 'new'
@@ -747,14 +1132,100 @@ const App = () => {
     );
   }, [applyProject, pendingProjectAction, showProjectNotice]);
 
+  const getCurrentProjectSnapshot = useCallback(() => {
+    const workspaceState = getCanvasWorkspaceSnapshot();
+    return projectSnapshot(
+      withCanvasWorkspaceSettings(
+        withNarrationSettings(projectRef.current, narrationSettings),
+        activeChapterWorkspaceId,
+        workspaceState.viewports,
+      ),
+      nodes,
+      workspaceState.rootViewport,
+      projectTitle,
+    );
+  }, [activeChapterWorkspaceId, getCanvasWorkspaceSnapshot, narrationSettings, nodes, projectTitle]);
+
+  const handleSaveProjectFolder = useCallback(async () => {
+    if (isSavingFolder) return;
+    setIsSavingFolder(true);
+    try {
+      const snapshot = getCurrentProjectSnapshot();
+      const linkedHandle = await loadProjectFolderHandle(snapshot.id);
+      const result = await saveProjectToFolder(snapshot, linkedHandle ?? undefined);
+      projectRef.current = snapshot;
+      saveProject(snapshot);
+      setLinkedFolderName(result.handle.name);
+      const missingMessage = result.missingAssetIds.length > 0
+        ? ` Не найдено медиафайлов: ${result.missingAssetIds.length}.`
+        : '';
+      showProjectNotice(
+        result.missingAssetIds.length > 0 ? 'info' : 'success',
+        `Проект сохранён в папку «${result.handle.name}»: ${result.includedAssetCount} медиа и ${result.exportedTextCount} текстовых файлов.${missingMessage}`,
+      );
+    } catch (error) {
+      if (error instanceof DOMException && error.name === 'AbortError') return;
+      showProjectNotice('error', error instanceof Error ? error.message : 'Не удалось сохранить проект в папку.');
+    } finally {
+      setIsSavingFolder(false);
+    }
+  }, [getCurrentProjectSnapshot, isSavingFolder, showProjectNotice]);
+
+  const handleOpenProjectFolder = useCallback(async () => {
+    if (isOpeningFolder) return;
+    setIsOpeningFolder(true);
+    try {
+      const result = await openProjectFromFolder();
+      saveProject(result.project);
+      applyProject(result.project);
+      setLinkedFolderName(result.handle.name);
+      const missingMessage = result.missingAssetIds.length > 0
+        ? ` Не найдено медиафайлов: ${result.missingAssetIds.length}.`
+        : '';
+      showProjectNotice(
+        result.missingAssetIds.length > 0 ? 'info' : 'success',
+        `Проект «${result.project.title}» открыт из папки. Восстановлено медиафайлов: ${result.importedAssetCount}.${missingMessage}`,
+      );
+    } catch (error) {
+      if (error instanceof DOMException && error.name === 'AbortError') return;
+      showProjectNotice('error', error instanceof Error ? error.message : 'Не удалось открыть папку проекта.');
+    } finally {
+      setIsOpeningFolder(false);
+    }
+  }, [applyProject, isOpeningFolder, showProjectNotice]);
+
+  const handleCreateProjectInFolder = useCallback(async () => {
+    if (isSavingFolder || pendingProjectAction !== 'new') return;
+    setIsSavingFolder(true);
+    try {
+      const handle = await pickProjectDirectory('readwrite');
+      const project = createProjectDocument('Новый проект');
+      const result = await saveProjectToFolder(project, handle);
+      saveProject(project);
+      applyProject(project);
+      setLinkedFolderName(result.handle.name);
+      showProjectNotice('success', `Создан новый проект в папке «${result.handle.name}».`);
+    } catch (error) {
+      if (error instanceof DOMException && error.name === 'AbortError') return;
+      showProjectNotice('error', error instanceof Error ? error.message : 'Не удалось создать проект в папке.');
+    } finally {
+      setIsSavingFolder(false);
+    }
+  }, [applyProject, isSavingFolder, pendingProjectAction, showProjectNotice]);
+
   const handleSavePortableProject = useCallback(async () => {
     if (isSavingPackage) return;
     setIsSavingPackage(true);
     try {
+      const workspaceState = getCanvasWorkspaceSnapshot();
       const snapshot = projectSnapshot(
-        withNarrationSettings(projectRef.current, narrationSettings),
+        withCanvasWorkspaceSettings(
+          withNarrationSettings(projectRef.current, narrationSettings),
+          activeChapterWorkspaceId,
+          workspaceState.viewports,
+        ),
         nodes,
-        viewport,
+        workspaceState.rootViewport,
         projectTitle,
       );
       const result = await buildPortableProjectPackage(snapshot);
@@ -775,19 +1246,24 @@ const App = () => {
     } finally {
       setIsSavingPackage(false);
     }
-  }, [isSavingPackage, narrationSettings, nodes, projectTitle, showProjectNotice, viewport]);
+  }, [activeChapterWorkspaceId, getCanvasWorkspaceSnapshot, isSavingPackage, narrationSettings, nodes, projectTitle, showProjectNotice]);
 
   const handleExportJson = useCallback(() => {
+    const workspaceState = getCanvasWorkspaceSnapshot();
     const snapshot = projectSnapshot(
-      withNarrationSettings(projectRef.current, narrationSettings),
+      withCanvasWorkspaceSettings(
+        withNarrationSettings(projectRef.current, narrationSettings),
+        activeChapterWorkspaceId,
+        workspaceState.viewports,
+      ),
       nodes,
-      viewport,
+      workspaceState.rootViewport,
       projectTitle,
     );
     const blob = new Blob([projectToJson(snapshot)], { type: 'application/json;charset=utf-8' });
     downloadBlob(blob, `${getSafeProjectFileName(snapshot.title)}.canva-story.json`);
     showProjectNotice('success', 'Проект экспортирован в JSON без тяжёлых изображений.');
-  }, [narrationSettings, nodes, projectTitle, showProjectNotice, viewport]);
+  }, [activeChapterWorkspaceId, getCanvasWorkspaceSnapshot, narrationSettings, nodes, projectTitle, showProjectNotice]);
 
   const handleImport = useCallback(async (event: React.ChangeEvent<HTMLInputElement>) => {
     const file = event.target.files?.[0];
@@ -1069,7 +1545,10 @@ const App = () => {
               maxLength={120}
               aria-label="Название проекта"
             />
-            <span className={`save-indicator save-indicator--${saveStatus}`}>
+            <span
+              className={`save-indicator save-indicator--${saveStatus}`}
+              title={saveStatus === 'error' ? saveErrorMessage || 'Браузер не смог сохранить проект.' : undefined}
+            >
               {saveStatus === 'saving' ? 'Сохраняем…' : saveStatus === 'error' ? 'Ошибка сохранения' : 'Сохранено локально'}
             </span>
             <span className={`mode-badge mode-badge--${generationSettings.mode}`}>
@@ -1373,7 +1852,31 @@ const App = () => {
           </div>
         </div>
         <div className="project-actions" aria-label="Действия с проектом">
-          <span className="node-count">{canvasNodeEntries.length} нод</span>
+          <span className="node-count">{visibleNodeEntries.length} из {canvasNodeEntries.length} нод</span>
+          {linkedFolderName && (
+            <span className="project-folder-status" title="Проект связан с этой папкой">
+              Папка: {linkedFolderName}
+            </span>
+          )}
+          {activeChapterWorkspaceId ? (
+            <button
+              type="button"
+              className="toolbar-active-button"
+              onClick={() => handleExitChapterWorkspace(false)}
+              title="Вернуться на верхний уровень проекта"
+            >
+              Назад к главам
+            </button>
+          ) : (
+            <button
+              type="button"
+              className={chapterNavigatorOpen ? 'toolbar-active-button' : undefined}
+              onClick={() => setChapterNavigatorOpen((value) => !value)}
+              title="Открыть навигацию по главам"
+            >
+              Главы
+            </button>
+          )}
           <button type="button" onClick={handleEnsureStoryReferenceNodes}>Базы</button>
           <button type="button" onClick={handleEnsureCharacterRegistry}>Реестр персонажей</button>
           <button type="button" onClick={() => handleEnsureChapterTimeline(selectedNodeId ?? undefined)}>Таймлайн</button>
@@ -1385,22 +1888,44 @@ const App = () => {
           <button type="button" onClick={handleUnloadLocalModels} disabled={isUnloadingModels}>
             {isUnloadingModels ? 'Выгружаю…' : 'Выгрузить модели'}
           </button>
+          {!activeChapterWorkspaceId && (
+            <button
+              type="button"
+              className={timelineFocusMode ? 'toolbar-active-button' : undefined}
+              onClick={() => setTimelineFocusMode((value) => !value)}
+              title="Спрятать промежуточные сцены и ассеты, оставив рабочий таймлайн"
+            >
+              {timelineFocusMode ? 'Все ноды' : 'Только таймлайн'}
+            </button>
+          )}
+          <button type="button" onClick={() => setPendingProjectAction('new')}>Новый</button>
           <button
             type="button"
-            className={timelineFocusMode ? 'toolbar-active-button' : undefined}
-            onClick={() => setTimelineFocusMode((value) => !value)}
-            title="Спрятать промежуточные сцены и ассеты, оставив рабочий таймлайн"
+            onClick={() => void handleSaveProjectFolder()}
+            disabled={isSavingFolder || !isFolderProjectSupported()}
+            title={isFolderProjectSupported()
+              ? 'Сохранить текущий проект, тексты и медиа в обычную папку'
+              : 'Сохранение в папку поддерживается в Chrome и Edge'}
           >
-            {timelineFocusMode ? 'Все ноды' : 'Только таймлайн'}
+            {isSavingFolder ? 'Сохраняю папку…' : 'Сохранить в папку'}
           </button>
-          <button type="button" onClick={() => setPendingProjectAction('new')}>Новый</button>
+          <button
+            type="button"
+            onClick={() => void handleOpenProjectFolder()}
+            disabled={isOpeningFolder || !isFolderProjectSupported()}
+            title={isFolderProjectSupported()
+              ? 'Открыть ранее сохранённую папку проекта'
+              : 'Открытие папки поддерживается в Chrome и Edge'}
+          >
+            {isOpeningFolder ? 'Открываю папку…' : 'Открыть папку'}
+          </button>
           <button
             type="button"
             onClick={() => void handleSavePortableProject()}
             disabled={isSavingPackage}
             title="Скачать переносимый пакет с project.json, изображениями, аудио и видео"
           >
-            {isSavingPackage ? 'Сохраняю…' : 'Сохранить проект'}
+            {isSavingPackage ? 'Сохраняю ZIP…' : 'Скачать ZIP'}
           </button>
           <button type="button" onClick={handleExportJson} title="Скачать только структуру проекта без медиафайлов">
             Экспорт JSON
@@ -1528,12 +2053,40 @@ const App = () => {
               onCancelGeneration={handleCancelGeneration}
               focusChainExpanded={expandedFocusNodeIds.has(id)}
               onToggleFocusChain={toggleFocusChain}
+              onOpenChapterWorkspace={handleOpenChapterWorkspace}
             />
           ))}
         </div>
 
+        {activeChapterWorkspaceId && (
+          <nav className="canvas-workspace-bar" aria-label="Навигация рабочего пространства главы">
+            <button type="button" onClick={() => handleExitChapterWorkspace(false)}>Главы</button>
+            <div className="canvas-workspace-bar__path">
+              <span>{projectTitle}</span>
+              <span aria-hidden="true">›</span>
+              <strong>{activeChapterWorkspaceItem?.title ?? nodes[activeChapterWorkspaceId]?.label ?? 'Глава'}</strong>
+              <span aria-hidden="true">›</span>
+              <span>Ветка генерации</span>
+            </div>
+            <button type="button" onClick={() => handleExitChapterWorkspace(true)}>К таймлайну</button>
+          </nav>
+        )}
+
+        {!activeChapterWorkspaceId && (
+          <ChapterNavigator
+            items={chapterNavigatorItems}
+            open={chapterNavigatorOpen}
+            onOpenChange={setChapterNavigatorOpen}
+            onFocusNode={handleFocusChapterNode}
+            onCreateTimeline={handleEnsureChapterTimeline}
+            onOpenChapter={handleOpenChapterWorkspace}
+          />
+        )}
+
         <div className="canvas-help">
-          Перетаскивайте ноды · тяните фон для панорамы · колесо мыши меняет масштаб
+          {activeChapterWorkspaceId
+            ? 'Ветка генерации главы · персонажи · локации · сцены · озвучка · медиа'
+            : 'Верхний этаж проекта · главы · Scene Writer · таймлайны'}
         </div>
         <div className="canvas-controls" aria-label="Управление канвой">
           <button type="button" onClick={zoomOut} aria-label="Уменьшить масштаб">−</button>
@@ -1599,8 +2152,17 @@ const App = () => {
             </p>
             <div className="confirm-dialog__actions">
               <button type="button" onClick={() => setPendingProjectAction(null)}>Отмена</button>
+              {pendingProjectAction === 'new' && isFolderProjectSupported() && (
+                <button
+                  type="button"
+                  onClick={() => void handleCreateProjectInFolder()}
+                  disabled={isSavingFolder}
+                >
+                  {isSavingFolder ? 'Создаю…' : 'Создать в папке'}
+                </button>
+              )}
               <button type="button" className="danger-button" onClick={confirmProjectAction}>
-                {pendingProjectAction === 'new' ? 'Создать проект' : 'Сбросить всё'}
+                {pendingProjectAction === 'new' ? 'Создать локально' : 'Сбросить всё'}
               </button>
             </div>
           </section>

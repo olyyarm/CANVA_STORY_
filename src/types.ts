@@ -141,6 +141,7 @@ export interface NodeData {
   imageUrl?: string;
   audioUrl?: string;
   videoUrl?: string;
+  sceneShotNodeIds?: string[];
   assets?: NodeAssetReferences;
   imagePipeline?: ImagePipeline;
   error?: string;
@@ -164,6 +165,11 @@ export interface ViewportState {
   zoom: number;
 }
 
+export interface CanvasWorkspaceState {
+  activeChapterId?: string;
+  viewports: Record<string, ViewportState>;
+}
+
 export interface ProjectDocument {
   schemaVersion: typeof PROJECT_SCHEMA_VERSION;
   id: string;
@@ -178,6 +184,7 @@ export interface ProjectDocument {
     episodes?: unknown[];
     assets?: AssetReference[];
     narration?: NarrationSettings;
+    canvasWorkspaces?: CanvasWorkspaceState;
   };
 }
 

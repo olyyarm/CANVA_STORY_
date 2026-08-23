@@ -81,6 +81,7 @@ interface NodeRendererProps {
   onCancelGeneration: (nodeId: string) => void;
   focusChainExpanded?: boolean;
   onToggleFocusChain?: (nodeId: string) => void;
+  onOpenChapterWorkspace?: (nodeId: string) => void;
   onDelete?: (nodeId: string) => void;
   onResizeMouseDown?: (event: React.MouseEvent<HTMLButtonElement>, nodeId: string) => void;
 }
@@ -149,7 +150,7 @@ const findSceneImageNode = (nodes: NodesState, sceneId: string, assetKinds: stri
   Object.values(nodes)
     .filter((candidate) =>
       candidate.nodeType === 'pollinations_image'
-      && candidate.parentId === sceneId
+      && (candidate.parentId === sceneId || candidate.metadata?.sceneId === sceneId)
       && typeof candidate.metadata?.assetKind === 'string'
       && assetKinds.includes(candidate.metadata.assetKind))
     .sort((first, second) =>
@@ -163,14 +164,28 @@ const getSceneShotIndex = (node: NodeData) => {
   return match ? Number(match[1]) : null;
 };
 
-const findSceneShotImageNodes = (nodes: NodesState, sceneId: string) =>
-  Object.values(nodes)
+const findSceneShotImageNodes = (nodes: NodesState, sceneId: string) => {
+  const sceneNode = nodes[sceneId];
+  const linkedShotIds = Array.isArray(sceneNode?.sceneShotNodeIds)
+    ? sceneNode.sceneShotNodeIds
+    : [];
+  const linkedShots = linkedShotIds
+    .map((nodeId) => nodes[nodeId])
+    .filter((candidate): candidate is NodeData => Boolean(
+      candidate
+      && candidate.nodeType === 'pollinations_image'
+      && candidate.imageUrl
+      && getSceneShotIndex(candidate) !== null,
+    ));
+  const fallbackShots = Object.values(nodes)
     .filter((candidate) =>
       candidate.nodeType === 'pollinations_image'
-      && candidate.parentId === sceneId
+      && (candidate.parentId === sceneId || candidate.metadata?.sceneId === sceneId)
       && Boolean(candidate.imageUrl)
-      && getSceneShotIndex(candidate) !== null)
+      && getSceneShotIndex(candidate) !== null);
+  return [...new Set([...linkedShots, ...fallbackShots])]
     .sort((first, second) => (getSceneShotIndex(first) ?? 0) - (getSceneShotIndex(second) ?? 0));
+};
 
 const findTimelineBackdropImageNode = (nodes: NodesState, timelineNodeId: string) =>
   Object.values(nodes)
@@ -385,6 +400,7 @@ const getSortedTimelineScenes = (nodes: NodesState, timelineNode: NodeData) => {
       characters: findSceneImageNode(nodes, sceneId, ['scene_characters']),
       frame: findSceneImageNode(nodes, sceneId, ['scene_flux2_frame', 'scene_frame']),
       shots: findSceneShotImageNodes(nodes, sceneId),
+      shotSheet: findSceneImageNode(nodes, sceneId, ['scene_contact_sheet']),
       systemFrame: findSystemInsertImageNode(nodes, getSceneNumberFromLabel(scene.label), timelineScope.scopedIds),
     }));
 };
@@ -515,6 +531,7 @@ const NodeRenderer: React.FC<NodeRendererProps> = ({
   onCancelGeneration,
   focusChainExpanded = false,
   onToggleFocusChain,
+  onOpenChapterWorkspace,
   onDelete,
   onResizeMouseDown,
 }) => {
@@ -1127,6 +1144,16 @@ const NodeRenderer: React.FC<NodeRendererProps> = ({
               >
                 Таймлайн
               </button>
+              {onOpenChapterWorkspace && /(?:ГЛАВА|CHAPTER)\s*0*\d+/iu.test(`${node.label}\n${node.inputValue ?? ''}`) && (
+                <button
+                  type="button"
+                  className="node-secondary-button split-item-actions__wide"
+                  onMouseDown={stopMouseDown}
+                  onClick={(event) => runWithoutDrag(event, () => onOpenChapterWorkspace(id))}
+                >
+                  Открыть ветку генерации
+                </button>
+              )}
             </div>
           </>
         )}
@@ -1783,6 +1810,17 @@ const NodeRenderer: React.FC<NodeRendererProps> = ({
               >
                 Обновить
               </button>
+              {onOpenChapterWorkspace && (
+                <button
+                  type="button"
+                  className="node-secondary-button chapter-timeline__workspace"
+                  onMouseDown={stopMouseDown}
+                  onClick={(event) => runWithoutDrag(event, () => onOpenChapterWorkspace(id))}
+                  title="Открыть техническую ветку этой главы на отдельном этаже"
+                >
+                  Ветка генерации
+                </button>
+              )}
             </div>
             {node.pollinationsApiError && (
               <div className="node-message node-message--error" role="alert">{node.pollinationsApiError}</div>
@@ -1793,7 +1831,7 @@ const NodeRenderer: React.FC<NodeRendererProps> = ({
               </div>
             ) : (
               <div className="chapter-timeline__rail" onMouseDown={stopMouseDown}>
-                {timelineScenes.map(({ sceneId, scene, location, characters, frame, shots, systemFrame }) => {
+                {timelineScenes.map(({ sceneId, scene, location, characters, frame, shots, shotSheet, systemFrame }) => {
                   const sceneText = scene.sceneText || scene.inputValue || '';
                   const sceneNumber = getSceneNumberFromLabel(scene.label);
                   const systemInsert = timelineSystemInserts.get(sceneNumber);
@@ -1829,11 +1867,25 @@ const NodeRenderer: React.FC<NodeRendererProps> = ({
                                   src={shot.imageUrl}
                                   alt={`${shot.label}`}
                                   draggable={false}
-                                  loading="lazy"
                                   decoding="async"
                                 />
                               </div>
                             ))}
+                          </div>
+                        )}
+                        {shots.length === 0 && shotSheet?.imageUrl && (
+                          <div
+                            className="chapter-timeline__shot-grid chapter-timeline__shot-grid--sheet"
+                            aria-label={`Лист дополнительных планов ${scene.label}`}
+                          >
+                            <div className="chapter-timeline__shot chapter-timeline__shot--sheet">
+                              <img
+                                src={shotSheet.imageUrl}
+                                alt={`Лист дополнительных планов ${scene.label}`}
+                                draggable={false}
+                                decoding="async"
+                              />
+                            </div>
                           </div>
                         )}
                         <div className="chapter-timeline__badges">

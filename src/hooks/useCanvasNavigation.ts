@@ -143,6 +143,21 @@ export const useCanvasNavigation = ({
     });
   }, [canvasRef, commitViewport, nodes]);
 
+  const focusNode = useCallback((nodeId: string, maximumZoom = 0.9) => {
+    const rect = canvasRef.current?.getBoundingClientRect();
+    const node = nodes[nodeId];
+    if (!rect || !node) return;
+
+    const zoom = clampZoom(Math.min(maximumZoom, Math.max(viewportRef.current.zoom, 0.62)));
+    const nodeWidth = node.width ?? 420;
+    const nodeHeight = node.height ?? 430;
+    commitViewport({
+      zoom,
+      x: rect.width / 2 - (node.x + nodeWidth / 2) * zoom,
+      y: rect.height / 2 - (node.y + nodeHeight / 2) * zoom,
+    });
+  }, [canvasRef, commitViewport, nodes]);
+
   const zoomIn = useCallback(() => {
     zoomAtPoint(viewportRef.current.zoom + CANVAS_LIMITS.zoomStep);
   }, [zoomAtPoint]);
@@ -157,6 +172,7 @@ export const useCanvasNavigation = ({
     handleWheel,
     fitView,
     centerView,
+    focusNode,
     zoomIn,
     zoomOut,
     resetZoom,

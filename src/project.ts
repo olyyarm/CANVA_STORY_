@@ -45,8 +45,40 @@ import {
   PROJECT_SCHEMA_VERSION,
   ViewportState,
 } from './types';
+import { strFromU8, strToU8, unzlibSync, zlibSync } from 'fflate';
 
 export const PROJECT_STORAGE_KEY = 'canva-story.project.v1';
+const COMPRESSED_PROJECT_PREFIX = 'canva-story.project.deflate-base64.v1:';
+const STORAGE_COMPRESSION_LEVEL = 3;
+let preferCompressedProjectStorage = false;
+
+const bytesToBase64 = (bytes: Uint8Array) => {
+  let binary = '';
+  const chunkSize = 0x8000;
+  for (let offset = 0; offset < bytes.length; offset += chunkSize) {
+    binary += String.fromCharCode(...bytes.subarray(offset, offset + chunkSize));
+  }
+  return btoa(binary);
+};
+
+const base64ToBytes = (value: string) => {
+  const binary = atob(value);
+  const bytes = new Uint8Array(binary.length);
+  for (let index = 0; index < binary.length; index += 1) {
+    bytes[index] = binary.charCodeAt(index);
+  }
+  return bytes;
+};
+
+const compressProjectJson = (json: string) =>
+  `${COMPRESSED_PROJECT_PREFIX}${bytesToBase64(zlibSync(strToU8(json), { level: STORAGE_COMPRESSION_LEVEL }))}`;
+
+const readStoredProjectJson = (value: string) => {
+  if (!value.startsWith(COMPRESSED_PROJECT_PREFIX)) return value;
+  preferCompressedProjectStorage = true;
+  const compressed = base64ToBytes(value.slice(COMPRESSED_PROJECT_PREFIX.length));
+  return strFromU8(unzlibSync(compressed));
+};
 
 const nodeTypes = new Set<NodeType>([
   'text',
@@ -579,6 +611,10 @@ const sanitizeNode = (value: unknown, nodeId: string): NodeData | null => {
     height: finiteNumber(value.height, value.nodeType === 'association' ? 56 : 220),
     isLoading: false,
     isLoadingImage: false,
+    isLoadingAudio: false,
+    isLoadingVideo: false,
+    isSpeaking: false,
+    loadingProvider: undefined,
     error: undefined,
     statusMessage: undefined,
     pollinationsApiError: undefined,
@@ -611,6 +647,22 @@ const sanitizeViewport = (value: unknown): ViewportState => {
   };
 };
 
+const sanitizeCanvasWorkspaces = (value: unknown) => {
+  if (!isRecord(value)) return undefined;
+  const rawViewports = isRecord(value.viewports) ? value.viewports : {};
+  const viewports = Object.fromEntries(
+    Object.entries(rawViewports).map(([workspaceId, viewport]) => [
+      workspaceId.slice(0, 240),
+      sanitizeViewport(viewport),
+    ]),
+  );
+  const activeChapterId = optionalString(value.activeChapterId);
+  return {
+    ...(activeChapterId ? { activeChapterId } : {}),
+    viewports,
+  };
+};
+
 const sanitizeProjectExtensions = (value: unknown): ProjectDocument['extensions'] => {
   const extensions = isRecord(value) ? value : {};
   const assets = Array.isArray(extensions.assets)
@@ -629,6 +681,7 @@ const sanitizeProjectExtensions = (value: unknown): ProjectDocument['extensions'
       narrationValue,
       narrationReference?.mediaKind === 'audio' ? narrationReference : undefined,
     ),
+    canvasWorkspaces: sanitizeCanvasWorkspaces(extensions.canvasWorkspaces),
   };
 };
 
@@ -675,19 +728,38 @@ export const projectSnapshot = (
 export const projectToJson = (project: ProjectDocument) =>
   JSON.stringify(projectSnapshot(project, project.nodes, project.viewport, project.title), null, 2);
 
+const projectToStorageJson = (project: ProjectDocument) =>
+  JSON.stringify(projectSnapshot(project, project.nodes, project.viewport, project.title));
+
 export const loadSavedProject = (): ProjectDocument | null => {
   try {
     const saved = localStorage.getItem(PROJECT_STORAGE_KEY);
-    return saved ? parseProjectJson(saved) : null;
+    return saved ? parseProjectJson(readStoredProjectJson(saved)) : null;
   } catch {
     return null;
   }
 };
 
 export const saveProject = (project: ProjectDocument) => {
-  localStorage.setItem(PROJECT_STORAGE_KEY, projectToJson(project));
+  const json = projectToStorageJson(project);
+  if (preferCompressedProjectStorage) {
+    localStorage.setItem(PROJECT_STORAGE_KEY, compressProjectJson(json));
+    return;
+  }
+
+  try {
+    localStorage.setItem(PROJECT_STORAGE_KEY, json);
+  } catch (plainStorageError) {
+    try {
+      localStorage.setItem(PROJECT_STORAGE_KEY, compressProjectJson(json));
+      preferCompressedProjectStorage = true;
+    } catch {
+      throw plainStorageError;
+    }
+  }
 };
 
 export const clearSavedProject = () => {
   localStorage.removeItem(PROJECT_STORAGE_KEY);
+  preferCompressedProjectStorage = false;
 };

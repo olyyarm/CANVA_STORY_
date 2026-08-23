@@ -1,6 +1,7 @@
 import { Dispatch, SetStateAction, useCallback, useEffect, useMemo, useRef } from 'react';
 import {
   getNodeAssetId,
+  loadProjectAssetRecords,
   restoreImageAssetUrlsForProject,
   restoreMediaAssetUrlsForProject,
   saveAssetFromUrl,
@@ -120,6 +121,12 @@ const getAssetSaveOptions = (
       || assetKind === 'system_insert'
     ) ? parentId : undefined);
   const sourcePrompt = node.assetPrompt?.trim() || node.masterPrompt?.trim() || undefined;
+  const sceneShotIndex = node.metadata?.sceneShotIndex;
+  const canonicalId = getMetadataString(node, 'canonicalId')
+    ?? getMetadataString(node, 'characterTag')
+    ?? (assetKind === 'scene_shot' && typeof sceneShotIndex === 'number'
+      ? `scene-shot:${sceneShotIndex}`
+      : undefined);
   return {
     assetId: getNodeAssetId(projectId, nodeId, mediaKind),
     assetKind,
@@ -127,7 +134,7 @@ const getAssetSaveOptions = (
     projectId,
     chapterId: getMetadataString(node, 'chapterId'),
     sceneId,
-    canonicalId: getMetadataString(node, 'canonicalId') ?? getMetadataString(node, 'characterTag'),
+    canonicalId,
     sourcePrompt,
     filePath: getMetadataString(node, 'filePath'),
   };
@@ -142,6 +149,14 @@ export const useAssetPersistence = ({
   const persistingAssetKeys = useRef(new Set<string>());
   const persistenceQueue = useRef(Promise.resolve());
   const restoringProjectKey = useRef('');
+
+  const missingSceneShotKey = useMemo(() => Object.entries(nodes)
+    .filter(([, node]) => node.nodeType === 'scene' && Array.isArray(node.sceneShotNodeIds))
+    .flatMap(([sceneId, node]) => (node.sceneShotNodeIds ?? [])
+      .filter((nodeId) => !nodes[nodeId])
+      .map((nodeId) => `${sceneId}:scene-shot:${nodeId}`))
+    .sort()
+    .join('|'), [nodes]);
 
   const missingRestoreKey = useMemo(() => Object.entries(nodes)
     .flatMap(([nodeId, node]) => getPersistencePlans(node)
@@ -218,9 +233,114 @@ export const useAssetPersistence = ({
     });
   }, [setNodes]);
 
+  const restoreMissingSceneShotNodes = useCallback(async (sourceNodes: NodesState) => {
+    const records = await loadProjectAssetRecords(projectId, 'image', 'scene_shot');
+    if (records.length === 0) return 0;
+
+    const assetIdPrefix = `${projectId}:image:`;
+    const getStoredNodeId = (assetId: string) => (
+      assetId.startsWith(assetIdPrefix) ? assetId.slice(assetIdPrefix.length) : ''
+    );
+    const recordsById = new Map(records.map((record) => [record.reference.assetId, record]));
+    const recordsByScene = new Map<string, typeof records>();
+    records.forEach((record) => {
+      const sceneId = record.reference.sceneId;
+      if (!sceneId) return;
+      const sceneRecords = recordsByScene.get(sceneId) ?? [];
+      sceneRecords.push(record);
+      recordsByScene.set(sceneId, sceneRecords);
+    });
+
+    const restoredNodes: Array<{ nodeId: string; sceneId: string; node: NodeData }> = [];
+    Object.entries(sourceNodes).forEach(([sceneId, sceneNode]) => {
+      if (sceneNode.nodeType !== 'scene') return;
+      const linkedIds = Array.isArray(sceneNode.sceneShotNodeIds) ? sceneNode.sceneShotNodeIds : [];
+      const sceneRecords = [...(recordsByScene.get(sceneId) ?? [])]
+        .sort((first, second) => first.reference.createdAt.localeCompare(second.reference.createdAt));
+      const orderedRecords = [
+        ...linkedIds.map((nodeId) => recordsById.get(getNodeAssetId(projectId, nodeId, 'image'))),
+        ...sceneRecords,
+      ].filter((record, index, all): record is (typeof records)[number] => Boolean(
+        record && all.findIndex((candidate) => candidate?.reference.assetId === record.reference.assetId) === index,
+      ));
+
+      orderedRecords.forEach((record, arrayIndex) => {
+        const nodeId = getStoredNodeId(record.reference.assetId);
+        if (!nodeId || sourceNodes[nodeId]) return;
+        const canonicalIndex = record.reference.canonicalId?.match(/^scene-shot:(\d+)$/u);
+        const linkedIndex = linkedIds.indexOf(nodeId);
+        const shotIndex = canonicalIndex
+          ? Number(canonicalIndex[1])
+          : linkedIndex >= 0 ? linkedIndex + 1 : arrayIndex + 1;
+        const column = Math.max(0, shotIndex - 1) % 2;
+        const row = Math.floor(Math.max(0, shotIndex - 1) / 2);
+        const sceneWidth = sceneNode.width ?? 400;
+        const imageUrl = URL.createObjectURL(record.blob);
+        restoredNodes.push({
+          nodeId,
+          sceneId,
+          node: {
+            nodeType: 'pollinations_image',
+            label: `План ${shotIndex} · ${sceneNode.label}`,
+            x: sceneNode.x + sceneWidth + 36 + column * 350,
+            y: sceneNode.y + 710 + row * 250,
+            width: 330,
+            height: 215,
+            parentId: sceneId,
+            imageUrl,
+            masterPrompt: record.reference.sourcePrompt,
+            productionStatus: 'ready',
+            level: (sceneNode.level ?? 0) + 1,
+            assets: { image: record.reference },
+            metadata: {
+              assetKind: `scene_shot:${shotIndex}`,
+              sceneId,
+              sceneShotIndex: shotIndex,
+              shotAspectRatio: '16:9',
+              hiddenOnCanvas: true,
+              localAssetId: record.reference.assetId,
+              localAssetKind: 'image',
+              localAssetSavedAt: record.reference.updatedAt ?? record.reference.createdAt,
+            },
+          },
+        });
+      });
+    });
+
+    if (restoredNodes.length === 0) return 0;
+    setNodes((previousNodes) => {
+      const nextNodes = { ...previousNodes };
+      const restoredByScene = new Map<string, string[]>();
+      restoredNodes.forEach(({ nodeId, sceneId, node }) => {
+        if (nextNodes[nodeId]) {
+          if (node.imageUrl?.startsWith('blob:')) URL.revokeObjectURL(node.imageUrl);
+          return;
+        }
+        nextNodes[nodeId] = node;
+        restoredByScene.set(sceneId, [...(restoredByScene.get(sceneId) ?? []), nodeId]);
+      });
+      restoredByScene.forEach((restoredIds, sceneId) => {
+        const sceneNode = nextNodes[sceneId];
+        if (!sceneNode) return;
+        const linkedIds = Array.isArray(sceneNode.sceneShotNodeIds) ? sceneNode.sceneShotNodeIds : [];
+        nextNodes[sceneId] = {
+          ...sceneNode,
+          sceneShotNodeIds: [...new Set([...linkedIds, ...restoredIds])]
+            .sort((firstId, secondId) => {
+              const firstIndex = nextNodes[firstId]?.metadata?.sceneShotIndex;
+              const secondIndex = nextNodes[secondId]?.metadata?.sceneShotIndex;
+              return Number(firstIndex ?? 0) - Number(secondIndex ?? 0);
+            }),
+        };
+      });
+      return restoredByScene.size > 0 ? nextNodes : previousNodes;
+    });
+    return restoredNodes.length;
+  }, [projectId, setNodes]);
+
   useEffect(() => {
-    if (!missingRestoreKey) return;
-    const restoreKey = `${projectId}:${missingRestoreKey}`;
+    if (!missingRestoreKey && !missingSceneShotKey) return;
+    const restoreKey = `${projectId}:${missingRestoreKey}:${missingSceneShotKey}`;
     if (restoringProjectKey.current === restoreKey) return;
     restoringProjectKey.current = restoreKey;
     let cancelled = false;
@@ -228,15 +348,18 @@ export const useAssetPersistence = ({
     Promise.all([
       restoreImageAssetUrlsForProject(projectId, nodes),
       restoreMediaAssetUrlsForProject(projectId, nodes),
+      restoreMissingSceneShotNodes(nodes),
     ])
       .then(([restoredImages, restoredMedia]) => {
         if (cancelled) {
           restoredImages.forEach(({ imageUrl }) => URL.revokeObjectURL(imageUrl));
           restoredMedia.forEach(({ url }) => URL.revokeObjectURL(url));
+          restoringProjectKey.current = '';
           return;
         }
         applyRestoredImageAssets(restoredImages);
         applyRestoredMediaAssets(restoredMedia);
+        restoringProjectKey.current = '';
       })
       .catch(() => {
         restoringProjectKey.current = '';
@@ -245,7 +368,15 @@ export const useAssetPersistence = ({
     return () => {
       cancelled = true;
     };
-  }, [applyRestoredImageAssets, applyRestoredMediaAssets, missingRestoreKey, nodes, projectId]);
+  }, [
+    applyRestoredImageAssets,
+    applyRestoredMediaAssets,
+    missingRestoreKey,
+    missingSceneShotKey,
+    nodes,
+    projectId,
+    restoreMissingSceneShotNodes,
+  ]);
 
   useEffect(() => {
     Object.entries(nodes).forEach(([nodeId, node]) => {
@@ -341,21 +472,32 @@ export const useAssetPersistence = ({
 
   const restoreAssets = useCallback(async () => {
     try {
-      const [restoredImages, restoredMedia] = await Promise.all([
+      const [restoredImages, restoredMedia, restoredShots] = await Promise.all([
         restoreImageAssetUrlsForProject(projectId, nodes),
         restoreMediaAssetUrlsForProject(projectId, nodes),
+        restoreMissingSceneShotNodes(nodes),
       ]);
-      if (restoredImages.length === 0 && restoredMedia.length === 0) {
+      if (restoredImages.length === 0 && restoredMedia.length === 0 && restoredShots === 0) {
         showNotice('info', 'В локальном хранилище не нашла сохранённых медиа для пустых нод.');
         return;
       }
       applyRestoredImageAssets(restoredImages);
       applyRestoredMediaAssets(restoredMedia);
-      showNotice('success', `Восстановлено: картинок ${restoredImages.length}, аудио/видео ${restoredMedia.length}.`);
+      showNotice(
+        'success',
+        `Восстановлено: картинок ${restoredImages.length}, дополнительных планов ${restoredShots}, аудио/видео ${restoredMedia.length}.`,
+      );
     } catch {
       showNotice('error', 'Не удалось прочитать локальное хранилище медиа браузера.');
     }
-  }, [applyRestoredImageAssets, applyRestoredMediaAssets, nodes, projectId, showNotice]);
+  }, [
+    applyRestoredImageAssets,
+    applyRestoredMediaAssets,
+    nodes,
+    projectId,
+    restoreMissingSceneShotNodes,
+    showNotice,
+  ]);
 
   return { restoreAssets };
 };

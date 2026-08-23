@@ -62,7 +62,7 @@ import {
   SYSTEM_INSERTS_DETAIL_SYSTEM_PROMPT,
   TTS_CLEANUP_SYSTEM_PROMPT,
 } from '../constants';
-import { getNextNarrationSeed } from '../narrationSettings';
+import { getNextNarrationSeed, getOmniVoiceSteps } from '../narrationSettings';
 import { SCENE_WRITER_CHARACTER_TAG_CONTRACT, SCENE_WRITER_SHOT_SCALE_CONTRACT, SCENE_WRITER_SPLIT_SYSTEM_PROMPT } from '../promptPresets';
 import {
   AppNotice,
@@ -210,6 +210,23 @@ const getSourceKind = (node?: NodeData) =>
 
 const getNodeSystemPrompt = (node: NodeData | undefined, fallback: string) =>
   node?.systemPrompt?.trim() || fallback;
+
+const legacyNarrationPromptPrefixes = [
+  'Ты — закадровый рассказчик манхвы. Твоя задача — ясно рассказать историю по сценам',
+  'Напиши закадровый текст рассказчика для озвучки по сценам',
+];
+
+const shouldRefreshNarrationSystemPrompt = (node: NodeData | undefined) => {
+  const savedPrompt = node?.systemPrompt?.trim();
+  return !savedPrompt || legacyNarrationPromptPrefixes.some((prefix) => savedPrompt.startsWith(prefix));
+};
+
+const getDetailSystemPrompt = (
+  node: NodeData | undefined,
+  config: (typeof detailConfig)[DetailType],
+) => config.operation === 'narration' && shouldRefreshNarrationSystemPrompt(node)
+  ? config.systemPrompt
+  : getNodeSystemPrompt(node, config.systemPrompt);
 
 const getListMetadata = (value: unknown) =>
   typeof value === 'string'
@@ -810,6 +827,51 @@ const findPreparedTtsNarrationNode = (nodes: NodesState, narrationNodeId?: strin
   ));
 };
 
+const resolveSceneNarrationText = (nodes: NodesState, sceneNode: NodeData) => {
+  const narrationEntry = Object.entries(nodes).find(
+    ([, node]) => node.parentId === sceneNode.parentId && node.nodeType === 'script_detail' && node.label === 'Закадр',
+  );
+  const narrationNode = narrationEntry?.[1];
+  const preparedNarrationNode = findPreparedTtsNarrationNode(nodes, narrationEntry?.[0]);
+  const preparedSceneNarration = typeof sceneNode.metadata?.preparedTtsText === 'string'
+    ? cleanupBrowserSpeechText(sceneNode.metadata.preparedTtsText)
+    : '';
+  const preparedChapterNarration = preparedNarrationNode?.inputValue
+    ? extractSceneNarration(preparedNarrationNode.inputValue, sceneNode.label)
+    : '';
+  const sceneNarration = narrationNode?.inputValue
+    ? extractSceneNarration(narrationNode.inputValue, sceneNode.label)
+    : '';
+  const previousGeneratedNarration = typeof sceneNode.metadata?.sceneNarrationText === 'string'
+    ? cleanupBrowserSpeechText(sceneNode.metadata.sceneNarrationText)
+    : '';
+  const outputNode = sceneNode.parentId ? nodes[sceneNode.parentId] : undefined;
+  const fallbackText = cleanupBrowserSpeechText(sceneNode.sceneText || sceneNode.inputValue || outputNode?.inputValue || '');
+  return preparedSceneNarration
+    || preparedChapterNarration
+    || sceneNarration
+    || previousGeneratedNarration
+    || fallbackText;
+};
+
+const getSceneTtsGenerationSignature = (
+  text: string,
+  settings: NarrationSettings,
+  seed = settings.seed,
+) => JSON.stringify({
+  version: 1,
+  text: cleanupBrowserSpeechText(text),
+  mode: settings.mode,
+  model: settings.model,
+  quality: settings.quality,
+  steps: getOmniVoiceSteps(settings.quality),
+  seed,
+  voiceInstruct: settings.voiceInstruct.trim(),
+  referenceAssetId: settings.referenceAudio?.assetId ?? '',
+  referenceText: settings.referenceText?.trim() ?? '',
+  synthesisProfile: 'omnivoice-speed-0.9-v1',
+});
+
 const upsertScriptDetailNode = (
   previousNodes: NodesState,
   parentId: string,
@@ -851,7 +913,9 @@ const upsertScriptDetailNode = (
     level: (parentNode.level ?? 0) + 1,
     parentId,
     inputValue,
-    systemPrompt: existing?.[1].systemPrompt ?? options.systemPrompt,
+    systemPrompt: isNarration && shouldRefreshNarrationSystemPrompt(existing?.[1])
+      ? options.systemPrompt
+      : existing?.[1].systemPrompt ?? options.systemPrompt,
     selectedModel: existing?.[1].selectedModel ?? options.selectedModel,
     error: undefined,
     metadata: {
@@ -1091,11 +1155,38 @@ const getSceneShotIndex = (node: NodeData) => {
 const findSceneShotNodes = (nodes: NodesState, sceneNodeId: string) =>
   Object.values(nodes)
     .filter((node) =>
-      node.parentId === sceneNodeId
+      (node.parentId === sceneNodeId || node.metadata?.sceneId === sceneNodeId)
       && node.nodeType === 'pollinations_image'
       && Boolean(node.imageUrl)
       && getSceneShotIndex(node) !== null)
     .sort((first, second) => (getSceneShotIndex(first) ?? 0) - (getSceneShotIndex(second) ?? 0));
+
+const getVisualAssetIdentity = (node?: NodeData) => {
+  if (!node?.imageUrl) return '';
+  const localAssetId = typeof node.metadata?.localAssetId === 'string'
+    ? node.metadata.localAssetId
+    : '';
+  const generatedAt = typeof node.metadata?.generatedAt === 'string'
+    ? node.metadata.generatedAt
+    : '';
+  const imageIdentity = node.imageUrl.startsWith('data:')
+    ? `${node.imageUrl.length}:${node.imageUrl.slice(-256)}`
+    : node.imageUrl;
+  return `${getAssetKind(node)}|${localAssetId}|${generatedAt}|${imageIdentity}`;
+};
+
+const getSceneVisualGenerationSignature = (
+  frameNode?: NodeData,
+  shotNodes: NodeData[] = [],
+  systemInsertNode?: NodeData,
+  chapterBackdropNode?: NodeData,
+) => JSON.stringify({
+  version: 1,
+  frame: getVisualAssetIdentity(frameNode),
+  shots: shotNodes.map(getVisualAssetIdentity),
+  systemInsert: getVisualAssetIdentity(systemInsertNode),
+  chapterBackdrop: getVisualAssetIdentity(chapterBackdropNode),
+});
 
 const findSystemInsertImageNodeForScene = (nodes: NodesState, sceneNumber: number, sourceScenarioId = '') =>
   Object.entries(nodes)
@@ -1933,7 +2024,7 @@ export const useNodeManagement = (
         outputNodeId,
         (candidate) => candidate.nodeType === 'script_detail' && candidate.label === config.label,
       );
-      const systemPrompt = getNodeSystemPrompt(existingDetail?.[1], config.systemPrompt);
+      const systemPrompt = getDetailSystemPrompt(existingDetail?.[1], config);
       const result = await requestText(outputNodeId, {
         operation: config.operation,
         prompt: withStoryReferenceContext(scenario, nodesRef.current),
@@ -3295,7 +3386,7 @@ export const useNodeManagement = (
         outputNodeId,
         (node) => node.nodeType === 'script_detail' && node.label === config.label,
       );
-      const detailSystemPrompt = getNodeSystemPrompt(existingDetail?.[1], config.systemPrompt);
+      const detailSystemPrompt = getDetailSystemPrompt(existingDetail?.[1], config);
       const detailPrompt = [
         scenario,
         autoCharacterMemory && config.operation !== 'heroes'
@@ -3507,7 +3598,7 @@ export const useNodeManagement = (
       sourceNodeId,
       (node) => node.nodeType === 'script_detail' && node.label === config.label,
     );
-    const systemPrompt = getNodeSystemPrompt(existingDetail?.[1], config.systemPrompt);
+    const systemPrompt = getDetailSystemPrompt(existingDetail?.[1], config);
     const result = await requestText(sourceNodeId, {
       operation: config.operation,
       prompt: withStoryReferenceContext(sourceNode.inputValue, nodesRef.current),
@@ -4955,23 +5046,9 @@ export const useNodeManagement = (
   const handleGenerateSceneOmniVoiceNarration = useCallback(async (sceneNodeId: string, seedOverride?: number) => {
     const currentNodes = nodesRef.current;
     const sceneNode = currentNodes[sceneNodeId];
-    const outputNode = sceneNode?.parentId ? currentNodes[sceneNode.parentId] : undefined;
     if (!sceneNode || sceneNode.nodeType !== 'scene' || sceneNode.isLoadingAudio) return;
 
-    const narrationEntry = Object.entries(currentNodes).find(
-      ([, node]) => node.parentId === sceneNode.parentId && node.nodeType === 'script_detail' && node.label === 'Закадр',
-    );
-    const narrationNode = narrationEntry?.[1];
-    const preparedSceneNarration = getPreparedSceneNarrationText(sceneNode);
-    const preparedNarrationNode = findPreparedTtsNarrationNode(currentNodes, narrationEntry?.[0]);
-    const preparedChapterNarration = preparedNarrationNode?.inputValue
-      ? extractSceneNarration(preparedNarrationNode.inputValue, sceneNode.label)
-      : '';
-    const sceneNarration = narrationNode?.inputValue
-      ? extractSceneNarration(narrationNode.inputValue, sceneNode.label)
-      : '';
-    const fallbackText = cleanupBrowserSpeechText(sceneNode.sceneText || sceneNode.inputValue || outputNode?.inputValue || '');
-    const text = preparedSceneNarration || preparedChapterNarration || sceneNarration || fallbackText;
+    const text = resolveSceneNarrationText(currentNodes, sceneNode);
     if (!text) {
       updateNode(sceneNodeId, { pollinationsApiError: 'Не найден закадровый текст для этой сцены. Сначала создайте или подготовьте ноду «Закадр».' });
       return;
@@ -4982,6 +5059,7 @@ export const useNodeManagement = (
     const controller = new AbortController();
     activeRequests.current.set(requestId, controller);
     const effectiveSeed = seedOverride ?? narrationSettings.seed;
+    const ttsGenerationSignature = getSceneTtsGenerationSignature(text, narrationSettings, effectiveSeed);
 
     try {
       updateNode(sceneNodeId, {
@@ -5031,6 +5109,7 @@ export const useNodeManagement = (
               ttsModel: narrationSettings.model,
               ttsQuality: narrationSettings.quality,
               ttsSeed: effectiveSeed,
+              ttsGenerationSignature,
               sceneNarrationText: text,
               ttsGeneratedAt: new Date().toISOString(),
             },
@@ -5150,7 +5229,7 @@ export const useNodeManagement = (
         if (!currentScene) return previousNodes;
         const nextNodes = { ...previousNodes };
         const existingSheetEntry = Object.entries(previousNodes).find(([, candidate]) =>
-          candidate.parentId === sceneNodeId
+          (candidate.parentId === sceneNodeId || candidate.metadata?.sceneId === sceneNodeId)
           && candidate.nodeType === 'pollinations_image'
           && getAssetKind(candidate) === 'scene_contact_sheet');
         const sheetNodeId = existingSheetEntry?.[0] ?? generateNodeId();
@@ -5191,12 +5270,14 @@ export const useNodeManagement = (
           },
         };
 
+        const sceneShotNodeIds: string[] = [];
         crops.forEach((crop, arrayIndex) => {
           const existingShotEntry = Object.entries(previousNodes).find(([, candidate]) =>
-            candidate.parentId === sceneNodeId
+            (candidate.parentId === sceneNodeId || candidate.metadata?.sceneId === sceneNodeId)
             && candidate.nodeType === 'pollinations_image'
             && getSceneShotIndex(candidate) === crop.index);
           const shotNodeId = existingShotEntry?.[0] ?? generateNodeId();
+          sceneShotNodeIds.push(shotNodeId);
           const existingShotNode = existingShotEntry?.[1];
           if (existingShotNode?.imageUrl?.startsWith('blob:')) URL.revokeObjectURL(existingShotNode.imageUrl);
           const column = arrayIndex % 2;
@@ -5237,6 +5318,7 @@ export const useNodeManagement = (
         nextNodes[sceneNodeId] = {
           ...currentScene,
           videoUrl: undefined,
+          sceneShotNodeIds,
           isLoadingImage: false,
           loadingProvider: undefined,
           pollinationsApiError: undefined,
@@ -5320,6 +5402,13 @@ export const useNodeManagement = (
       const sceneShotUrls = findSceneShotNodes(currentNodes, sceneNodeId)
         .map((shotNode) => shotNode.imageUrl)
         .filter((imageUrl): imageUrl is string => Boolean(imageUrl));
+      const sceneShotNodes = findSceneShotNodes(currentNodes, sceneNodeId);
+      const visualGenerationSignature = getSceneVisualGenerationSignature(
+        frameNode,
+        sceneShotNodes,
+        systemInsertNode,
+        chapterBackdropNode,
+      );
       const clipImageUrls = [
         frameNode.imageUrl,
         ...sceneShotUrls,
@@ -5350,6 +5439,7 @@ export const useNodeManagement = (
               videoAspectRatio: '16:9',
               videoFrameSource: frameNode.label,
               sceneShotCountUsed: sceneShotUrls.length,
+              videoVisualGenerationSignature: visualGenerationSignature,
               ...(systemInsertNode ? { systemInsertSource: systemInsertNode.label } : {}),
               chapterBackdropSource: chapterBackdropNode?.label ?? null,
               chapterBackdropGeneratedAt: chapterBackdropGeneratedAt || null,
@@ -5468,6 +5558,12 @@ export const useNodeManagement = (
         const shotUrls = plan.shotNodes
           .map((shotNode) => shotNode.imageUrl)
           .filter((imageUrl): imageUrl is string => Boolean(imageUrl));
+        const visualGenerationSignature = getSceneVisualGenerationSignature(
+          plan.frameNode,
+          plan.shotNodes,
+          plan.systemInsertNode,
+          chapterBackdropNode,
+        );
         const imageUrls = [
           plan.frameNode.imageUrl,
           ...shotUrls,
@@ -5498,6 +5594,7 @@ export const useNodeManagement = (
                 videoAspectRatio: '16:9',
                 videoFrameSource: plan.frameNode.label,
                 sceneShotCountUsed: shotUrls.length,
+                videoVisualGenerationSignature: visualGenerationSignature,
                 ...(plan.systemInsertNode ? { systemInsertSource: plan.systemInsertNode.label } : {}),
                 chapterBackdropSource: chapterBackdropNode?.label ?? null,
                 chapterBackdropGeneratedAt: chapterBackdropGeneratedAt || null,
@@ -5582,12 +5679,32 @@ export const useNodeManagement = (
           || appliedBackdropGeneratedAt !== chapterBackdropGeneratedAt
         ),
       );
+      const visualGenerationSignature = getSceneVisualGenerationSignature(
+        frameNode,
+        shotNodes,
+        systemInsertNode,
+        chapterBackdropNode,
+      );
+      const storedVisualGenerationSignature = typeof scene.metadata?.videoVisualGenerationSignature === 'string'
+        ? scene.metadata.videoVisualGenerationSignature
+        : '';
+      const visualsNeedRefresh = storedVisualGenerationSignature !== visualGenerationSignature;
       const shouldBuildFromSources = canBuildFromSources && (
         Boolean(systemInsertNode?.imageUrl)
         || !scene.videoUrl
         || backdropNeedsRefresh
+        || visualsNeedRefresh
       );
-      return { sceneId, scene, frameNode, shotNodes, systemInsertNode, canBuildFromSources, shouldBuildFromSources };
+      return {
+        sceneId,
+        scene,
+        frameNode,
+        shotNodes,
+        systemInsertNode,
+        canBuildFromSources,
+        shouldBuildFromSources,
+        visualGenerationSignature,
+      };
     });
     const missingClipLabels = scenePlans
       .filter((plan) => !plan.scene.videoUrl && !plan.canBuildFromSources)
@@ -5652,6 +5769,7 @@ export const useNodeManagement = (
                   videoAspectRatio: '16:9',
                   videoFrameSource: plan.frameNode.label,
                   sceneShotCountUsed: shotUrls.length,
+                  videoVisualGenerationSignature: plan.visualGenerationSignature,
                   ...(plan.systemInsertNode ? { systemInsertSource: plan.systemInsertNode.label } : {}),
                   chapterBackdropSource: chapterBackdropNode?.label ?? null,
                   chapterBackdropGeneratedAt: chapterBackdropGeneratedAt || null,
@@ -5922,12 +6040,18 @@ export const useNodeManagement = (
     };
     const hasSceneLocation = (sceneId: string, scene: NodeData) =>
       Boolean(selectSceneLocationReference(nodesRef.current, sceneId, scene, scene.sceneText || scene.inputValue || scene.label)?.imageUrl);
+    const hasLocationsForEveryScene = () => sceneEntries.every(([sceneId, initialScene]) => {
+      const latestScene = nodesRef.current[sceneId] ?? initialScene;
+      return latestScene.nodeType === 'scene' && hasSceneLocation(sceneId, latestScene);
+    });
     const hasComposedFrame = (sceneId: string) =>
       Object.values(nodesRef.current).some((candidate) =>
         candidate.nodeType === 'pollinations_image'
         && candidate.parentId === sceneId
         && getAssetKind(candidate) === 'scene_flux2_frame'
         && Boolean(candidate.imageUrl));
+    const hasCompleteSceneShotGrid = (sceneId: string) =>
+      findSceneShotNodes(nodesRef.current, sceneId).length >= 4;
     const hasDetailImages = (detailNodeId: string, assetKindPrefix: string) =>
       Object.values(nodesRef.current).some((candidate) =>
         candidate.nodeType === 'pollinations_image'
@@ -5979,7 +6103,12 @@ export const useNodeManagement = (
       const locationsNodeId = locationsNode
         ? Object.entries(nodesRef.current).find(([, node]) => node === locationsNode)?.[0]
         : undefined;
-      if (locationsNode?.inputValue && locationsNodeId && !hasDetailImages(locationsNodeId, 'location_asset')) {
+      if (
+        locationsNode?.inputValue
+        && locationsNodeId
+        && !hasLocationsForEveryScene()
+        && !hasDetailImages(locationsNodeId, 'location_asset')
+      ) {
         updateNode(timelineNodeId, { statusMessage: 'Генерируем общий набор локаций главы...' });
         await handleGenerateDetailAsset(locationsNodeId, timelineAssetPipeline, timelineTextModel);
         await waitForState();
@@ -6006,6 +6135,25 @@ export const useNodeManagement = (
       }
       if (isCancelled()) return;
 
+      const latestTimelineNode = nodesRef.current[timelineNodeId] ?? timelineNode;
+      if (!findChapterBackdropImageNode(nodesRef.current, timelineNodeId, latestTimelineNode)) {
+        updateNode(timelineNodeId, { statusMessage: 'Генерируем декоративный фон главы...' });
+        await handleGenerateChapterBackdrop(timelineNodeId);
+        await waitForState();
+
+        const timelineAfterBackdrop = nodesRef.current[timelineNodeId] ?? latestTimelineNode;
+        if (
+          timelineAfterBackdrop.pollinationsApiError
+          && !findChapterBackdropImageNode(nodesRef.current, timelineNodeId, timelineAfterBackdrop)
+        ) {
+          updateNode(timelineNodeId, {
+            pollinationsApiError: `Автодобор остановился на фоне главы: ${timelineAfterBackdrop.pollinationsApiError}`,
+          });
+          return;
+        }
+      }
+      if (isCancelled()) return;
+
       for (let index = 0; index < sceneEntries.length; index += 1) {
         if (isCancelled()) return;
         const [sceneId, initialScene] = sceneEntries[index];
@@ -6023,9 +6171,20 @@ export const useNodeManagement = (
 
         const sceneAfterLocation = nodesRef.current[sceneId] ?? latestScene;
         if (sceneAfterLocation.nodeType !== 'scene') continue;
-        if (!sceneAfterLocation.audioUrl) {
+        const narrationText = resolveSceneNarrationText(nodesRef.current, sceneAfterLocation);
+        const currentTtsSignature = narrationText
+          ? getSceneTtsGenerationSignature(narrationText, narrationSettings)
+          : '';
+        const storedTtsSignature = typeof sceneAfterLocation.metadata?.ttsGenerationSignature === 'string'
+          ? sceneAfterLocation.metadata.ttsGenerationSignature
+          : '';
+        const shouldRefreshAudio = !sceneAfterLocation.audioUrl
+          || Boolean(narrationText && storedTtsSignature !== currentTtsSignature);
+        if (shouldRefreshAudio) {
           updateNode(timelineNodeId, {
-            statusMessage: `Сцена ${index + 1}/${sceneEntries.length}: озвучиваем закадр...`,
+            statusMessage: sceneAfterLocation.audioUrl
+              ? `Сцена ${index + 1}/${sceneEntries.length}: обновляем озвучку после изменения голоса или TTS-текста...`
+              : `Сцена ${index + 1}/${sceneEntries.length}: озвучиваем закадр...`,
           });
           await handleGenerateSceneOmniVoiceNarration(sceneId);
           await waitForState();
@@ -6043,6 +6202,23 @@ export const useNodeManagement = (
           if (sceneAfterCompose?.pollinationsApiError && !hasComposedFrame(sceneId)) {
             updateNode(timelineNodeId, {
               pollinationsApiError: `Автодобор остановился на «${sceneAfterCompose.label}»: ${sceneAfterCompose.pollinationsApiError}`,
+            });
+            return;
+          }
+        }
+        if (isCancelled()) return;
+
+        if (!hasCompleteSceneShotGrid(sceneId)) {
+          updateNode(timelineNodeId, {
+            statusMessage: `Сцена ${index + 1}/${sceneEntries.length}: создаём четыре дополнительных плана...`,
+          });
+          await handleGenerateSceneShotGrid(sceneId);
+          await waitForState();
+
+          const sceneAfterShotGrid = nodesRef.current[sceneId];
+          if (sceneAfterShotGrid?.pollinationsApiError && !hasCompleteSceneShotGrid(sceneId)) {
+            updateNode(timelineNodeId, {
+              pollinationsApiError: `Автодобор остановился на дополнительных планах «${sceneAfterShotGrid.label}»: ${sceneAfterShotGrid.pollinationsApiError}`,
             });
             return;
           }
@@ -6071,11 +6247,14 @@ export const useNodeManagement = (
     }
   }, [
     handleComposeSceneFlux2,
+    handleGenerateChapterBackdrop,
     handleGenerateDetailAsset,
     handleGenerateSceneLocationAsset,
     handleGenerateSceneOmniVoiceNarration,
+    handleGenerateSceneShotGrid,
     handlePrepareNarrationTts,
     handleScenarioDetailClick,
+    narrationSettings,
     showNotice,
     updateNode,
   ]);

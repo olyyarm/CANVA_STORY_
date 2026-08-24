@@ -10,7 +10,6 @@ import { randomUUID } from 'node:crypto';
 const HOST = process.env.CANVA_VIDEO_RENDER_HOST || '127.0.0.1';
 const PORT = Number(process.env.CANVA_VIDEO_RENDER_PORT || 4317);
 const FFMPEG_PATH = process.env.FFMPEG_PATH || 'ffmpeg';
-const FFPROBE_PATH = process.env.FFPROBE_PATH || 'ffprobe';
 const JOB_TTL_MS = 60 * 60 * 1000;
 const MAX_JSON_BYTES = 1024 * 1024;
 const jobsRoot = join(tmpdir(), 'canva-story-video-renderer');
@@ -61,8 +60,8 @@ const runProcess = (command, args, options = {}) => new Promise((resolvePromise,
     if (options.job) options.job.process = undefined;
     const output = Buffer.concat(stdout).toString('utf8').trim();
     const errorOutput = Buffer.concat(stderr).toString('utf8').trim();
-    if (code === 0) {
-      resolvePromise({ stdout: output, stderr: errorOutput });
+    if (code === 0 || options.allowNonZero) {
+      resolvePromise({ stdout: output, stderr: errorOutput, code });
       return;
     }
     const details = errorOutput.split(/\r?\n/u).slice(-12).join('\n');
@@ -73,13 +72,9 @@ const runProcess = (command, args, options = {}) => new Promise((resolvePromise,
 let binaryCheckPromise;
 const checkBinaries = async () => {
   if (!binaryCheckPromise) {
-    binaryCheckPromise = Promise.all([
-      runProcess(FFMPEG_PATH, ['-version']),
-      runProcess(FFPROBE_PATH, ['-version']),
-    ]).then(([ffmpeg, ffprobe]) => ({
+    binaryCheckPromise = runProcess(FFMPEG_PATH, ['-version']).then((ffmpeg) => ({
       ok: true,
       ffmpeg: ffmpeg.stdout.split(/\r?\n/u)[0] || FFMPEG_PATH,
-      ffprobe: ffprobe.stdout.split(/\r?\n/u)[0] || FFPROBE_PATH,
     })).catch((error) => ({
       ok: false,
       error: error instanceof Error ? error.message : String(error),
@@ -142,15 +137,16 @@ const writeConcatList = async (job, paths, filename) => {
 };
 
 const probeDuration = async (path, job) => {
-  const result = await runProcess(FFPROBE_PATH, [
-    '-v', 'error',
-    '-show_entries', 'format=duration',
-    '-of', 'default=noprint_wrappers=1:nokey=1',
+  const result = await runProcess(FFMPEG_PATH, [
+    '-hide_banner', '-nostdin', '-i',
     path,
-  ], { cwd: job.directory, job });
-  const duration = Number.parseFloat(result.stdout.trim());
+  ], { cwd: job.directory, job, allowNonZero: true });
+  const match = result.stderr.match(/Duration:\s*(\d+):(\d+):(\d+(?:\.\d+)?)/u);
+  const duration = match
+    ? Number(match[1]) * 3600 + Number(match[2]) * 60 + Number(match[3])
+    : Number.NaN;
   if (!Number.isFinite(duration) || duration <= 0) {
-    throw new Error('FFprobe не смог определить длительность озвучки.');
+    throw new Error('FFmpeg не смог определить длительность озвучки.');
   }
   return duration;
 };

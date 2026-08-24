@@ -17,9 +17,7 @@ if not defined COMFY_PORT set "COMFY_PORT=8188"
 if not defined COMFY_ROOT set "COMFY_ROOT=D:\ComfyUI-Omnivorous-T2.6-P312-Cu126"
 if not defined CANVA_VIDEO_RENDER_PORT set "CANVA_VIDEO_RENDER_PORT=4317"
 if not defined FFMPEG_PATH set "FFMPEG_PATH=%COMFY_ROOT%\ComfyUI\custom_nodes\was-node-suite-comfyui\ffmpeg\ffmpeg.exe"
-if not defined FFPROBE_PATH set "FFPROBE_PATH=%COMFY_ROOT%\ComfyUI\custom_nodes\was-node-suite-comfyui\ffmpeg\ffprobe.exe"
 if not exist "%FFMPEG_PATH%" set "FFMPEG_PATH=ffmpeg"
-if not exist "%FFPROBE_PATH%" set "FFPROBE_PATH=ffprobe"
 if not defined JS_PACKAGE_MANAGER set "JS_PACKAGE_MANAGER=npm"
 if not defined JS_DEV_COMMAND set "JS_DEV_COMMAND=npm run dev --"
 rem =========================================================================
@@ -140,9 +138,8 @@ echo Waiting for FFmpeg renderer readiness...
 powershell -NoProfile -ExecutionPolicy Bypass -Command "$deadline = (Get-Date).AddSeconds(30); while ((Get-Date) -lt $deadline) { try { $response = Invoke-WebRequest -Uri 'http://127.0.0.1:%CANVA_VIDEO_RENDER_PORT%/health' -UseBasicParsing -TimeoutSec 5; if ($response.StatusCode -eq 200) { exit 0 } } catch {}; Start-Sleep -Seconds 1 }; exit 1"
 if errorlevel 1 (
   echo FFmpeg renderer did not start.
-  echo Check the FFmpeg renderer window and these paths:
+  echo Check the FFmpeg renderer window and this path:
   echo   FFMPEG_PATH=%FFMPEG_PATH%
-  echo   FFPROBE_PATH=%FFPROBE_PATH%
   pause
   exit /b 1
 )

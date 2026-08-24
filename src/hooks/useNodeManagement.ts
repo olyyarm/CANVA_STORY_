@@ -5790,11 +5790,16 @@ export const useNodeManagement = (
         ? scene.metadata.videoVisualGenerationSignature
         : '';
       const visualsNeedRefresh = storedVisualGenerationSignature !== visualGenerationSignature;
+      const rendererNeedsRefresh = Boolean(
+        options?.requireFfmpeg
+        && scene.metadata?.videoRenderer !== 'ffmpeg',
+      );
       const shouldBuildFromSources = canBuildFromSources && (
         Boolean(systemInsertNode?.imageUrl)
         || !scene.videoUrl
         || backdropNeedsRefresh
         || visualsNeedRefresh
+        || rendererNeedsRefresh
       );
       return {
         sceneId,
@@ -5808,7 +5813,13 @@ export const useNodeManagement = (
       };
     });
     const missingClipLabels = scenePlans
-      .filter((plan) => !plan.scene.videoUrl && !plan.canBuildFromSources)
+      .filter((plan) => {
+        const needsGeneratedClip = !plan.scene.videoUrl || Boolean(
+          options?.requireFfmpeg
+          && plan.scene.metadata?.videoRenderer !== 'ffmpeg',
+        );
+        return needsGeneratedClip && !plan.canBuildFromSources;
+      })
       .map((plan) => plan.scene.label);
     if (sceneEntries.length === 0) {
       updateNode(timelineNodeId, { pollinationsApiError: 'Сначала создайте сцены для таймлайна.' });

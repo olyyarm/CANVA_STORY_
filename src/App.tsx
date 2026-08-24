@@ -133,6 +133,10 @@ const resolveChapterWorkspaceId = (nodes: NodesState, sourceNodeId: string) => {
     sourceNode.nodeType === 'split_item'
     && chapterPattern.test(`${sourceNode.label}\n${sourceNode.inputValue ?? ''}`)
   ) return sourceNodeId;
+  if (
+    sourceNode.nodeType === 'script_detail'
+    && sourceNode.metadata?.sourceKind === 'chapter_plan'
+  ) return sourceNodeId;
 
   let currentId: string | undefined = sourceNodeId;
   const visited = new Set<string>();
@@ -142,6 +146,10 @@ const resolveChapterWorkspaceId = (nodes: NodesState, sourceNodeId: string) => {
     if (
       current?.nodeType === 'split_item'
       && chapterPattern.test(`${current.label}\n${current.inputValue ?? ''}`)
+    ) return currentId;
+    if (
+      current?.nodeType === 'script_detail'
+      && current.metadata?.sourceKind === 'chapter_plan'
     ) return currentId;
     currentId = current?.parentId;
   }
@@ -1076,11 +1084,19 @@ const App = () => {
       const nextNodes = { ...previousNodes };
       idsToDelete.forEach((nodeId) => {
         const node = nextNodes[nodeId];
-        const imageUrl = node?.imageUrl;
-        if (imageUrl?.startsWith('blob:')) URL.revokeObjectURL(imageUrl);
-        const localAssetId = typeof node?.metadata?.localAssetId === 'string' ? node.metadata.localAssetId : '';
-        if (localAssetId) void deleteLocalAsset(localAssetId);
-        void deleteLocalAsset(getNodeAssetId(projectRef.current.id, nodeId, 'image'));
+        [node?.imageUrl, node?.audioUrl, node?.videoUrl].forEach((assetUrl) => {
+          if (assetUrl?.startsWith('blob:')) URL.revokeObjectURL(assetUrl);
+        });
+        [
+          node?.metadata?.localAssetId,
+          node?.metadata?.localAudioAssetId,
+          node?.metadata?.localVideoAssetId,
+        ].forEach((assetId) => {
+          if (typeof assetId === 'string' && assetId) void deleteLocalAsset(assetId);
+        });
+        (['image', 'audio', 'video'] as const).forEach((kind) => {
+          void deleteLocalAsset(getNodeAssetId(projectRef.current.id, nodeId, kind));
+        });
         delete nextNodes[nodeId];
       });
       return nextNodes;

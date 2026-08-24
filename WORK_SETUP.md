@@ -8,7 +8,7 @@
 - Node.js 20 или новее.
 - LM Studio, если нужен локальный текстовый режим.
 - ComfyUI, если нужна генерация изображений, композ, OmniVoice или Gemini/Nano Banana через ComfyUI.
-- FFmpeg и FFprobe для фоновой сборки клипов и роликов. Батник автоматически использует их из сборки ComfyUI, если они там есть.
+- FFmpeg для фоновой сборки клипов и роликов. Батник автоматически использует его из сборки ComfyUI, если он там есть; отдельный FFprobe не нужен.
 - Модели и custom nodes ComfyUI, которые используются в текущем проекте.
 
 Минимально для нашего рабочего пайплайна обычно нужны:
@@ -39,7 +39,7 @@ npm ci
 
 Если на домашнем компьютере есть незапушенные изменения, их сначала нужно закоммитить и запушить. Иначе рабочий компьютер скачает старую версию.
 
-## 3. Настроить общий батник
+## 3. Настроить локальный конфиг запуска
 
 Откройте файл:
 
@@ -142,7 +142,7 @@ start_canva_story_full_stack.bat
 
 - проверьте отдельное окно `CANVA STORY FFmpeg renderer`;
 - откройте `http://localhost:4317/health` — ответ должен содержать `"ok": true`;
-- если FFmpeg лежит не внутри ComfyUI, задайте `FFMPEG_PATH` и `FFPROBE_PATH` в `start_canva_story_local_config.bat`.
+- если FFmpeg лежит не внутри ComfyUI, задайте `FFMPEG_PATH` в `start_canva_story_local_config.bat`.
 
 Если Gemini через ComfyUI падает с `missing required positional argument: model`, см.:
 

@@ -7,8 +7,9 @@ import {
 } from './types';
 
 const ASSET_DB_NAME = 'canva-story-assets';
-const ASSET_DB_VERSION = 1;
+const ASSET_DB_VERSION = 2;
 const ASSET_STORE_NAME = 'assets';
+const ASSET_PROJECT_KIND_INDEX = 'by-project-media-asset-kind';
 
 export type LocalAssetKind = AssetMediaKind;
 
@@ -86,8 +87,15 @@ const openAssetDb = () =>
 
     request.onupgradeneeded = () => {
       const db = request.result;
-      if (!db.objectStoreNames.contains(ASSET_STORE_NAME)) {
-        db.createObjectStore(ASSET_STORE_NAME, { keyPath: 'id' });
+      const store = db.objectStoreNames.contains(ASSET_STORE_NAME)
+        ? request.transaction?.objectStore(ASSET_STORE_NAME)
+        : db.createObjectStore(ASSET_STORE_NAME, { keyPath: 'id' });
+      if (store && !store.indexNames.contains(ASSET_PROJECT_KIND_INDEX)) {
+        store.createIndex(
+          ASSET_PROJECT_KIND_INDEX,
+          ['reference.projectId', 'reference.mediaKind', 'reference.assetKind'],
+          { unique: false },
+        );
       }
     };
 
@@ -166,6 +174,27 @@ export const loadLocalAssetRecord = async (assetId: string): Promise<LocalAssetR
   const asset = await withAssetStore<StoredAsset | undefined>('readonly', (store) => store.get(assetId));
   if (!asset?.blob) return null;
   return { reference: getStoredAssetReference(asset), blob: asset.blob };
+};
+
+export const loadProjectAssetRecords = async (
+  projectId: string,
+  mediaKind?: AssetMediaKind,
+  assetKind?: AssetKind,
+): Promise<LocalAssetRecord[]> => {
+  const assets = await withAssetStore<StoredAsset[]>('readonly', (store) => (
+    mediaKind && assetKind && store.indexNames.contains(ASSET_PROJECT_KIND_INDEX)
+      ? store.index(ASSET_PROJECT_KIND_INDEX).getAll(IDBKeyRange.only([projectId, mediaKind, assetKind]))
+      : store.getAll()
+  ));
+  return assets
+    .filter((asset) => {
+      if (!asset?.blob) return false;
+      const reference = getStoredAssetReference(asset);
+      return reference.projectId === projectId
+        && (!mediaKind || reference.mediaKind === mediaKind)
+        && (!assetKind || reference.assetKind === assetKind);
+    })
+    .map((asset) => ({ reference: getStoredAssetReference(asset), blob: asset.blob }));
 };
 
 export const saveImportedAssetBlob = async (blob: Blob, reference: AssetReference) => {

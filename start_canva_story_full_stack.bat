@@ -15,6 +15,11 @@ if not defined LMS set "LMS=%USERPROFILE%\.lmstudio\bin\lms.exe"
 if not defined LM_STUDIO_EXE set "LM_STUDIO_EXE=D:\SD\LM Studio\LM Studio.exe"
 if not defined COMFY_PORT set "COMFY_PORT=8188"
 if not defined COMFY_ROOT set "COMFY_ROOT=D:\ComfyUI-Omnivorous-T2.6-P312-Cu126"
+if not defined CANVA_VIDEO_RENDER_PORT set "CANVA_VIDEO_RENDER_PORT=4317"
+if not defined FFMPEG_PATH set "FFMPEG_PATH=%COMFY_ROOT%\ComfyUI\custom_nodes\was-node-suite-comfyui\ffmpeg\ffmpeg.exe"
+if not defined FFPROBE_PATH set "FFPROBE_PATH=%COMFY_ROOT%\ComfyUI\custom_nodes\was-node-suite-comfyui\ffmpeg\ffprobe.exe"
+if not exist "%FFMPEG_PATH%" set "FFMPEG_PATH=ffmpeg"
+if not exist "%FFPROBE_PATH%" set "FFPROBE_PATH=ffprobe"
 if not defined JS_PACKAGE_MANAGER set "JS_PACKAGE_MANAGER=npm"
 if not defined JS_DEV_COMMAND set "JS_DEV_COMMAND=npm run dev --"
 rem =========================================================================
@@ -22,6 +27,7 @@ rem =========================================================================
 set "CANVA_URL=http://localhost:%CANVA_PORT%/CANVA_STORY_/"
 set "LM_STUDIO_URL=http://localhost:%LM_STUDIO_PORT%"
 set "COMFY_URL=http://localhost:%COMFY_PORT%"
+set "VIDEO_RENDERER_URL=http://localhost:%CANVA_VIDEO_RENDER_PORT%"
 set "COMFY_PY=%COMFY_ROOT%\python_embeded\python.exe"
 
 echo Starting CANVA STORY local stack...
@@ -32,16 +38,19 @@ echo LM Studio:
 echo   %LM_STUDIO_URL%
 echo ComfyUI:
 echo   %COMFY_URL%
+echo FFmpeg renderer:
+echo   %VIDEO_RENDERER_URL%
 echo.
 echo Config:
 if exist "%CANVA_LOCAL_CONFIG%" echo   LOCAL_CONFIG=%CANVA_LOCAL_CONFIG%
 echo   LM_STUDIO_EXE=%LM_STUDIO_EXE%
 echo   COMFY_ROOT=%COMFY_ROOT%
+echo   FFMPEG_PATH=%FFMPEG_PATH%
 echo   JS_PACKAGE_MANAGER=%JS_PACKAGE_MANAGER%
 echo   JS_DEV_COMMAND=%JS_DEV_COMMAND%
 echo.
 
-echo [1/3] Preparing LM Studio server with CORS...
+echo [1/4] Preparing LM Studio server with CORS...
 if not exist "%LMS%" (
   echo LM Studio CLI was not found:
   echo   %LMS%
@@ -74,7 +83,7 @@ echo.
 "%LMS%" server status
 echo.
 
-echo [2/3] Preparing ComfyUI with CORS...
+echo [2/4] Preparing ComfyUI with CORS...
 if not exist "%COMFY_PY%" (
   echo ComfyUI Python was not found:
   echo   %COMFY_PY%
@@ -85,7 +94,7 @@ if not exist "%COMFY_PY%" (
 powershell -NoProfile -ExecutionPolicy Bypass -Command "$listener = Get-NetTCPConnection -LocalPort %COMFY_PORT% -State Listen -ErrorAction SilentlyContinue; if (-not $listener) { exit 0 }; try { $response = Invoke-WebRequest -Uri 'http://127.0.0.1:%COMFY_PORT%/system_stats' -Headers @{ Origin = 'https://olyyarm.github.io' } -UseBasicParsing -TimeoutSec 5; if ($response.Headers['Access-Control-Allow-Origin']) { exit 2 } } catch {}; exit 1"
 if errorlevel 2 (
   echo ComfyUI is already running with CORS.
-  goto canva_story_start
+  goto video_renderer_start
 )
 if errorlevel 1 (
   echo Port %COMFY_PORT% is busy, but the running ComfyUI does not expose CORS.
@@ -109,9 +118,38 @@ if errorlevel 1 (
 )
 echo.
 
+:video_renderer_start
+echo.
+echo [3/4] Preparing local FFmpeg renderer...
+powershell -NoProfile -ExecutionPolicy Bypass -Command "$listener = Get-NetTCPConnection -LocalPort %CANVA_VIDEO_RENDER_PORT% -State Listen -ErrorAction SilentlyContinue; if (-not $listener) { exit 0 }; try { $response = Invoke-WebRequest -Uri 'http://127.0.0.1:%CANVA_VIDEO_RENDER_PORT%/health' -UseBasicParsing -TimeoutSec 5; if ($response.StatusCode -eq 200) { exit 2 } } catch {}; exit 1"
+if errorlevel 2 (
+  echo FFmpeg renderer is already running.
+  goto canva_story_start
+)
+if errorlevel 1 (
+  echo Port %CANVA_VIDEO_RENDER_PORT% is busy, but it is not the CANVA STORY FFmpeg renderer.
+  echo Close the process using this port, then run this file again.
+  pause
+  exit /b 1
+)
+
+echo Opening FFmpeg renderer in a separate window...
+start "CANVA STORY FFmpeg renderer" /D "%~dp0" cmd.exe /d /k "%JS_PACKAGE_MANAGER% run video-renderer"
+
+echo Waiting for FFmpeg renderer readiness...
+powershell -NoProfile -ExecutionPolicy Bypass -Command "$deadline = (Get-Date).AddSeconds(30); while ((Get-Date) -lt $deadline) { try { $response = Invoke-WebRequest -Uri 'http://127.0.0.1:%CANVA_VIDEO_RENDER_PORT%/health' -UseBasicParsing -TimeoutSec 5; if ($response.StatusCode -eq 200) { exit 0 } } catch {}; Start-Sleep -Seconds 1 }; exit 1"
+if errorlevel 1 (
+  echo FFmpeg renderer did not start.
+  echo Check the FFmpeg renderer window and these paths:
+  echo   FFMPEG_PATH=%FFMPEG_PATH%
+  echo   FFPROBE_PATH=%FFPROBE_PATH%
+  pause
+  exit /b 1
+)
+
 :canva_story_start
 echo.
-echo [3/3] Starting CANVA STORY...
+echo [4/4] Starting CANVA STORY...
 if not exist "node_modules\" (
   echo node_modules was not found. Installing dependencies first...
   call "%JS_PACKAGE_MANAGER%" install
@@ -147,6 +185,6 @@ echo Opening CANVA STORY in your browser...
 start "" "%CANVA_URL%"
 echo.
 echo Local stack is ready.
-echo Keep the ComfyUI and CANVA STORY windows open while working.
+echo Keep the ComfyUI, FFmpeg renderer, and CANVA STORY windows open while working.
 echo.
 pause

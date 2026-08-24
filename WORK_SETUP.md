@@ -8,6 +8,7 @@
 - Node.js 20 или новее.
 - LM Studio, если нужен локальный текстовый режим.
 - ComfyUI, если нужна генерация изображений, композ, OmniVoice или Gemini/Nano Banana через ComfyUI.
+- FFmpeg и FFprobe для фоновой сборки клипов и роликов. Батник автоматически использует их из сборки ComfyUI, если они там есть.
 - Модели и custom nodes ComfyUI, которые используются в текущем проекте.
 
 Минимально для нашего рабочего пайплайна обычно нужны:
@@ -67,6 +68,7 @@ start_canva_story_full_stack.bat
 
 - LM Studio server на `http://localhost:1234`;
 - ComfyUI на `http://localhost:8188` с CORS;
+- локальный FFmpeg renderer на `http://localhost:4317`;
 - CANVA STORY на `http://localhost:5173/CANVA_STORY_/`.
 
 ## 4. Настройки внутри CANVA STORY
@@ -111,6 +113,12 @@ start_canva_story_full_stack.bat
 - убедитесь, что модель скачана;
 - запустите `start_canva_story_full_stack.bat` снова;
 - проверьте endpoint `http://localhost:1234`.
+
+Если кнопка «Собрать главу целиком» сообщает, что FFmpeg renderer не запустился:
+
+- проверьте отдельное окно `CANVA STORY FFmpeg renderer`;
+- откройте `http://localhost:4317/health` — ответ должен содержать `"ok": true`;
+- если FFmpeg лежит не внутри ComfyUI, задайте `FFMPEG_PATH` и `FFPROBE_PATH` в `start_canva_story_local_config.bat`.
 
 Если Gemini через ComfyUI падает с `missing required positional argument: model`, см.:
 

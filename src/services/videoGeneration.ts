@@ -1,3 +1,9 @@
+import {
+  GeneratedVideo,
+  tryBuildChapterVideoWithFfmpeg,
+  tryBuildStillImagesVideoClipWithFfmpeg,
+} from './nativeVideoRenderer';
+
 const VIDEO_WIDTH = 1280;
 const VIDEO_HEIGHT = 720;
 const VIDEO_FPS = 24;
@@ -204,18 +210,34 @@ const startRecorder = async (recorder: MediaRecorder) => {
 export const buildStillImagesVideoClip = async (
   imageUrls: string[],
   audioUrl: string,
-  options?: AbortSignal | { signal?: AbortSignal; backgroundImageUrl?: string },
-) => {
-  if (typeof MediaRecorder === 'undefined') {
-    throw new Error('Браузер не поддерживает MediaRecorder, поэтому не может собрать клип.');
-  }
+  options?: AbortSignal | {
+    signal?: AbortSignal;
+    backgroundImageUrl?: string;
+    requireFfmpeg?: boolean;
+  },
+): Promise<GeneratedVideo> => {
   const signal = options && 'aborted' in options ? options : options?.signal;
   const backgroundImageUrl = options && !('aborted' in options) ? options.backgroundImageUrl : undefined;
+  const requireFfmpeg = options && !('aborted' in options) ? options.requireFfmpeg === true : false;
   const usableImageUrls = imageUrls.filter(Boolean);
   if (usableImageUrls.length === 0) {
     throw new Error('Нет картинки для сборки 16:9 клипа.');
   }
   throwIfAborted(signal);
+
+  const nativeVideo = await tryBuildStillImagesVideoClipWithFfmpeg(
+    usableImageUrls,
+    audioUrl,
+    { signal, backgroundImageUrl },
+  );
+  if (nativeVideo) return nativeVideo;
+  if (requireFfmpeg) {
+    throw new Error('Локальный FFmpeg renderer недоступен. Запустите CANVA STORY через start_canva_story_full_stack.bat.');
+  }
+
+  if (typeof MediaRecorder === 'undefined') {
+    throw new Error('FFmpeg-сервис недоступен, а браузер не поддерживает MediaRecorder.');
+  }
   ensureVisibleDocument();
 
   const [images, backgroundImage, audioResponse] = await Promise.all([
@@ -334,7 +356,11 @@ export const buildStillImagesVideoClip = async (
     frameTimer = window.setInterval(paintFrame, 1_000 / VIDEO_FPS);
 
     const blob = await finished;
-    return URL.createObjectURL(blob);
+    return {
+      url: URL.createObjectURL(blob),
+      format: 'webm',
+      renderer: 'browser',
+    };
   } finally {
     signal?.removeEventListener('abort', handleAbort);
     document.removeEventListener('visibilitychange', handleVisibilityChange);
@@ -472,14 +498,22 @@ const playVideoToEnd = async (
 export const buildChapterVideoFromClips = async (
   clipUrls: string[],
   signal?: AbortSignal,
-) => {
-  if (typeof MediaRecorder === 'undefined') {
-    throw new Error('Браузер не поддерживает MediaRecorder, поэтому не может собрать общий ролик.');
-  }
+  options?: { requireFfmpeg?: boolean },
+): Promise<GeneratedVideo> => {
   if (clipUrls.length === 0) {
     throw new Error('Нет готовых клипов для сборки общего ролика.');
   }
   throwIfAborted(signal);
+
+  const nativeVideo = await tryBuildChapterVideoWithFfmpeg(clipUrls, signal);
+  if (nativeVideo) return nativeVideo;
+  if (options?.requireFfmpeg) {
+    throw new Error('Локальный FFmpeg renderer недоступен. Запустите CANVA STORY через start_canva_story_full_stack.bat.');
+  }
+
+  if (typeof MediaRecorder === 'undefined') {
+    throw new Error('FFmpeg-сервис недоступен, а браузер не поддерживает MediaRecorder.');
+  }
   ensureVisibleDocument();
 
   const canvas = document.createElement('canvas');
@@ -599,7 +633,11 @@ export const buildChapterVideoFromClips = async (
 
     stopRecorder(recorder);
     const blob = await finished;
-    return URL.createObjectURL(blob);
+    return {
+      url: URL.createObjectURL(blob),
+      format: 'webm',
+      renderer: 'browser',
+    };
   } finally {
     signal?.removeEventListener('abort', handleAbort);
     document.removeEventListener('visibilitychange', handleVisibilityChange);

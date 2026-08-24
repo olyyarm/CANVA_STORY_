@@ -70,8 +70,9 @@ interface NodeRendererProps {
   onBuildSceneVideoClip: (nodeId: string) => Promise<void>;
   onGenerateChapterBackdrop: (nodeId: string) => Promise<void>;
   onGenerateTimelineMissingAssets: (nodeId: string) => Promise<void>;
+  onCompleteChapter: (nodeId: string) => Promise<void>;
   onBuildChapterSceneClips: (nodeId: string) => Promise<void>;
-  onBuildChapterVideo: (nodeId: string) => Promise<void>;
+  onBuildChapterVideo: (nodeId: string, options?: { requireFfmpeg?: boolean }) => Promise<void>;
   onBuildSeasonVideo: (nodeId: string) => Promise<void>;
   onCopyToClipboard: (text: string) => void;
   onRegenerateImageNode: (nodeId: string) => Promise<void>;
@@ -521,6 +522,7 @@ const NodeRenderer: React.FC<NodeRendererProps> = ({
   onBuildSceneVideoClip,
   onGenerateChapterBackdrop,
   onGenerateTimelineMissingAssets,
+  onCompleteChapter,
   onBuildChapterSceneClips,
   onBuildChapterVideo,
   onBuildSeasonVideo,
@@ -655,7 +657,8 @@ const NodeRenderer: React.FC<NodeRendererProps> = ({
     && (node.imagePipeline === 'z_image_turbo' || node.imagePipeline === 'ernie_image_turbo')
     ? node.imagePipeline
     : 'sdxl';
-  const safeDownloadName = `${node.label.replace(/[^\p{L}\p{N}_-]+/gu, '-').replace(/^-+|-+$/gu, '') || 'scene'}.webm`;
+  const videoFormat = node.metadata?.videoFormat === 'mp4' ? 'mp4' : 'webm';
+  const safeDownloadName = `${node.label.replace(/[^\p{L}\p{N}_-]+/gu, '-').replace(/^-+|-+$/gu, '') || 'scene'}.${videoFormat}`;
   const sceneShotNodes = node.nodeType === 'scene' ? findSceneShotImageNodes(allNodes, id) : [];
   const timelineScenes = node.nodeType === 'chapter_timeline' ? getSortedTimelineScenes(allNodes, node) : [];
   const timelineBackdrop = node.nodeType === 'chapter_timeline'
@@ -1720,7 +1723,7 @@ const NodeRenderer: React.FC<NodeRendererProps> = ({
             {node.videoUrl && (
               <div className="node-video-player" onMouseDown={stopMouseDown}>
                 <video controls src={node.videoUrl} />
-                <a className="node-download-link" href={node.videoUrl} download={safeDownloadName}>Скачать WebM</a>
+                <a className="node-download-link" href={node.videoUrl} download={safeDownloadName}>Скачать {videoFormat.toUpperCase()}</a>
               </div>
             )}
           </>
@@ -1808,6 +1811,18 @@ const NodeRenderer: React.FC<NodeRendererProps> = ({
               <span title={timelineBackdrop?.imageUrl ? 'Клипы с текущей версией фона главы' : 'Фон главы ещё не создан'}>
                 <strong>{timelineBackdropAppliedCount}/{timelineStats.clips}</strong> с фоном
               </span>
+              <button
+                type="button"
+                className={`node-primary-button chapter-timeline__refresh${node.isLoadingVideo ? ' node-primary-button--cancel' : ''}`}
+                onMouseDown={stopMouseDown}
+                onClick={(event) => runWithoutDrag(event, () => node.isLoadingVideo
+                  ? onCancelGeneration(id)
+                  : void onCompleteChapter(id))}
+                disabled={Boolean(node.isLoading || node.isLoadingImage || node.isLoadingAudio || timelineStats.scenes === 0)}
+                title="Добрать недостающие элементы, собрать клипы сцен и общий MP4 главы"
+              >
+                {node.isLoadingVideo ? 'Остановить сборку' : 'Собрать главу целиком'}
+              </button>
               <button
                 type="button"
                 className={`node-secondary-button chapter-timeline__refresh${node.isLoadingImage ? ' node-secondary-button--cancel' : ''}`}
@@ -2135,7 +2150,7 @@ const NodeRenderer: React.FC<NodeRendererProps> = ({
             {node.videoUrl ? (
               <div className="node-video-player" onMouseDown={stopMouseDown}>
                 <video controls src={node.videoUrl} />
-                <a className="node-download-link" href={node.videoUrl} download={safeDownloadName}>Скачать общий WebM</a>
+                <a className="node-download-link" href={node.videoUrl} download={safeDownloadName}>Скачать общий {videoFormat.toUpperCase()}</a>
               </div>
             ) : (
               <div className="chapter-timeline__empty">Ролик пока не собран.</div>

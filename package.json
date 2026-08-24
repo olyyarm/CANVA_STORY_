@@ -6,6 +6,7 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
+    "video-renderer": "node server/video-renderer.mjs",
     "build": "tsc -b && vite build",
     "check:comfy-gemini": "node scripts/check-comfy-gemini-workflow.mjs",
     "lint": "eslint .",

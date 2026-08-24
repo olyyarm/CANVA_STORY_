@@ -468,6 +468,7 @@ const App = () => {
     handleBuildSceneVideoClip,
     handleGenerateChapterBackdrop,
     handleGenerateTimelineMissingAssets,
+    handleCompleteChapter,
     handleBuildChapterSceneClips,
     handleBuildChapterVideo,
     handleEnsureChapterCollector,
@@ -2059,6 +2060,7 @@ const App = () => {
               onBuildSceneVideoClip={handleBuildSceneVideoClip}
               onGenerateChapterBackdrop={handleGenerateChapterBackdrop}
               onGenerateTimelineMissingAssets={handleGenerateTimelineMissingAssets}
+              onCompleteChapter={handleCompleteChapter}
               onBuildChapterSceneClips={handleBuildChapterSceneClips}
               onBuildChapterVideo={handleBuildChapterVideo}
               onBuildSeasonVideo={handleBuildSeasonVideo}

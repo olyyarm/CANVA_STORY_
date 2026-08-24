@@ -79,6 +79,7 @@ import {
 } from '../types';
 import { extractTextFromDocumentFile } from '../pdfImport';
 import { buildChapterVideoFromClips, buildStillImagesVideoClip } from '../services/videoGeneration';
+import { isNativeVideoRendererAvailable } from '../services/nativeVideoRenderer';
 import { buildSceneShotGridPrompt, splitSceneShotGrid } from '../services/sceneShotGrid';
 import {
   CHARACTER_REGISTRY_SOURCE_KIND,
@@ -171,8 +172,9 @@ interface UseNodeManagementReturn {
   handleBuildSceneVideoClip: (sceneNodeId: string) => Promise<void>;
   handleGenerateChapterBackdrop: (timelineNodeId: string) => Promise<void>;
   handleGenerateTimelineMissingAssets: (timelineNodeId: string) => Promise<void>;
+  handleCompleteChapter: (timelineNodeId: string) => Promise<void>;
   handleBuildChapterSceneClips: (timelineNodeId: string) => Promise<void>;
-  handleBuildChapterVideo: (timelineNodeId: string) => Promise<void>;
+  handleBuildChapterVideo: (timelineNodeId: string, options?: { requireFfmpeg?: boolean }) => Promise<void>;
   handleEnsureChapterCollector: () => void;
   handleBuildSeasonVideo: (collectorNodeId: string) => Promise<void>;
   handleCopyToClipboard: (textToCopy: string) => Promise<void>;
@@ -933,6 +935,7 @@ const upsertVideoOutputNode = (
   parentId: string,
   videoUrl: string,
   label = 'Ролик главы',
+  videoFormat: 'mp4' | 'webm' = 'webm',
 ) => {
   const parentNode = previousNodes[parentId];
   if (!parentNode) return previousNodes;
@@ -962,7 +965,7 @@ const upsertVideoOutputNode = (
         ...existing?.[1].metadata,
         sourceKind: label.includes('сезона') ? 'season_video' : 'chapter_video',
         sourceTimelineId: parentId,
-        videoFormat: 'webm',
+        videoFormat,
         videoAspectRatio: '16:9',
         videoGeneratedAt: new Date().toISOString(),
       },
@@ -5507,7 +5510,7 @@ export const useNodeManagement = (
         ...sceneShotUrls,
         ...(systemInsertNode?.imageUrl ? [systemInsertNode.imageUrl] : []),
       ];
-      const videoUrl = await buildStillImagesVideoClip(clipImageUrls, sceneNode.audioUrl, {
+      const generatedVideo = await buildStillImagesVideoClip(clipImageUrls, sceneNode.audioUrl, {
         signal: controller.signal,
         backgroundImageUrl: chapterBackdropNode?.imageUrl,
       });
@@ -5523,12 +5526,13 @@ export const useNodeManagement = (
           ...previousNodes,
           [sceneNodeId]: {
             ...currentNode,
-            videoUrl,
+            videoUrl: generatedVideo.url,
             isLoadingVideo: false,
             statusMessage: 'Клип 16:9 готов.',
             metadata: {
               ...currentNode.metadata,
-              videoFormat: 'webm',
+              videoFormat: generatedVideo.format,
+              videoRenderer: generatedVideo.renderer,
               videoAspectRatio: '16:9',
               videoFrameSource: frameNode.label,
               sceneShotCountUsed: sceneShotUrls.length,
@@ -5662,7 +5666,7 @@ export const useNodeManagement = (
           ...shotUrls,
           ...(plan.systemInsertNode?.imageUrl ? [plan.systemInsertNode.imageUrl] : []),
         ];
-        const videoUrl = await buildStillImagesVideoClip(imageUrls, plan.scene.audioUrl, {
+        const generatedVideo = await buildStillImagesVideoClip(imageUrls, plan.scene.audioUrl, {
           signal: controller.signal,
           backgroundImageUrl: chapterBackdropNode?.imageUrl,
         });
@@ -5678,12 +5682,13 @@ export const useNodeManagement = (
             ...previousNodes,
             [plan.sceneId]: {
               ...currentSceneNode,
-              videoUrl,
+              videoUrl: generatedVideo.url,
               isLoadingVideo: false,
               statusMessage: 'Клип 16:9 готов.',
               metadata: {
                 ...currentSceneNode.metadata,
-                videoFormat: 'webm',
+                videoFormat: generatedVideo.format,
+                videoRenderer: generatedVideo.renderer,
                 videoAspectRatio: '16:9',
                 videoFrameSource: plan.frameNode.label,
                 sceneShotCountUsed: shotUrls.length,
@@ -5731,7 +5736,10 @@ export const useNodeManagement = (
     }
   }, [setNodes, showNotice, updateNode]);
 
-  const handleBuildChapterVideo = useCallback(async (timelineNodeId: string) => {
+  const handleBuildChapterVideo = useCallback(async (
+    timelineNodeId: string,
+    options?: { requireFfmpeg?: boolean },
+  ) => {
     const currentNodes = nodesRef.current;
     const timelineNode = currentNodes[timelineNodeId];
     if (!timelineNode || timelineNode.nodeType !== 'chapter_timeline' || timelineNode.isLoadingVideo) return;
@@ -5842,11 +5850,12 @@ export const useNodeManagement = (
             ...shotUrls,
             ...(plan.systemInsertNode?.imageUrl ? [plan.systemInsertNode.imageUrl] : []),
           ];
-          const sceneClipUrl = await buildStillImagesVideoClip(imageUrls, plan.scene.audioUrl, {
+          const generatedSceneClip = await buildStillImagesVideoClip(imageUrls, plan.scene.audioUrl, {
             signal: controller.signal,
             backgroundImageUrl: chapterBackdropNode?.imageUrl,
+            requireFfmpeg: options?.requireFfmpeg,
           });
-          clipUrls.push(sceneClipUrl);
+          clipUrls.push(generatedSceneClip.url);
           setNodes((previousNodes) => {
             const currentSceneNode = previousNodes[plan.sceneId];
             if (!currentSceneNode) return previousNodes;
@@ -5855,10 +5864,11 @@ export const useNodeManagement = (
               ...previousNodes,
               [plan.sceneId]: {
                 ...currentSceneNode,
-                videoUrl: sceneClipUrl,
+                videoUrl: generatedSceneClip.url,
                 metadata: {
                   ...currentSceneNode.metadata,
-                  videoFormat: 'webm',
+                  videoFormat: generatedSceneClip.format,
+                  videoRenderer: generatedSceneClip.renderer,
                   videoAspectRatio: '16:9',
                   videoFrameSource: plan.frameNode.label,
                   sceneShotCountUsed: shotUrls.length,
@@ -5879,11 +5889,21 @@ export const useNodeManagement = (
         statusMessage: `Склеиваем общий ролик главы из ${clipUrls.length} клипов...`,
       });
 
-      const videoUrl = await buildChapterVideoFromClips(clipUrls, controller.signal);
+      const generatedChapterVideo = await buildChapterVideoFromClips(
+        clipUrls,
+        controller.signal,
+        { requireFfmpeg: options?.requireFfmpeg },
+      );
       setNodes((previousNodes) => {
         const currentNode = previousNodes[timelineNodeId];
         if (!currentNode) return previousNodes;
-        const withVideoNode = upsertVideoOutputNode(previousNodes, timelineNodeId, videoUrl);
+        const withVideoNode = upsertVideoOutputNode(
+          previousNodes,
+          timelineNodeId,
+          generatedChapterVideo.url,
+          'Ролик главы',
+          generatedChapterVideo.format,
+        );
         return {
           ...withVideoNode,
           [timelineNodeId]: {
@@ -5895,6 +5915,7 @@ export const useNodeManagement = (
               chapterClipCount: clipUrls.length,
               chapterSystemInsertCount: systemInsertCount,
               ...(chapterBackdropNode ? { chapterBackdropSource: chapterBackdropNode.label } : {}),
+              videoRenderer: generatedChapterVideo.renderer,
               videoGeneratedAt: new Date().toISOString(),
             },
           },
@@ -6364,6 +6385,60 @@ export const useNodeManagement = (
     updateNode,
   ]);
 
+  const handleCompleteChapter = useCallback(async (timelineNodeId: string) => {
+    const timelineNode = nodesRef.current[timelineNodeId];
+    if (!timelineNode || timelineNode.nodeType !== 'chapter_timeline' || timelineNode.isLoadingVideo) return;
+    const requestId = `complete-chapter:${timelineNodeId}`;
+    if (activeRequests.current.has(requestId)) return;
+    const controller = new AbortController();
+    activeRequests.current.set(requestId, controller);
+
+    try {
+      updateNode(timelineNodeId, {
+        pollinationsApiError: undefined,
+        statusMessage: 'Проверяем локальный FFmpeg renderer...',
+      });
+      if (!await isNativeVideoRendererAvailable()) {
+        const message = 'Локальный FFmpeg renderer недоступен. Запустите CANVA STORY через start_canva_story_full_stack.bat.';
+        updateNode(timelineNodeId, { pollinationsApiError: message, statusMessage: undefined });
+        showNotice('error', message);
+        return;
+      }
+      if (controller.signal.aborted) return;
+
+      updateNode(timelineNodeId, {
+        pollinationsApiError: undefined,
+        statusMessage: 'Полная сборка главы: проверяем недостающие элементы...',
+      });
+      await handleGenerateTimelineMissingAssets(timelineNodeId);
+      if (controller.signal.aborted) return;
+
+      const timelineAfterAssets = nodesRef.current[timelineNodeId];
+      if (!timelineAfterAssets || timelineAfterAssets.nodeType !== 'chapter_timeline') return;
+      if (timelineAfterAssets.pollinationsApiError) {
+        showNotice('error', 'Полная сборка остановлена: не все элементы главы удалось подготовить.');
+        return;
+      }
+
+      updateNode(timelineNodeId, {
+        statusMessage: 'Все элементы готовы. FFmpeg собирает клипы и ролик главы...',
+      });
+      await handleBuildChapterVideo(timelineNodeId, { requireFfmpeg: true });
+      if (controller.signal.aborted) return;
+
+      const completedVideo = Object.values(nodesRef.current).find((candidate) =>
+        candidate.nodeType === 'video_output'
+        && candidate.parentId === timelineNodeId
+        && Boolean(candidate.videoUrl));
+      const timelineAfterVideo = nodesRef.current[timelineNodeId];
+      if (completedVideo?.videoUrl && !timelineAfterVideo?.pollinationsApiError) {
+        showNotice('success', 'Глава полностью собрана: ассеты, озвучка, клипы и общий MP4 готовы.');
+      }
+    } finally {
+      activeRequests.current.delete(requestId);
+    }
+  }, [handleBuildChapterVideo, handleGenerateTimelineMissingAssets, showNotice, updateNode]);
+
   const handleBuildSeasonVideo = useCallback(async (collectorNodeId: string) => {
     const currentNodes = nodesRef.current;
     const collectorNode = currentNodes[collectorNodeId];
@@ -6417,12 +6492,18 @@ export const useNodeManagement = (
       const videoUrls = chapterPlans
         .map((plan) => plan.videoNode?.videoUrl)
         .filter((videoUrl): videoUrl is string => Boolean(videoUrl));
-      const videoUrl = await buildChapterVideoFromClips(videoUrls, controller.signal);
+      const generatedSeasonVideo = await buildChapterVideoFromClips(videoUrls, controller.signal);
 
       setNodes((previousNodes) => {
         const currentNode = previousNodes[collectorNodeId];
         if (!currentNode) return previousNodes;
-        const withVideoNode = upsertVideoOutputNode(previousNodes, collectorNodeId, videoUrl, 'Финальный ролик сезона');
+        const withVideoNode = upsertVideoOutputNode(
+          previousNodes,
+          collectorNodeId,
+          generatedSeasonVideo.url,
+          'Финальный ролик сезона',
+          generatedSeasonVideo.format,
+        );
         return {
           ...withVideoNode,
           [collectorNodeId]: {
@@ -6434,6 +6515,7 @@ export const useNodeManagement = (
               ...currentNode.metadata,
               chapterCount: chapterPlans.length,
               readyChapterVideoCount: chapterPlans.length,
+              videoRenderer: generatedSeasonVideo.renderer,
               videoGeneratedAt: new Date().toISOString(),
             },
           },
@@ -6734,6 +6816,7 @@ export const useNodeManagement = (
     activeRequests.current.get(`scene-video:${nodeId}`)?.abort();
     activeRequests.current.get(`chapter-backdrop:${nodeId}`)?.abort();
     activeRequests.current.get(`timeline-missing:${nodeId}`)?.abort();
+    activeRequests.current.get(`complete-chapter:${nodeId}`)?.abort();
     activeRequests.current.get(`chapter-scene-clips:${nodeId}`)?.abort();
     activeRequests.current.get(`chapter-video:${nodeId}`)?.abort();
     if (speakingNodeIdRef.current === nodeId) {
@@ -6819,6 +6902,7 @@ export const useNodeManagement = (
     handleBuildSceneVideoClip,
     handleGenerateChapterBackdrop,
     handleGenerateTimelineMissingAssets,
+    handleCompleteChapter,
     handleBuildChapterSceneClips,
     handleBuildChapterVideo,
     handleEnsureChapterCollector,

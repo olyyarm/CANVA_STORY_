@@ -7,9 +7,11 @@
   useState,
 } from 'react';
 import {
+  DetailAssetImageProvider,
   Flux2CharacterReference,
   generateComfyFlux2ComposeImage,
   generateComfyOpenAiGptImage2LowImage,
+  generateComfyNanoBanana2LiteImage,
   generateComfyNanoBanana2LiteComposeImage,
   generateComfyNanoBanana2LiteShotGrid,
   generateComfyOmniVoiceAudio,
@@ -128,6 +130,7 @@ interface UseNodeManagementReturn {
   handleTogglePromptSnippet: (nodeId: string) => void;
   handleModelChange: (event: React.ChangeEvent<HTMLSelectElement>, nodeId: string) => void;
   handleImagePipelineChange: (event: React.ChangeEvent<HTMLSelectElement>, nodeId: string) => void;
+  handleDetailAssetImageProviderChange: (event: React.ChangeEvent<HTMLSelectElement>, nodeId: string) => void;
   handleTimelineAssetPipelineChange: (event: React.ChangeEvent<HTMLSelectElement>, nodeId: string) => void;
   handleTimelineSystemInsertPipelineChange: (event: React.ChangeEvent<HTMLSelectElement>, nodeId: string) => void;
   handleTimelineMasterChange: (event: React.ChangeEvent<HTMLInputElement>, nodeId: string) => void;
@@ -150,15 +153,10 @@ interface UseNodeManagementReturn {
   handleBuildCharacterMemory: (heroesNodeId: string) => Promise<void>;
   handleBuildSceneDialogue: (sceneNodeId: string) => Promise<void>;
   handleGenerateScenePrompt: (sceneNodeId: string) => Promise<void>;
-  handleGenerateSceneLocationAsset: (sceneNodeId: string, pipelineOverride?: ImagePipeline, modelOverride?: string) => Promise<void>;
+  handleGenerateSceneLocationAsset: (sceneNodeId: string, pipelineOverride?: ImagePipeline, modelOverride?: string, providerOverride?: DetailAssetImageProvider) => Promise<void>;
   handleGenerateSceneCharacterLayer: (sceneNodeId: string) => Promise<void>;
   handleComposeSceneFlux2: (sceneNodeId: string, pipeline?: Extract<ImagePipeline, 'flux2_compose' | 'flux2_turbo_compose' | 'nano_banana_2_lite_compose'>) => Promise<void>;
-  handleGenerateDetailAsset: (
-    detailNodeId: string,
-    pipelineOverride?: ImagePipeline,
-    modelOverride?: string,
-    providerOverride?: 'inherit' | 'comfy_openai_gpt_image_2_low',
-  ) => Promise<void>;
+  handleGenerateDetailAsset: (detailNodeId: string, pipelineOverride?: ImagePipeline, modelOverride?: string, providerOverride?: DetailAssetImageProvider) => Promise<void>;
   handleEditNarration: (detailNodeId: string) => Promise<void>;
   handleStoryStructureEdit: (detailNodeId: string) => Promise<void>;
   handleNarrationEditorialLoop: (detailNodeId: string) => Promise<void>;
@@ -252,12 +250,13 @@ const withConnectedSystemPromptSnippets = (
 const findNodeBySourceKind = (nodes: NodesState, sourceKind: string) =>
   Object.entries(nodes).find(([, node]) => node.nodeType === 'script_detail' && getSourceKind(node) === sourceKind);
 
-const findPipelineNode = (nodes: NodesState, sourceKind: string, parentId?: string) =>
-  Object.entries(nodes).find(([, node]) =>
+const findPipelineNode = (nodes: NodesState, sourceKind: string, parentId?: string) => {
+  if (!parentId) return findNodeBySourceKind(nodes, sourceKind);
+  return Object.entries(nodes).find(([, node]) =>
     node.nodeType === 'script_detail'
     && getSourceKind(node) === sourceKind
-    && (!parentId || node.parentId === parentId))
-  ?? findNodeBySourceKind(nodes, sourceKind);
+    && node.parentId === parentId);
+};
 
 const getNodeTextOutput = (node?: NodeData) =>
   node?.promptResultValue?.trim()
@@ -1016,6 +1015,23 @@ const getImagePromptKind = (node: NodeData): ImagePromptKind => {
 const getAssetKind = (node: NodeData) =>
   typeof node.metadata?.assetKind === 'string' ? node.metadata.assetKind : '';
 
+const getDetailAssetImageProvider = (node?: NodeData): DetailAssetImageProvider => {
+  const provider = node?.metadata?.detailAssetImageProvider;
+  if (
+    provider === 'comfy_openai_gpt_image_2_low'
+    || provider === 'comfy_krea_medium_turbo'
+    || provider === 'comfy_luma_photon_flash'
+    || provider === 'replicate_flux_schnell'
+  ) return 'comfy_openai_gpt_image_2_low';
+  if (provider === 'comfy_nano_banana_2_lite') return provider;
+  return 'inherit';
+};
+
+const isCloudDetailPromptKind = (
+  promptKind: ImagePromptKind,
+): promptKind is Extract<ImagePromptKind, 'character_asset' | 'location_asset' | 'system_insert'> =>
+  promptKind === 'character_asset' || promptKind === 'location_asset' || promptKind === 'system_insert';
+
 const isImagePipeline = (value: unknown): value is ImagePipeline =>
   value === 'sdxl'
   || value === 'z_image_turbo'
@@ -1649,49 +1665,6 @@ export const useNodeManagement = (
     });
   }, [setNodes]);
 
-  useEffect(() => {
-    setNodes((previousNodes) => {
-      const timelineEntries = Object.entries(previousNodes)
-        .filter(([, node]) => node.nodeType === 'chapter_timeline');
-      if (
-        timelineEntries.length === 0
-        || timelineEntries.some(([, node]) => typeof node.metadata?.isTimelineMaster === 'boolean')
-      ) return previousNodes;
-      const [masterId, masterNode] = timelineEntries[0];
-      const sharedMetadata: NodeData['metadata'] = {
-        ...(masterNode.metadata?.timelineAssetPipeline !== undefined
-          ? { timelineAssetPipeline: masterNode.metadata.timelineAssetPipeline }
-          : {}),
-        ...(masterNode.metadata?.timelineAssetImageProvider !== undefined
-          ? { timelineAssetImageProvider: masterNode.metadata.timelineAssetImageProvider }
-          : {}),
-        ...(masterNode.metadata?.timelineSystemInsertPipeline !== undefined
-          ? { timelineSystemInsertPipeline: masterNode.metadata.timelineSystemInsertPipeline }
-          : {}),
-        ...(masterNode.metadata?.timelineSystemInsertImageProvider !== undefined
-          ? { timelineSystemInsertImageProvider: masterNode.metadata.timelineSystemInsertImageProvider }
-          : {}),
-      };
-      const nextNodes = { ...previousNodes };
-      timelineEntries.forEach(([timelineId, timelineNode]) => {
-        const isMaster = timelineId === masterId;
-        nextNodes[timelineId] = {
-          ...timelineNode,
-          ...(!isMaster ? {
-            selectedModel: masterNode.selectedModel,
-            imagePipeline: masterNode.imagePipeline,
-          } : {}),
-          metadata: {
-            ...timelineNode.metadata,
-            ...(!isMaster ? sharedMetadata : {}),
-            isTimelineMaster: isMaster,
-          },
-        };
-      });
-      return nextNodes;
-    });
-  }, [setNodes]);
-
   const requestText = useCallback(async (
     nodeId: string,
     request: GenerationRequest,
@@ -2197,6 +2170,49 @@ export const useNodeManagement = (
     });
   }, [setNodes]);
 
+  useEffect(() => {
+    setNodes((previousNodes) => {
+      const timelineEntries = Object.entries(previousNodes)
+        .filter(([, node]) => node.nodeType === 'chapter_timeline');
+      if (
+        timelineEntries.length === 0
+        || timelineEntries.some(([, node]) => typeof node.metadata?.isTimelineMaster === 'boolean')
+      ) return previousNodes;
+      const [masterId, masterNode] = timelineEntries[0];
+      const sharedMetadata: NodeData['metadata'] = {
+        ...(masterNode.metadata?.timelineAssetPipeline !== undefined
+          ? { timelineAssetPipeline: masterNode.metadata.timelineAssetPipeline }
+          : {}),
+        ...(masterNode.metadata?.timelineAssetImageProvider !== undefined
+          ? { timelineAssetImageProvider: masterNode.metadata.timelineAssetImageProvider }
+          : {}),
+        ...(masterNode.metadata?.timelineSystemInsertPipeline !== undefined
+          ? { timelineSystemInsertPipeline: masterNode.metadata.timelineSystemInsertPipeline }
+          : {}),
+        ...(masterNode.metadata?.timelineSystemInsertImageProvider !== undefined
+          ? { timelineSystemInsertImageProvider: masterNode.metadata.timelineSystemInsertImageProvider }
+          : {}),
+      };
+      const nextNodes = { ...previousNodes };
+      timelineEntries.forEach(([timelineId, timelineNode]) => {
+        const isMaster = timelineId === masterId;
+        nextNodes[timelineId] = {
+          ...timelineNode,
+          ...(!isMaster ? {
+            selectedModel: masterNode.selectedModel,
+            imagePipeline: masterNode.imagePipeline,
+          } : {}),
+          metadata: {
+            ...timelineNode.metadata,
+            ...(!isMaster ? sharedMetadata : {}),
+            isTimelineMaster: isMaster,
+          },
+        };
+      });
+      return nextNodes;
+    });
+  }, [setNodes]);
+
   const handleModelChange = useCallback((event: React.ChangeEvent<HTMLSelectElement>, nodeId: string) => {
     const currentNode = nodesRef.current[nodeId];
     const updates = { selectedModel: event.target.value, error: undefined };
@@ -2228,17 +2244,49 @@ export const useNodeManagement = (
     }
   }, [updateNode, updateTimelineSetting]);
 
+  const handleDetailAssetImageProviderChange = useCallback((
+    event: React.ChangeEvent<HTMLSelectElement>,
+    nodeId: string,
+  ) => {
+    const currentNode = nodesRef.current[nodeId];
+    if (!currentNode || currentNode.nodeType !== 'script_detail') return;
+    const value = event.target.value;
+    const nextProvider: DetailAssetImageProvider = value === 'comfy_openai_gpt_image_2_low'
+      ? 'comfy_openai_gpt_image_2_low'
+      : value === 'comfy_nano_banana_2_lite' && currentNode.label === 'Системные вставки'
+        ? 'comfy_nano_banana_2_lite'
+        : 'inherit';
+    updateNode(nodeId, {
+      pollinationsApiError: undefined,
+      metadata: {
+        ...currentNode.metadata,
+        detailAssetImageProvider: nextProvider,
+      },
+    });
+  }, [updateNode]);
+
   const handleTimelineAssetPipelineChange = useCallback((event: React.ChangeEvent<HTMLSelectElement>, nodeId: string) => {
     const value = event.target.value;
-    const nextPipeline: ImagePipeline = value === 'sdxl'
-      ? 'sdxl'
-      : value === 'ernie_image_turbo'
-        ? 'ernie_image_turbo'
+    const currentNode = nodesRef.current[nodeId];
+    const currentPipeline = currentNode?.metadata?.timelineAssetPipeline;
+    const fallbackPipeline: ImagePipeline = currentPipeline === 'sdxl'
+      || currentPipeline === 'ernie_image_turbo'
+      || currentPipeline === 'z_image_turbo'
+        ? currentPipeline
         : 'z_image_turbo';
+    const nextPipeline: ImagePipeline = value === 'sdxl'
+      || value === 'ernie_image_turbo'
+      || value === 'z_image_turbo'
+        ? value
+        : fallbackPipeline;
+    const nextProvider: DetailAssetImageProvider = value === 'comfy_openai_gpt_image_2_low'
+      ? 'comfy_openai_gpt_image_2_low'
+      : 'inherit';
     updateTimelineSetting(nodeId, {
       pollinationsApiError: undefined,
       metadata: {
         timelineAssetPipeline: nextPipeline,
+        timelineAssetImageProvider: nextProvider,
       },
     });
   }, [updateTimelineSetting]);
@@ -2257,7 +2305,7 @@ export const useNodeManagement = (
       || value === 'ernie_image_turbo'
         ? value
         : fallbackPipeline;
-    const nextProvider = value === 'comfy_openai_gpt_image_2_low'
+    const nextProvider: DetailAssetImageProvider = value === 'comfy_openai_gpt_image_2_low'
       ? 'comfy_openai_gpt_image_2_low'
       : 'inherit';
     updateTimelineSetting(nodeId, {
@@ -3186,6 +3234,13 @@ export const useNodeManagement = (
       const existing = findPipelineNode(previousNodes, 'chapter_material', sourceNodeId);
       const currentSource = previousNodes[sourceNodeId] ?? sourceNode;
       const nodeId = existing?.[0] ?? generateNodeId();
+      const chapterNumber = sourceKind === 'chapter_plan'
+        ? Number(currentSource.metadata?.chapterNumber)
+        : 0;
+      const defaultMaterialLabel = Number.isFinite(chapterNumber) && chapterNumber > 0
+        ? `Материал главы ${chapterNumber}`
+        : 'Материал главы';
+      const existingMaterialLabel = existing?.[1].label?.trim();
       const knowledgeNodeId = knowledgeNode && sourceKind !== 'chapter_plan'
         ? Object.entries(nodesRef.current).find(([, node]) => node === knowledgeNode)?.[0] ?? ''
         : '';
@@ -3203,7 +3258,9 @@ export const useNodeManagement = (
           nodeType: 'script_detail',
           x: existing?.[1].x ?? currentSource.x + (currentSource.width ?? 460) + 28,
           y: existing?.[1].y ?? currentSource.y,
-          label: existing?.[1].label ?? 'Материал главы',
+          label: existingMaterialLabel && existingMaterialLabel !== 'Материал главы'
+            ? existingMaterialLabel
+            : defaultMaterialLabel,
           width: existing?.[1].width ?? 430,
           height: existing?.[1].height ?? 360,
           isGenerated: true,
@@ -3772,6 +3829,7 @@ export const useNodeManagement = (
     sceneNodeId: string,
     pipelineOverride?: ImagePipeline,
     modelOverride?: string,
+    providerOverride?: DetailAssetImageProvider,
   ) => {
     const currentNodes = nodesRef.current;
     const sceneNode = currentNodes[sceneNodeId];
@@ -3788,6 +3846,7 @@ export const useNodeManagement = (
     );
     const findDetail = (label: string) => details.find((node) => node.label === label)?.inputValue || 'Не задано';
     const sceneDescription = sceneNode.sceneText || sceneNode.inputValue || outputNode.inputValue;
+    const useGptImage = providerOverride === 'comfy_openai_gpt_image_2_low';
     const prompt = [
       `Нужная сцена: ${sceneNode.label}`,
       `Описание сцены:\n${sceneDescription}`,
@@ -3817,20 +3876,31 @@ export const useNodeManagement = (
       updateNode(sceneNodeId, {
         isLoading: false,
         isLoadingImage: true,
-        loadingProvider: imageGenerationSettings.provider,
+        loadingProvider: useGptImage ? 'comfy_openai_image' : imageGenerationSettings.provider,
         assetPrompt: styledLocationPrompt,
         productionStatus: 'in_production',
         statusMessage: 'Генерируем фон локации без персонажей...',
       });
 
-      const imageUrl = await generateImage(
-        styledLocationPrompt,
-        pipelineOverride ?? getNodeImagePipeline(sceneNode, 'z_image_turbo'),
-        imageGenerationSettings,
+      const imageUrl = useGptImage
+        ? await generateComfyOpenAiGptImage2LowImage(styledLocationPrompt, 'location_asset', imageGenerationSettings, controller.signal)
+        : await generateImage(
+          styledLocationPrompt,
+          pipelineOverride ?? getNodeImagePipeline(sceneNode, 'z_image_turbo'),
+          imageGenerationSettings,
+          'scene_location',
+          controller.signal,
+        );
+      upsertImageNode(
+        sceneNodeId,
+        imageUrl,
+        'Локация',
         'scene_location',
-        controller.signal,
+        0,
+        styledLocationPrompt,
+        withProjectVisualStyle(prompt, currentNodes),
+        { imageProvider: useGptImage ? 'comfy_openai_gpt_image_2_low' : imageGenerationSettings.provider },
       );
-      upsertImageNode(sceneNodeId, imageUrl, 'Локация', 'scene_location', 0, styledLocationPrompt, withProjectVisualStyle(prompt, currentNodes));
       showNotice('success', `Локация для «${sceneNode.label}» создана.`);
     } catch (error) {
       if (isAbortError(error)) {
@@ -4095,7 +4165,7 @@ export const useNodeManagement = (
     detailNodeId: string,
     pipelineOverride?: ImagePipeline,
     modelOverride?: string,
-    providerOverride?: 'inherit' | 'comfy_openai_gpt_image_2_low',
+    providerOverride?: DetailAssetImageProvider,
   ) => {
     const detailNode = nodesRef.current[detailNodeId];
     const description = detailNode?.inputValue?.trim();
@@ -4112,7 +4182,23 @@ export const useNodeManagement = (
     activeRequests.current.set(requestId, controller);
     const isCharacters = detailNode.label === 'Герои';
     const isSystemInserts = detailNode.label === 'Системные вставки';
-    const useGptImage = isSystemInserts && providerOverride === 'comfy_openai_gpt_image_2_low';
+    const savedDetailAssetProvider = providerOverride ?? getDetailAssetImageProvider(detailNode);
+    const detailAssetProvider = savedDetailAssetProvider === 'comfy_nano_banana_2_lite' && !isSystemInserts
+      ? 'inherit'
+      : savedDetailAssetProvider;
+    const useGptImage = detailAssetProvider === 'comfy_openai_gpt_image_2_low';
+    const useNanoBanana = detailAssetProvider === 'comfy_nano_banana_2_lite';
+    const usesCloudRenderer = useGptImage || useNanoBanana;
+    const imageLoadingProvider = useGptImage
+      ? 'comfy_openai_image' as const
+      : useNanoBanana
+        ? 'comfy_nano_banana' as const
+        : imageGenerationSettings.provider;
+    const imageProviderMetadata = useGptImage
+      ? 'comfy_openai_gpt_image_2_low'
+      : useNanoBanana
+        ? 'comfy_nano_banana_2_lite'
+        : imageGenerationSettings.provider;
 
     try {
       if (isCharacters) {
@@ -4170,23 +4256,27 @@ export const useNodeManagement = (
           });
         }
 
-        await unloadLmStudioBeforeComfyRender(detailNodeId, controller.signal);
+        if (!usesCloudRenderer) {
+          await unloadLmStudioBeforeComfyRender(detailNodeId, controller.signal);
+        }
 
         for (let index = 0; index < preparedAssets.length; index += 1) {
           const preparedAsset = preparedAssets[index];
           updateNode(detailNodeId, {
             isLoading: false,
             isLoadingImage: true,
-            loadingProvider: imageGenerationSettings.provider,
+            loadingProvider: imageLoadingProvider,
             statusMessage: `Генерируем референс ${index + 1}/${preparedAssets.length}: ${preparedAsset.name}`,
           });
-          const imageUrl = await generateImage(
-            preparedAsset.prompt,
-            pipelineOverride ?? getDetailImagePipeline(detailNode),
-            imageGenerationSettings,
-            'character_asset',
-            controller.signal,
-          );
+          const imageUrl = useGptImage
+            ? await generateComfyOpenAiGptImage2LowImage(preparedAsset.prompt, 'character_asset', imageGenerationSettings, controller.signal)
+            : await generateImage(
+              preparedAsset.prompt,
+              pipelineOverride ?? getDetailImagePipeline(detailNode),
+              imageGenerationSettings,
+              'character_asset',
+              controller.signal,
+            );
           upsertImageNode(
             detailNodeId,
             imageUrl,
@@ -4197,6 +4287,7 @@ export const useNodeManagement = (
             withProjectVisualStyle(preparedAsset.description, nodesRef.current),
             {
               characterTag: createCharacterTag(preparedAsset.name),
+              imageProvider: imageProviderMetadata,
             },
           );
         }
@@ -4266,7 +4357,7 @@ export const useNodeManagement = (
           });
         }
 
-        if (!useGptImage) {
+        if (!usesCloudRenderer) {
           await unloadLmStudioBeforeComfyRender(detailNodeId, controller.signal);
         }
 
@@ -4276,23 +4367,20 @@ export const useNodeManagement = (
           updateNode(detailNodeId, {
             isLoading: false,
             isLoadingImage: true,
-            loadingProvider: useGptImage ? 'comfy_openai_image' : imageGenerationSettings.provider,
+            loadingProvider: imageLoadingProvider,
             statusMessage: `Генерируем системную вставку ${index + 1}/${preparedAssets.length}: сцена ${preparedAsset.sceneNumber}`,
           });
-          const imageUrl = useGptImage
-            ? await generateComfyOpenAiGptImage2LowImage(
-              preparedAsset.prompt,
-              'system_insert',
-              imageGenerationSettings,
-              controller.signal,
-            )
-            : await generateImage(
-              preparedAsset.prompt,
-              imagePipeline,
-              imageGenerationSettings,
-              'system_insert',
-              controller.signal,
-            );
+          const imageUrl = useNanoBanana
+            ? await generateComfyNanoBanana2LiteImage(preparedAsset.prompt, imageGenerationSettings, controller.signal)
+            : useGptImage
+              ? await generateComfyOpenAiGptImage2LowImage(preparedAsset.prompt, 'system_insert', imageGenerationSettings, controller.signal)
+              : await generateImage(
+                preparedAsset.prompt,
+                imagePipeline,
+                imageGenerationSettings,
+                'system_insert',
+                controller.signal,
+              );
           upsertImageNode(
             detailNodeId,
             imageUrl,
@@ -4305,7 +4393,7 @@ export const useNodeManagement = (
               sceneNumber: preparedAsset.sceneNumber,
               insertTitle: preparedAsset.title,
               imagePipeline,
-              imageProvider: useGptImage ? 'comfy_openai_gpt_image_2_low' : imageGenerationSettings.provider,
+              imageProvider: imageProviderMetadata,
             },
           );
         }
@@ -4361,23 +4449,27 @@ export const useNodeManagement = (
         });
       }
 
-      await unloadLmStudioBeforeComfyRender(detailNodeId, controller.signal);
+      if (!usesCloudRenderer) {
+        await unloadLmStudioBeforeComfyRender(detailNodeId, controller.signal);
+      }
 
       for (let index = 0; index < preparedAssets.length; index += 1) {
         const preparedAsset = preparedAssets[index];
         updateNode(detailNodeId, {
           isLoading: false,
           isLoadingImage: true,
-          loadingProvider: imageGenerationSettings.provider,
+          loadingProvider: imageLoadingProvider,
           statusMessage: `Генерируем локацию ${index + 1}/${preparedAssets.length}: ${preparedAsset.name}`,
         });
-        const imageUrl = await generateImage(
-          preparedAsset.prompt,
-          pipelineOverride ?? getDetailImagePipeline(detailNode),
-          imageGenerationSettings,
-          'location_asset',
-          controller.signal,
-        );
+        const imageUrl = useGptImage
+          ? await generateComfyOpenAiGptImage2LowImage(preparedAsset.prompt, 'location_asset', imageGenerationSettings, controller.signal)
+          : await generateImage(
+            preparedAsset.prompt,
+            pipelineOverride ?? getDetailImagePipeline(detailNode),
+            imageGenerationSettings,
+            'location_asset',
+            controller.signal,
+          );
         upsertImageNode(
           detailNodeId,
           imageUrl,
@@ -4386,6 +4478,7 @@ export const useNodeManagement = (
           index,
           preparedAsset.prompt,
           withProjectVisualStyle(preparedAsset.description, nodesRef.current),
+          { imageProvider: imageProviderMetadata },
         );
       }
       showNotice('success', `Создано референсов локаций: ${locationDescriptions.length}.`);
@@ -5864,16 +5957,20 @@ export const useNodeManagement = (
       || timelineNode.metadata?.timelineAssetPipeline === 'z_image_turbo'
         ? timelineNode.metadata.timelineAssetPipeline
         : 'z_image_turbo';
+    const timelineAssetImageProvider: DetailAssetImageProvider =
+      timelineNode.metadata?.timelineAssetImageProvider === 'comfy_openai_gpt_image_2_low'
+        ? 'comfy_openai_gpt_image_2_low'
+        : 'inherit';
     const timelineSystemInsertPipeline: ImagePipeline =
       timelineNode.metadata?.timelineSystemInsertPipeline === 'sdxl'
       || timelineNode.metadata?.timelineSystemInsertPipeline === 'z_image_turbo'
       || timelineNode.metadata?.timelineSystemInsertPipeline === 'ernie_image_turbo'
         ? timelineNode.metadata.timelineSystemInsertPipeline
         : 'ernie_image_turbo';
-    const timelineSystemInsertImageProvider =
+    const timelineSystemInsertImageProvider: DetailAssetImageProvider =
       timelineNode.metadata?.timelineSystemInsertImageProvider === 'inherit'
-        ? 'inherit' as const
-        : 'comfy_openai_gpt_image_2_low' as const;
+        ? 'inherit'
+        : 'comfy_openai_gpt_image_2_low';
 
     const sourceScenarioId = typeof timelineNode.metadata?.sourceScenarioId === 'string'
       ? timelineNode.metadata.sourceScenarioId
@@ -5968,8 +6065,12 @@ export const useNodeManagement = (
       if (heroesNode?.inputValue && getNewCharacterDescriptions(heroesNode.inputValue, nodesRef.current).length > 0) {
         const heroesNodeId = Object.entries(nodesRef.current).find(([, node]) => node === heroesNode)?.[0];
         if (heroesNodeId) {
-          updateNode(timelineNodeId, { statusMessage: 'Генерируем недостающие ассеты персонажей через реестр...' });
-          await handleGenerateDetailAsset(heroesNodeId, timelineAssetPipeline, timelineTextModel);
+          updateNode(timelineNodeId, {
+            statusMessage: timelineAssetImageProvider === 'comfy_openai_gpt_image_2_low'
+              ? 'Генерируем недостающие ассеты персонажей через GPT Image 2 API...'
+              : 'Генерируем недостающие ассеты персонажей через реестр...',
+          });
+          await handleGenerateDetailAsset(heroesNodeId, timelineAssetPipeline, timelineTextModel, timelineAssetImageProvider);
           await waitForState();
         }
       }
@@ -5980,8 +6081,12 @@ export const useNodeManagement = (
         ? Object.entries(nodesRef.current).find(([, node]) => node === locationsNode)?.[0]
         : undefined;
       if (locationsNode?.inputValue && locationsNodeId && !hasDetailImages(locationsNodeId, 'location_asset')) {
-        updateNode(timelineNodeId, { statusMessage: 'Генерируем общий набор локаций главы...' });
-        await handleGenerateDetailAsset(locationsNodeId, timelineAssetPipeline, timelineTextModel);
+        updateNode(timelineNodeId, {
+          statusMessage: timelineAssetImageProvider === 'comfy_openai_gpt_image_2_low'
+            ? 'Генерируем общий набор локаций главы через GPT Image 2 API...'
+            : 'Генерируем общий набор локаций главы...',
+        });
+        await handleGenerateDetailAsset(locationsNodeId, timelineAssetPipeline, timelineTextModel, timelineAssetImageProvider);
         await waitForState();
       }
       if (isCancelled()) return;
@@ -6016,7 +6121,7 @@ export const useNodeManagement = (
           statusMessage: `Сцена ${index + 1}/${sceneEntries.length}: проверяем локацию...`,
         });
         if (!hasSceneLocation(sceneId, latestScene)) {
-          await handleGenerateSceneLocationAsset(sceneId, timelineAssetPipeline, timelineTextModel);
+          await handleGenerateSceneLocationAsset(sceneId, timelineAssetPipeline, timelineTextModel, timelineAssetImageProvider);
           await waitForState();
         }
         if (isCancelled()) return;
@@ -6217,19 +6322,37 @@ export const useNodeManagement = (
     if (activeRequests.current.has(requestId)) return;
     const controller = new AbortController();
     activeRequests.current.set(requestId, controller);
+    const assetKind = getAssetKind(node);
+    const promptKind = getImagePromptKind(node);
+    const detailSourceNode = node.parentId ? nodesRef.current[node.parentId] : undefined;
+    const savedDetailAssetProvider = isCloudDetailPromptKind(promptKind)
+      ? getDetailAssetImageProvider(detailSourceNode)
+      : 'inherit';
+    const detailAssetProvider = savedDetailAssetProvider === 'comfy_nano_banana_2_lite' && promptKind !== 'system_insert'
+      ? 'inherit'
+      : savedDetailAssetProvider;
+    const useGptImage = detailAssetProvider === 'comfy_openai_gpt_image_2_low';
+    const useNanoBanana = detailAssetProvider === 'comfy_nano_banana_2_lite';
 
     updateNode(nodeId, {
       isLoadingImage: true,
-      loadingProvider: imageGenerationSettings.provider,
+      loadingProvider: useGptImage
+        ? 'comfy_openai_image'
+        : useNanoBanana
+          ? 'comfy_nano_banana'
+          : imageGenerationSettings.provider,
       pollinationsApiError: undefined,
       statusMessage: 'Перегенерируем с новым seed...',
     });
 
     try {
-      const assetKind = getAssetKind(node);
       const styledPrompt = appendProjectVisualStyleToImagePrompt(prompt, nodesRef.current);
       let imageUrl: string;
-      if (assetKind === 'scene_flux2_frame') {
+      if (useNanoBanana) {
+        imageUrl = await generateComfyNanoBanana2LiteImage(styledPrompt, imageGenerationSettings, controller.signal);
+      } else if (useGptImage && isCloudDetailPromptKind(promptKind)) {
+        imageUrl = await generateComfyOpenAiGptImage2LowImage(styledPrompt, promptKind, imageGenerationSettings, controller.signal);
+      } else if (assetKind === 'scene_flux2_frame') {
         const backgroundNodeId = typeof node.metadata?.backgroundNodeId === 'string' ? node.metadata.backgroundNodeId : '';
         const characterReferenceNodeIds = typeof node.metadata?.characterReferenceNodeIds === 'string'
           ? node.metadata.characterReferenceNodeIds.split(',').map((value) => value.trim()).filter(Boolean)
@@ -6286,7 +6409,11 @@ export const useNodeManagement = (
             statusMessage: undefined,
             metadata: {
               ...currentNode.metadata,
-              imageProvider: imageGenerationSettings.provider,
+              imageProvider: useGptImage
+                ? 'comfy_openai_gpt_image_2_low'
+                : useNanoBanana
+                  ? 'comfy_nano_banana_2_lite'
+                  : imageGenerationSettings.provider,
               imagePipeline: getNodeImagePipeline(currentNode),
               ...(isCharacterReferenceNode(currentNode) ? {
                 referencePrompt: styledPrompt,
@@ -6472,6 +6599,7 @@ export const useNodeManagement = (
     handleTogglePromptSnippet,
     handleModelChange,
     handleImagePipelineChange,
+    handleDetailAssetImageProviderChange,
     handleTimelineAssetPipelineChange,
     handleTimelineSystemInsertPipelineChange,
     handleTimelineMasterChange,

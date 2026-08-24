@@ -283,6 +283,7 @@ const App = () => {
     handleTogglePromptSnippet,
     handleModelChange,
     handleImagePipelineChange,
+    handleDetailAssetImageProviderChange,
     handleTimelineAssetPipelineChange,
     handleTimelineSystemInsertPipelineChange,
     handleTimelineMasterChange,
@@ -375,6 +376,17 @@ const App = () => {
   });
 
   const nodeEntries = useMemo(() => Object.entries(nodes), [nodes]);
+  const hasComfyDetailRenderer = useMemo(
+    () => nodeEntries.some(([, node]) => (
+      node.metadata?.detailAssetImageProvider === 'comfy_openai_gpt_image_2_low'
+      || node.metadata?.timelineAssetImageProvider === 'comfy_openai_gpt_image_2_low'
+      || node.metadata?.detailAssetImageProvider === 'comfy_krea_medium_turbo'
+      || node.metadata?.detailAssetImageProvider === 'comfy_luma_photon_flash'
+      || node.metadata?.detailAssetImageProvider === 'replicate_flux_schnell'
+      || node.metadata?.detailAssetImageProvider === 'comfy_nano_banana_2_lite'
+    )),
+    [nodeEntries],
+  );
   const toggleFocusChain = useCallback((nodeId: string) => {
     setExpandedFocusNodeIds((previous) => {
       const next = new Set(previous);
@@ -432,11 +444,14 @@ const App = () => {
   );
   const lmStudioEndpoint = generationSettings.lmStudioEndpoint.trim();
   const comfyEndpoint = imageGenerationSettings.comfyEndpoint.trim();
+  const needsComfyImageEndpoint = imageGenerationSettings.provider === 'comfyui'
+    || hasComfyDetailRenderer
+    || Boolean(narrationSettings);
   const hasLmStudioMixedContentRisk = generationSettings.mode === 'lmstudio'
     && window.location.protocol === 'https:'
     && lmStudioEndpoint.startsWith('http://')
     && !/^http:\/\/(localhost|127\.0\.0\.1|\[::1\])(?::|\/|$)/i.test(lmStudioEndpoint);
-  const hasComfyMixedContentRisk = imageGenerationSettings.provider === 'comfyui'
+  const hasComfyMixedContentRisk = needsComfyImageEndpoint
     && window.location.protocol === 'https:'
     && comfyEndpoint.startsWith('http://')
     && !/^http:\/\/(localhost|127\.0\.0\.1|\[::1\])(?::|\/|$)/i.test(comfyEndpoint);
@@ -1215,7 +1230,7 @@ const App = () => {
               <option value="pollinations">Pollinations</option>
               <option value="comfyui">ComfyUI</option>
             </select>
-            {imageGenerationSettings.provider === 'comfyui' && (
+            {needsComfyImageEndpoint && (
               <>
                 <input
                   className="generation-endpoint-input"
@@ -1224,13 +1239,15 @@ const App = () => {
                   placeholder={COMFYUI_DEFAULT_ENDPOINT}
                   aria-label="Endpoint ComfyUI"
                 />
-                <input
-                  className="generation-model-input"
-                  value={imageGenerationSettings.comfyCheckpoint}
-                  onChange={handleComfyCheckpointChange}
-                  placeholder={COMFYUI_DEFAULT_CHECKPOINT}
-                  aria-label="Checkpoint SDXL для ComfyUI"
-                />
+                {imageGenerationSettings.provider === 'comfyui' && (
+                  <input
+                    className="generation-model-input"
+                    value={imageGenerationSettings.comfyCheckpoint}
+                    onChange={handleComfyCheckpointChange}
+                    placeholder={COMFYUI_DEFAULT_CHECKPOINT}
+                    aria-label="Checkpoint SDXL для ComfyUI"
+                  />
+                )}
                 <input
                   className="generation-secret-input"
                   type="password"
@@ -1479,6 +1496,7 @@ const App = () => {
               onTogglePromptSnippet={handleTogglePromptSnippet}
               onModelChange={handleModelChange}
               onImagePipelineChange={handleImagePipelineChange}
+              onDetailAssetImageProviderChange={handleDetailAssetImageProviderChange}
               onTimelineAssetPipelineChange={handleTimelineAssetPipelineChange}
               onTimelineSystemInsertPipelineChange={handleTimelineSystemInsertPipelineChange}
               onTimelineMasterChange={handleTimelineMasterChange}

@@ -36,6 +36,7 @@ const WIDE_FRAME_HEIGHT = 768;
 
 export type GenerationMode = 'mock' | 'mistral' | 'lmstudio' | 'comfygemini';
 export type ImageProvider = 'pollinations' | 'comfyui';
+export type DetailAssetImageProvider = 'inherit' | 'comfy_openai_gpt_image_2_low' | 'comfy_nano_banana_2_lite';
 
 export interface GenerationSettings {
   mode: GenerationMode;
@@ -2087,6 +2088,42 @@ const buildComfyNanoBanana2LiteShotGridWorkflow = (
   };
 };
 
+const buildComfyNanoBanana2LiteImageWorkflow = (prompt: string) => {
+  const seed = Math.floor(Math.random() * 1_000_000_000_000_000);
+  return {
+    '3': {
+      class_type: 'GeminiNanoBanana2V2',
+      inputs: {
+        prompt,
+        model: 'Nano Banana 2 Lite',
+        'model.aspect_ratio': '16:9',
+        'model.resolution': '1K',
+        'model.thinking_level': 'MINIMAL',
+        seed,
+        response_modalities: 'IMAGE',
+        system_prompt: [
+          'You are an expert image-generation engine. You must ALWAYS produce an image.',
+          'Interpret all user input as literal visual directives for a standalone cinematic story insert.',
+          'Create a polished 16:9 illustration without requiring reference images.',
+          'Do not add captions, logos, watermarks, or UI unless the prompt explicitly asks for them.',
+        ].join('\n'),
+        temperature: 1,
+        top_p: 0.95,
+      },
+    },
+    '4': {
+      class_type: 'SaveImageAdvanced',
+      inputs: {
+        filename_prefix: 'CANVA_STORY_SYSTEM_INSERT_NANO_BANANA_2_LITE',
+        format: 'png',
+        'format.bit_depth': '8-bit',
+        'format.input_color_space': 'sRGB',
+        images: ['3', 0],
+      },
+    },
+  };
+};
+
 const buildComfyOpenAiGptImage2LowWorkflow = (
   prompt: string,
   promptKind: Extract<ImagePromptKind, 'character_asset' | 'location_asset' | 'system_insert' | 'chapter_backdrop'>,
@@ -2254,6 +2291,17 @@ export const generateComfyNanoBanana2LiteComposeImage = async (
   }
 };
 
+const generatePollinationsImage = async (prompt: string, signal?: AbortSignal) => {
+  const width = 1280;
+  const height = 768;
+  const seed = Math.floor(Math.random() * 1_000_000_000);
+  const encodedPrompt = encodeURIComponent(prompt);
+  const url = `https://image.pollinations.ai/prompt/${encodedPrompt}?model=flux&width=${width}&height=${height}&seed=${seed}&nologo=true&enhance=1&private=1`;
+  const response = await fetch(url, { signal });
+  if (!response.ok) throw new Error(`Сервис изображений вернул ошибку ${response.status}.`);
+  return URL.createObjectURL(await response.blob());
+};
+
 export const generateComfyNanoBanana2LiteShotGrid = async (
   prompt: string,
   sourceFrameUrl: string,
@@ -2312,7 +2360,7 @@ export const generateComfyNanoBanana2LiteShotGrid = async (
   } catch (error) {
     if (error instanceof DOMException && error.name === 'AbortError') throw error;
     if (error instanceof TypeError) {
-      throw new Error(`Не удалось подключиться к ComfyUI по адресу ${baseUrl}. Проверьте ComfyUI и CORS.`);
+      throw new Error(`Не удалось подключиться к ComfyUI по адресу ${baseUrl}. Проверьте ComfyUI, CORS и Comfy.org API key.`);
     }
     throw error;
   }
@@ -2382,15 +2430,60 @@ export const generateComfyOpenAiGptImage2LowImage = async (
   }
 };
 
-const generatePollinationsImage = async (prompt: string, signal?: AbortSignal) => {
-  const width = 1280;
-  const height = 768;
-  const seed = Math.floor(Math.random() * 1_000_000_000);
-  const encodedPrompt = encodeURIComponent(prompt);
-  const url = `https://image.pollinations.ai/prompt/${encodedPrompt}?model=flux&width=${width}&height=${height}&seed=${seed}&nologo=true&enhance=1&private=1`;
-  const response = await fetch(url, { signal });
-  if (!response.ok) throw new Error(`Сервис изображений вернул ошибку ${response.status}.`);
-  return URL.createObjectURL(await response.blob());
+export const generateComfyNanoBanana2LiteImage = async (
+  prompt: string,
+  settings: ImageGenerationSettings,
+  signal?: AbortSignal,
+) => {
+  const baseUrl = getComfyBaseUrl(settings.comfyEndpoint);
+  try {
+    const workflow = buildComfyNanoBanana2LiteImageWorkflow(prompt);
+    const clientId = typeof crypto.randomUUID === 'function'
+      ? crypto.randomUUID()
+      : `canva-story-nano-banana-insert-${Date.now()}`;
+
+    const promptResponse = await fetch(`${baseUrl}/prompt`, getComfyFetchOptions({
+      method: 'POST',
+      signal,
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(createComfyPromptPayload(clientId, workflow, settings)),
+    }));
+    if (!promptResponse.ok) {
+      throw new Error(getComfyError(
+        'ComfyUI не принял Nano Banana workflow для системной вставки',
+        promptResponse,
+        await readResponseDetails(promptResponse),
+      ));
+    }
+    const promptData: ComfyPromptResponse = await promptResponse.json();
+    if (!promptData.prompt_id) throw new Error('ComfyUI не вернул prompt_id для Nano Banana системной вставки.');
+
+    const image = await waitForComfyImage(baseUrl, promptData.prompt_id, COMFY_NANO_BANANA_TIMEOUT_MS, signal);
+    if (!image) throw new Error('Nano Banana не вернул системную вставку за 45 минут. Проверьте очередь ComfyUI и output.');
+
+    const params = new URLSearchParams({
+      filename: image.filename,
+      subfolder: image.subfolder ?? '',
+      type: image.type ?? 'output',
+    });
+    const viewResponse = await fetch(`${baseUrl}/view?${params.toString()}`, getComfyFetchOptions({ signal }));
+    if (!viewResponse.ok) {
+      throw new Error(getComfyError(
+        'ComfyUI не отдал готовую системную вставку Nano Banana',
+        viewResponse,
+        await readResponseDetails(viewResponse),
+      ));
+    }
+
+    const blob = await viewResponse.blob();
+    return URL.createObjectURL(blob);
+  } catch (error) {
+    if (error instanceof DOMException && error.name === 'AbortError') throw error;
+    if (error instanceof TypeError) {
+      throw new Error(`Не удалось подключиться к ComfyUI по адресу ${baseUrl}. Проверьте ComfyUI, CORS и Comfy.org API key.`);
+    }
+    throw error;
+  }
 };
 
 export const generateImage = (

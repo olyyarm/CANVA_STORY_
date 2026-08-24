@@ -16,6 +16,7 @@ dist-ssr
 !.env.example
 start_canva_story_local_config.bat
 start_canva_story_workstation.bat
+*.zip
 
 # Editor directories and files
 .vscode/*

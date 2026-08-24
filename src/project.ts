@@ -602,6 +602,32 @@ const sanitizeNodes = (value: unknown): NodesState => {
   return nodes;
 };
 
+const repairLegacyChapterMaterialBranches = (nodes: NodesState): NodesState => {
+  let changed = false;
+  const nextNodes = { ...nodes };
+  Object.entries(nodes).forEach(([nodeId, node]) => {
+    if (node.nodeType !== 'script_detail' || node.metadata?.sourceKind !== 'chapter_material') return;
+    if (!node.parentId || node.label !== 'Материал главы') return;
+    const parentNode = nodes[node.parentId];
+    if (!parentNode || parentNode.metadata?.sourceKind !== 'chapter_plan') return;
+    const chapterNumber = Number(parentNode.metadata?.chapterNumber);
+    if (!Number.isFinite(chapterNumber) || chapterNumber <= 0) return;
+    changed = true;
+    nextNodes[nodeId] = {
+      ...node,
+      x: parentNode.x + (parentNode.width ?? 440) + 28,
+      y: parentNode.y,
+      label: `Материал главы ${chapterNumber}`,
+      metadata: {
+        ...node.metadata,
+        sourceChapterPlanId: node.parentId,
+        chapterNumber,
+      },
+    };
+  });
+  return changed ? nextNodes : nodes;
+};
+
 const sanitizeViewport = (value: unknown): ViewportState => {
   if (!isRecord(value)) return { x: 48, y: 48, zoom: 1 };
   return {
@@ -653,7 +679,7 @@ export const parseProjectJson = (json: string): ProjectDocument => {
     title: value.title.slice(0, 120) || 'Импортированный проект',
     createdAt: typeof value.createdAt === 'string' ? value.createdAt : new Date().toISOString(),
     updatedAt: new Date().toISOString(),
-    nodes: ensureManagedPromptSnippetNodes(sanitizeNodes(value.nodes)),
+    nodes: ensureManagedPromptSnippetNodes(repairLegacyChapterMaterialBranches(sanitizeNodes(value.nodes))),
     viewport: sanitizeViewport(value.viewport),
     extensions: sanitizeProjectExtensions(value.extensions),
   };

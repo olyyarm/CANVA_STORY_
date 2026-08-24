@@ -1,5 +1,5 @@
 import React from 'react';
-import { ImageProvider } from '../api';
+import { DetailAssetImageProvider, ImageProvider } from '../api';
 import { getNewCharacterDescriptions } from '../characterRegistry';
 import { DetailType, ImagePipeline, NodeData, NodesState } from '../types';
 import { assetPath, getNodeIcon } from '../utils';
@@ -32,6 +32,7 @@ interface NodeRendererProps {
   onTogglePromptSnippet: (nodeId: string) => void;
   onModelChange: (event: React.ChangeEvent<HTMLSelectElement>, nodeId: string) => void;
   onImagePipelineChange: (event: React.ChangeEvent<HTMLSelectElement>, nodeId: string) => void;
+  onDetailAssetImageProviderChange: (event: React.ChangeEvent<HTMLSelectElement>, nodeId: string) => void;
   onTimelineAssetPipelineChange: (event: React.ChangeEvent<HTMLSelectElement>, nodeId: string) => void;
   onTimelineSystemInsertPipelineChange: (event: React.ChangeEvent<HTMLSelectElement>, nodeId: string) => void;
   onTimelineMasterChange: (event: React.ChangeEvent<HTMLInputElement>, nodeId: string) => void;
@@ -466,6 +467,7 @@ const NodeRenderer: React.FC<NodeRendererProps> = ({
   onTogglePromptSnippet,
   onModelChange,
   onImagePipelineChange,
+  onDetailAssetImageProviderChange,
   onTimelineAssetPipelineChange,
   onTimelineSystemInsertPipelineChange,
   onTimelineMasterChange,
@@ -529,6 +531,15 @@ const NodeRenderer: React.FC<NodeRendererProps> = ({
   const canGenerateDetailAsset = node.nodeType === 'script_detail'
     && (node.label === 'Герои' || node.label === 'Локации' || isSystemInsertDetail);
   const canBuildCharacterMemory = node.nodeType === 'script_detail' && node.label === 'Герои';
+  const detailAssetImageProvider: DetailAssetImageProvider = node.metadata?.detailAssetImageProvider === 'comfy_openai_gpt_image_2_low'
+    || node.metadata?.detailAssetImageProvider === 'comfy_krea_medium_turbo'
+    || node.metadata?.detailAssetImageProvider === 'comfy_luma_photon_flash'
+    || node.metadata?.detailAssetImageProvider === 'replicate_flux_schnell'
+    ? 'comfy_openai_gpt_image_2_low'
+    : node.metadata?.detailAssetImageProvider === 'comfy_nano_banana_2_lite'
+      ? 'comfy_nano_banana_2_lite'
+      : 'inherit';
+  const usesCloudDetailRenderer = detailAssetImageProvider !== 'inherit';
   const canBuildScenarioFromBrief = node.nodeType === 'script_detail' && node.metadata?.sourceKind === 'brief_revision';
   const sourceKind = typeof node.metadata?.sourceKind === 'string' ? node.metadata.sourceKind : '';
   const canImportReferenceFile = node.nodeType === 'script_detail' && sourceKind === 'pdf_source';
@@ -597,8 +608,10 @@ const NodeRenderer: React.FC<NodeRendererProps> = ({
       : node.isLoadingImage
       ? node.loadingProvider === 'comfyui'
         ? 'ComfyUI загружает модель или рендерит кадр...'
-        : node.loadingProvider === 'comfy_nano_banana'
-          ? 'Nano Banana создаёт изображения через Comfy API...'
+        : node.loadingProvider === 'comfy_openai_image'
+          ? 'GPT Image 2 Low создаёт ассет через Comfy API...'
+          : node.loadingProvider === 'comfy_nano_banana'
+            ? 'Nano Banana создаёт изображения через Comfy API...'
           : 'Pollinations создаёт кадр...'
       : node.loadingProvider === 'lmstudio'
         ? 'LM Studio загружает модель и готовит ответ...'
@@ -670,6 +683,13 @@ const NodeRenderer: React.FC<NodeRendererProps> = ({
     )
       ? node.metadata.timelineAssetPipeline
       : 'z_image_turbo';
+  const timelineAssetRendererValue =
+    node.nodeType === 'chapter_timeline'
+    && node.metadata?.timelineAssetImageProvider === 'comfy_openai_gpt_image_2_low'
+      ? 'comfy_openai_gpt_image_2_low'
+      : imageProvider === 'comfyui'
+        ? timelineAssetPipelineValue
+        : 'inherit';
   const timelineSystemInsertPipelineValue =
     node.nodeType === 'chapter_timeline'
     && (
@@ -1349,14 +1369,38 @@ const NodeRenderer: React.FC<NodeRendererProps> = ({
           <div className="node-message node-message--error" role="alert">{node.pollinationsApiError}</div>
         )}
 
-        {canGenerateDetailAsset && imageProvider === 'comfyui' && (
+        {canGenerateDetailAsset && (
           <label className="node-field node-field--inline">
+            <span>Рендер</span>
+            <select
+              value={detailAssetImageProvider}
+              onChange={(event) => onDetailAssetImageProviderChange(event, id)}
+              onMouseDown={stopMouseDown}
+              disabled={node.isLoadingImage}
+              title="Облачные режимы не запускают локальную модель изображений"
+            >
+              <option value="inherit">
+                Основной · {imageProvider === 'comfyui' ? 'ComfyUI' : 'Pollinations'}
+              </option>
+              <option value="comfy_openai_gpt_image_2_low">Comfy API · GPT Image 2 Low · ≈ $0.006–0.023</option>
+              {isSystemInsertDetail && (
+                <option value="comfy_nano_banana_2_lite">Nano Banana 2 Lite API · ≈ $0.041</option>
+              )}
+            </select>
+          </label>
+        )}
+
+        {canGenerateDetailAsset && imageProvider === 'comfyui' && (
+          <label
+            className="node-field node-field--inline"
+            title={usesCloudDetailRenderer ? 'Этот Pipeline не используется в облачном API-режиме.' : undefined}
+          >
             <span>Pipeline</span>
             <select
               value={detailImagePipelineValue}
               onChange={(event) => onImagePipelineChange(event, id)}
               onMouseDown={stopMouseDown}
-              disabled={node.isLoadingImage}
+              disabled={Boolean(node.isLoadingImage || usesCloudDetailRenderer)}
             >
               <option value="sdxl">SDXL</option>
               <option value="z_image_turbo">Z-Image Turbo</option>
@@ -1380,7 +1424,13 @@ const NodeRenderer: React.FC<NodeRendererProps> = ({
                 ? `Сгенерировать ${detailCharacterCount} героев`
                 : isSystemInsertDetail
                   ? 'Сгенерировать системные вставки'
-                  : 'Сгенерировать локации'} · ${imageProvider === 'comfyui' ? 'ComfyUI' : 'Pollinations'}`}
+                  : 'Сгенерировать локации'} · ${detailAssetImageProvider === 'comfy_openai_gpt_image_2_low'
+                    ? 'GPT Image API'
+                    : detailAssetImageProvider === 'comfy_nano_banana_2_lite'
+                      ? 'Nano Banana API'
+                    : imageProvider === 'comfyui'
+                      ? 'ComfyUI'
+                      : 'Pollinations'}`}
           </button>
         )}
 
@@ -1667,21 +1717,28 @@ const NodeRenderer: React.FC<NodeRendererProps> = ({
                 <small>Настройки для всех глав</small>
               </label>
               {renderModelSelect(false)}
+              <label className="node-field node-field--inline">
+                <span>Ассеты</span>
+                <select
+                  value={timelineAssetRendererValue}
+                  onChange={(event) => onTimelineAssetPipelineChange(event, id)}
+                  onMouseDown={stopMouseDown}
+                  disabled={node.isLoadingVideo}
+                >
+                  {imageProvider === 'comfyui' ? (
+                    <>
+                      <option value="z_image_turbo">Локально · Z-Image Turbo</option>
+                      <option value="sdxl">Локально · SDXL</option>
+                      <option value="ernie_image_turbo">Локально · ERNIE Image Turbo</option>
+                    </>
+                  ) : (
+                    <option value="inherit">Основной · Pollinations</option>
+                  )}
+                  <option value="comfy_openai_gpt_image_2_low">Comfy API · GPT Image 2 Low · ≈ $0.006–0.023</option>
+                </select>
+              </label>
               {imageProvider === 'comfyui' && (
                 <>
-                  <label className="node-field node-field--inline">
-                    <span>Ассеты</span>
-                    <select
-                      value={timelineAssetPipelineValue}
-                      onChange={(event) => onTimelineAssetPipelineChange(event, id)}
-                      onMouseDown={stopMouseDown}
-                      disabled={node.isLoadingVideo}
-                    >
-                      <option value="z_image_turbo">Z-Image Turbo</option>
-                      <option value="sdxl">SDXL</option>
-                      <option value="ernie_image_turbo">ERNIE Image Turbo</option>
-                    </select>
-                  </label>
                   <label className="node-field node-field--inline">
                     <span>Вставки</span>
                     <select

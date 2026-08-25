@@ -171,7 +171,7 @@ interface UseNodeManagementReturn {
   handleGenerateSceneShotGrid: (sceneNodeId: string) => Promise<void>;
   handleBuildSceneVideoClip: (sceneNodeId: string) => Promise<void>;
   handleGenerateChapterBackdrop: (timelineNodeId: string) => Promise<void>;
-  handleGenerateTimelineMissingAssets: (timelineNodeId: string) => Promise<void>;
+  handleGenerateTimelineMissingAssets: (timelineNodeId: string) => Promise<boolean>;
   handleCompleteChapter: (timelineNodeId: string) => Promise<void>;
   handleBuildChapterSceneClips: (timelineNodeId: string) => Promise<void>;
   handleBuildChapterVideo: (timelineNodeId: string, options?: { requireFfmpeg?: boolean }) => Promise<void>;
@@ -6157,7 +6157,7 @@ export const useNodeManagement = (
   const handleGenerateTimelineMissingAssets = useCallback(async (timelineNodeId: string) => {
     let currentNodes = nodesRef.current;
     let timelineNode = currentNodes[timelineNodeId];
-    if (!timelineNode || timelineNode.nodeType !== 'chapter_timeline' || timelineNode.isLoadingVideo) return;
+    if (!timelineNode || timelineNode.nodeType !== 'chapter_timeline' || timelineNode.isLoadingVideo) return false;
     const timelineTextModel = typeof timelineNode.selectedModel === 'string' && timelineNode.selectedModel.trim()
       ? timelineNode.selectedModel.trim()
       : undefined;
@@ -6194,7 +6194,7 @@ export const useNodeManagement = (
         : 'comfy_openai_gpt_image_2_low';
 
     const requestId = `timeline-missing:${timelineNodeId}`;
-    if (activeRequests.current.has(requestId)) return;
+    if (activeRequests.current.has(requestId)) return false;
     const controller = new AbortController();
     activeRequests.current.set(requestId, controller);
 
@@ -6372,7 +6372,7 @@ export const useNodeManagement = (
 
       if (sceneEntries.length === 0) {
         const chapterReady = await ensureChapterTextWorkflow();
-        if (isCancelled()) return;
+        if (isCancelled()) return false;
         if (!chapterReady) {
           const chapterPlanCount = Object.values(nodesRef.current).filter((node) =>
             node.nodeType === 'script_detail' && getSourceKind(node) === 'chapter_plan').length;
@@ -6381,21 +6381,21 @@ export const useNodeManagement = (
             : 'Не удалось подготовить разбивку и сцены главы. Проверьте ноды «PDF / сырьё сезона» и «Планировщик глав».';
           updateNode(timelineNodeId, { pollinationsApiError: message });
           showNotice('error', message);
-          return;
+          return false;
         }
         updateNode(timelineNodeId, { statusMessage: 'Структура главы готова. Добираем изображения и озвучку...' });
       }
 
       await ensureDetail('герои');
-      if (isCancelled()) return;
+      if (isCancelled()) return false;
       await ensureDetail('локации');
-      if (isCancelled()) return;
+      if (isCancelled()) return false;
       await ensureDetail('настроение');
-      if (isCancelled()) return;
+      if (isCancelled()) return false;
       await ensureDetail('закадр');
-      if (isCancelled()) return;
+      if (isCancelled()) return false;
       await ensureDetail('система');
-      if (isCancelled()) return;
+      if (isCancelled()) return false;
 
       const narrationNode = findScopedDetail('Закадр');
       const narrationNodeId = narrationNode
@@ -6406,10 +6406,13 @@ export const useNodeManagement = (
         await handlePrepareNarrationTts(narrationNodeId);
         await waitForState();
       }
-      if (isCancelled()) return;
+      if (isCancelled()) return false;
 
       const heroesNode = findScopedDetail('Герои');
-      if (heroesNode?.inputValue && getNewCharacterDescriptions(heroesNode.inputValue, nodesRef.current).length > 0) {
+      const pendingCharacterDescriptions = heroesNode?.inputValue
+        ? getNewCharacterDescriptions(heroesNode.inputValue, nodesRef.current)
+        : [];
+      if (heroesNode?.inputValue && pendingCharacterDescriptions.length > 0) {
         const heroesNodeId = Object.entries(nodesRef.current).find(([, node]) => node === heroesNode)?.[0];
         if (heroesNodeId) {
           syncDetailRenderer(heroesNodeId, timelineAssetPipeline, timelineAssetImageProvider);
@@ -6422,7 +6425,18 @@ export const useNodeManagement = (
           await waitForState();
         }
       }
-      if (isCancelled()) return;
+      if (isCancelled()) return false;
+      if (
+        heroesNode?.inputValue
+        && getNewCharacterDescriptions(heroesNode.inputValue, nodesRef.current).length > 0
+      ) {
+        const latestHeroesNode = findScopedDetail('Герои');
+        const message = latestHeroesNode?.pollinationsApiError
+          || latestHeroesNode?.error
+          || 'Не удалось создать все новые референсы персонажей.';
+        updateNode(timelineNodeId, { pollinationsApiError: `Автодобор остановился на персонажах: ${message}` });
+        return false;
+      }
 
       const locationsNode = findScopedDetail('Локации');
       const locationsNodeId = locationsNode
@@ -6443,7 +6457,7 @@ export const useNodeManagement = (
         await handleGenerateDetailAsset(locationsNodeId, timelineAssetPipeline, timelineTextModel, timelineAssetImageProvider);
         await waitForState();
       }
-      if (isCancelled()) return;
+      if (isCancelled()) return false;
 
       const systemInsertsNode = findScopedDetail('Системные вставки');
       const systemInsertsNodeId = systemInsertsNode
@@ -6464,7 +6478,7 @@ export const useNodeManagement = (
         );
         await waitForState();
       }
-      if (isCancelled()) return;
+      if (isCancelled()) return false;
 
       const latestTimelineNode = nodesRef.current[timelineNodeId] ?? timelineNode;
       if (!findChapterBackdropImageNode(nodesRef.current, timelineNodeId, latestTimelineNode)) {
@@ -6473,20 +6487,19 @@ export const useNodeManagement = (
         await waitForState();
 
         const timelineAfterBackdrop = nodesRef.current[timelineNodeId] ?? latestTimelineNode;
-        if (
-          timelineAfterBackdrop.pollinationsApiError
-          && !findChapterBackdropImageNode(nodesRef.current, timelineNodeId, timelineAfterBackdrop)
-        ) {
+        if (!findChapterBackdropImageNode(nodesRef.current, timelineNodeId, timelineAfterBackdrop)) {
+          const backdropError = timelineAfterBackdrop.pollinationsApiError
+            || 'ComfyUI не вернул изображение фона главы.';
           updateNode(timelineNodeId, {
-            pollinationsApiError: `Автодобор остановился на фоне главы: ${timelineAfterBackdrop.pollinationsApiError}`,
+            pollinationsApiError: `Автодобор остановился на фоне главы: ${backdropError}`,
           });
-          return;
+          return false;
         }
       }
-      if (isCancelled()) return;
+      if (isCancelled()) return false;
 
       for (let index = 0; index < sceneEntries.length; index += 1) {
-        if (isCancelled()) return;
+        if (isCancelled()) return false;
         const [sceneId, initialScene] = sceneEntries[index];
         const latestScene = nodesRef.current[sceneId] ?? initialScene;
         if (!latestScene || latestScene.nodeType !== 'scene') continue;
@@ -6502,7 +6515,7 @@ export const useNodeManagement = (
             ? `Автодобор остановился на локации «${sceneAfterLocation.label}»: ${sceneAfterLocation.pollinationsApiError}`
             : `Для «${sceneAfterLocation.label}» не найден общий референс. Сначала создайте локации в ноде «Локации».`;
           updateNode(timelineNodeId, { pollinationsApiError: message });
-          return;
+          return false;
         }
         const narrationText = resolveSceneNarrationText(nodesRef.current, sceneAfterLocation);
         const currentTtsSignature = narrationText
@@ -6522,14 +6535,14 @@ export const useNodeManagement = (
           await handleGenerateSceneOmniVoiceNarration(sceneId);
           await waitForState();
         }
-        if (isCancelled()) return;
+        if (isCancelled()) return false;
         const sceneAfterAudio = nodesRef.current[sceneId] ?? sceneAfterLocation;
         if (shouldRefreshAudio && !sceneAfterAudio.audioUrl) {
           const message = sceneAfterAudio.pollinationsApiError
             ? `Автодобор остановился на озвучке «${sceneAfterAudio.label}»: ${sceneAfterAudio.pollinationsApiError}`
             : `Автодобор остановлен: озвучка для «${sceneAfterAudio.label}» не создана или была отменена.`;
           updateNode(timelineNodeId, { pollinationsApiError: message });
-          return;
+          return false;
         }
 
         if (!hasComposedFrame(sceneId)) {
@@ -6540,14 +6553,16 @@ export const useNodeManagement = (
           await waitForState();
 
           const sceneAfterCompose = nodesRef.current[sceneId];
-          if (sceneAfterCompose?.pollinationsApiError && !hasComposedFrame(sceneId)) {
+          if (!hasComposedFrame(sceneId)) {
+            const composeError = sceneAfterCompose?.pollinationsApiError
+              || 'ComfyUI не вернул основной объединённый кадр.';
             updateNode(timelineNodeId, {
-              pollinationsApiError: `Автодобор остановился на «${sceneAfterCompose.label}»: ${sceneAfterCompose.pollinationsApiError}`,
+              pollinationsApiError: `Автодобор остановился на «${sceneAfterCompose?.label ?? initialScene.label}»: ${composeError}`,
             });
-            return;
+            return false;
           }
         }
-        if (isCancelled()) return;
+        if (isCancelled()) return false;
 
         if (!hasCompleteSceneShotGrid(sceneId)) {
           updateNode(timelineNodeId, {
@@ -6557,11 +6572,13 @@ export const useNodeManagement = (
           await waitForState();
 
           const sceneAfterShotGrid = nodesRef.current[sceneId];
-          if (sceneAfterShotGrid?.pollinationsApiError && !hasCompleteSceneShotGrid(sceneId)) {
+          if (!hasCompleteSceneShotGrid(sceneId)) {
+            const shotGridError = sceneAfterShotGrid?.pollinationsApiError
+              || 'ComfyUI не вернул четыре дополнительных плана.';
             updateNode(timelineNodeId, {
-              pollinationsApiError: `Автодобор остановился на дополнительных планах «${sceneAfterShotGrid.label}»: ${sceneAfterShotGrid.pollinationsApiError}`,
+              pollinationsApiError: `Автодобор остановился на дополнительных планах «${sceneAfterShotGrid?.label ?? initialScene.label}»: ${shotGridError}`,
             });
-            return;
+            return false;
           }
         }
       }
@@ -6571,6 +6588,7 @@ export const useNodeManagement = (
         statusMessage: 'Недостающие элементы таймлайна добраны.',
       });
       showNotice('success', 'Таймлайн проверен: недостающие элементы добраны по очереди.');
+      return true;
     } catch (error) {
       if (isAbortError(error)) {
         showNotice('info', 'Автодобор таймлайна остановлен.');
@@ -6579,6 +6597,7 @@ export const useNodeManagement = (
         updateNode(timelineNodeId, { pollinationsApiError: message });
         showNotice('error', message);
       }
+      return false;
     } finally {
       activeRequests.current.delete(requestId);
       updateNode(timelineNodeId, {
@@ -6629,13 +6648,19 @@ export const useNodeManagement = (
         pollinationsApiError: undefined,
         statusMessage: 'Полная сборка главы: проверяем недостающие элементы...',
       });
-      await handleGenerateTimelineMissingAssets(timelineNodeId);
+      const assetsReady = await handleGenerateTimelineMissingAssets(timelineNodeId);
       if (controller.signal.aborted) return;
 
       const timelineAfterAssets = nodesRef.current[timelineNodeId];
       if (!timelineAfterAssets || timelineAfterAssets.nodeType !== 'chapter_timeline') return;
       if (timelineAfterAssets.pollinationsApiError) {
         showNotice('error', 'Полная сборка остановлена: не все элементы главы удалось подготовить.');
+        return;
+      }
+      if (!assetsReady) {
+        const message = 'Полная сборка остановлена: этап подготовки ассетов не завершился. Повторите запуск — уже готовые элементы сохранятся.';
+        updateNode(timelineNodeId, { pollinationsApiError: message, statusMessage: undefined });
+        showNotice('error', message);
         return;
       }
 

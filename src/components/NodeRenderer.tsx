@@ -65,7 +65,7 @@ interface NodeRendererProps {
   onGenerateSceneOmniVoiceNarration: (nodeId: string) => Promise<void>;
   onBuildSceneVideoClip: (nodeId: string) => Promise<void>;
   onGenerateChapterBackdrop: (nodeId: string) => Promise<void>;
-  onGenerateTimelineMissingAssets: (nodeId: string) => Promise<void>;
+  onGenerateTimelineMissingAssets: (nodeId: string) => Promise<boolean>;
   onCompleteChapter: (nodeId: string) => Promise<void>;
   onBuildChapterSceneClips: (nodeId: string) => Promise<void>;
   onBuildChapterVideo: (nodeId: string, options?: { requireFfmpeg?: boolean }) => Promise<void>;
@@ -1603,6 +1603,7 @@ const NodeRenderer: React.FC<NodeRendererProps> = ({
               )}
               <button
                 type="button"
+                className="node-secondary-button"
                 onMouseDown={stopMouseDown}
                 onClick={(event) => runWithoutDrag(event, () => node.isLoadingAudio
                   ? onCancelGeneration(id)
@@ -1613,6 +1614,7 @@ const NodeRenderer: React.FC<NodeRendererProps> = ({
               </button>
               <button
                 type="button"
+                className="node-secondary-button"
                 onMouseDown={stopMouseDown}
                 onClick={(event) => runWithoutDrag(event, () => node.isLoadingVideo
                   ? onCancelGeneration(id)

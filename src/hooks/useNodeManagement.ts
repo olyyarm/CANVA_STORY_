@@ -780,6 +780,25 @@ const getScopedNodeIds = (nodes: NodesState, rootIds: string[]) => {
   return scopedIds;
 };
 
+const findScopedProjectDetail = (
+  nodes: NodesState,
+  rootIds: Array<string | undefined>,
+  label: string,
+) => {
+  const validRootIds = [...new Set(rootIds.filter((rootId): rootId is string => Boolean(rootId)))];
+  for (const rootId of validRootIds) {
+    const directChild = findChildDetail(nodes, rootId, label);
+    if (directChild) return directChild;
+  }
+
+  if (validRootIds.length === 0) return undefined;
+  const scopedIds = getScopedNodeIds(nodes, validRootIds);
+  return Object.entries(nodes).find(([nodeId, node]) =>
+    scopedIds.has(nodeId)
+    && node.nodeType === 'script_detail'
+    && node.label === label)?.[1];
+};
+
 const extractSceneNarration = (narration: string, sceneLabel: string) => {
   const sceneNumber = getSceneNumber(sceneLabel);
   if (!sceneNumber) return cleanupBrowserSpeechText(narration);
@@ -4644,21 +4663,16 @@ export const useNodeManagement = (
       }
 
       const locationDescriptions = getLocationDescriptions(description);
-      setNodes((previousNodes) => {
-        const nextNodes = { ...previousNodes };
-        Object.entries(previousNodes).forEach(([nodeId, node]) => {
-          const assetKind = typeof node.metadata?.assetKind === 'string' ? node.metadata.assetKind : '';
-          if (
-            node.parentId === detailNodeId
-            && node.nodeType === 'pollinations_image'
-            && assetKind.startsWith('location_asset')
-          ) {
-            if (node.imageUrl?.startsWith('blob:')) URL.revokeObjectURL(node.imageUrl);
-            delete nextNodes[nodeId];
-          }
+      if (locationDescriptions.length === 0) {
+        updateNode(detailNodeId, {
+          error: 'В описании не найдено ни одной локации для генерации.',
+          isLoading: false,
+          isLoadingImage: false,
+          loadingProvider: undefined,
+          statusMessage: undefined,
         });
-        return nextNodes;
-      });
+        return;
+      }
 
       const locationHeadings = locationDescriptions
         .map((locationDescription, index) => getLocationName(locationDescription, index));
@@ -4747,6 +4761,23 @@ export const useNodeManagement = (
           { imageProvider: imageProviderMetadata },
         );
       }
+      const validAssetKinds = new Set(preparedAssets.map((_, index) => `location_asset:${index}`));
+      setNodes((previousNodes) => {
+        const nextNodes = { ...previousNodes };
+        Object.entries(previousNodes).forEach(([nodeId, node]) => {
+          const assetKind = typeof node.metadata?.assetKind === 'string' ? node.metadata.assetKind : '';
+          if (
+            node.parentId === detailNodeId
+            && node.nodeType === 'pollinations_image'
+            && assetKind.startsWith('location_asset')
+            && !validAssetKinds.has(assetKind)
+          ) {
+            if (node.imageUrl?.startsWith('blob:')) URL.revokeObjectURL(node.imageUrl);
+            delete nextNodes[nodeId];
+          }
+        });
+        return nextNodes;
+      });
       showNotice('success', `Создано референсов локаций: ${locationDescriptions.length}.`);
     } catch (error) {
       if (isAbortError(error)) {
@@ -6169,8 +6200,7 @@ export const useNodeManagement = (
         (getSceneNumber(first.label) ?? 0) - (getSceneNumber(second.label) ?? 0)
         || first.label.localeCompare(second.label, 'ru', { numeric: true }));
     const findScopedDetailNode = (label: string) =>
-      findProjectDetail(currentNodes, sourceScenarioId, label)
-      ?? findProjectDetail(currentNodes, sourceChapterId, label);
+      findScopedProjectDetail(currentNodes, [sourceScenarioId, sourceChapterId], label);
     const narrationNode = findScopedDetailNode('Закадр');
     const systemInsertsNode = findScopedDetailNode('Системные вставки');
     const locationsNode = findScopedDetailNode('Локации');
@@ -6322,12 +6352,16 @@ export const useNodeManagement = (
         : 'comfy_openai_gpt_image_2_low';
 
     const requestId = `timeline-missing:${timelineNodeId}`;
-    if (activeRequests.current.has(requestId)) return false;
+    if (activeRequests.current.has(requestId)) {
+      const message = 'Подготовка ассетов этой главы уже выполняется. Дождитесь завершения или нажмите «Остановить».';
+      updateNode(timelineNodeId, { pollinationsApiError: message });
+      return false;
+    }
     const controller = new AbortController();
     activeRequests.current.set(requestId, controller);
 
     const waitForState = () => new Promise((resolve) => window.setTimeout(resolve, 40));
-    const isCancelled = () => controller.signal.aborted || !activeRequests.current.has(requestId);
+    const isCancelled = () => controller.signal.aborted;
     let sourceScenarioId: string | undefined;
     let sourceChapterId = '';
     let sceneEntries: Array<[string, NodeData]> = [];
@@ -6440,9 +6474,11 @@ export const useNodeManagement = (
 
     const findScopedDetail = (label: string) => {
       const latestNodes = nodesRef.current;
-      return findProjectDetail(latestNodes, sourceScenarioId, label)
-        ?? findProjectDetail(latestNodes, sourceChapterId, label)
-        ?? findProjectDetail(latestNodes, detailSourceId, label);
+      return findScopedProjectDetail(
+        latestNodes,
+        [sourceScenarioId, sourceChapterId, detailSourceId],
+        label,
+      );
     };
     const ensureDetail = async (detailType: DetailType) => {
       const config = detailConfig[detailType];
@@ -6467,12 +6503,12 @@ export const useNodeManagement = (
         && Boolean(candidate.imageUrl));
     const hasCompleteSceneShotGrid = (sceneId: string) =>
       findSceneShotNodes(nodesRef.current, sceneId).length >= 4;
-    const hasDetailImages = (detailNodeId: string, assetKindPrefix: string) =>
-      Object.values(nodesRef.current).some((candidate) =>
+    const countDetailImages = (detailNodeId: string, assetKindPrefix: string) =>
+      Object.values(nodesRef.current).filter((candidate) =>
         candidate.nodeType === 'pollinations_image'
         && candidate.parentId === detailNodeId
         && getAssetKind(candidate).startsWith(assetKindPrefix)
-        && Boolean(candidate.imageUrl));
+        && Boolean(candidate.imageUrl)).length;
     const syncDetailRenderer = (
       detailNodeId: string,
       pipeline: ImagePipeline,
@@ -6570,11 +6606,16 @@ export const useNodeManagement = (
       const locationsNodeId = locationsNode
         ? Object.entries(nodesRef.current).find(([, node]) => node === locationsNode)?.[0]
         : undefined;
+      const expectedLocationCount = locationsNode?.inputValue
+        ? getLocationDescriptions(locationsNode.inputValue).length
+        : 0;
       if (
         locationsNode?.inputValue
         && locationsNodeId
-        && !hasLocationsForEveryScene()
-        && !hasDetailImages(locationsNodeId, 'location_asset')
+        && (
+          countDetailImages(locationsNodeId, 'location_asset') < expectedLocationCount
+          || !hasLocationsForEveryScene()
+        )
       ) {
         syncDetailRenderer(locationsNodeId, timelineAssetPipeline, timelineAssetImageProvider);
         updateNode(timelineNodeId, {
@@ -6586,12 +6627,31 @@ export const useNodeManagement = (
         await waitForState();
       }
       if (isCancelled()) return false;
+      if (
+        locationsNodeId
+        && expectedLocationCount > 0
+        && countDetailImages(locationsNodeId, 'location_asset') < expectedLocationCount
+      ) {
+        const latestLocationsNode = findScopedDetail('Локации');
+        const message = latestLocationsNode?.pollinationsApiError
+          || latestLocationsNode?.error
+          || `Создано не все локации: ${countDetailImages(locationsNodeId, 'location_asset')} из ${expectedLocationCount}.`;
+        updateNode(timelineNodeId, { pollinationsApiError: `Автодобор остановился на локациях: ${message}` });
+        return false;
+      }
 
       const systemInsertsNode = findScopedDetail('Системные вставки');
       const systemInsertsNodeId = systemInsertsNode
         ? Object.entries(nodesRef.current).find(([, node]) => node === systemInsertsNode)?.[0]
         : undefined;
-      if (systemInsertsNode?.inputValue && systemInsertsNodeId && !hasDetailImages(systemInsertsNodeId, 'system_insert')) {
+      const expectedSystemInsertCount = systemInsertsNode?.inputValue
+        ? getSystemInsertDescriptions(systemInsertsNode.inputValue).length
+        : 0;
+      if (
+        systemInsertsNode?.inputValue
+        && systemInsertsNodeId
+        && countDetailImages(systemInsertsNodeId, 'system_insert') < expectedSystemInsertCount
+      ) {
         syncDetailRenderer(systemInsertsNodeId, timelineSystemInsertPipeline, timelineSystemInsertImageProvider);
         updateNode(timelineNodeId, {
           statusMessage: timelineSystemInsertImageProvider === 'comfy_openai_gpt_image_2_low'

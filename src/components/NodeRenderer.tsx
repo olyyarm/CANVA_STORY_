@@ -706,6 +706,20 @@ const NodeRenderer: React.FC<NodeRendererProps> = ({
         )).length;
     })()
     : 0;
+  const timelineLocationReferenceCount = node.nodeType === 'chapter_timeline'
+    ? (() => {
+      const timelineScope = getTimelineScope(allNodes, node);
+      return Object.entries(allNodes).filter(([nodeId, candidate]) =>
+        candidate.nodeType === 'pollinations_image'
+        && getAssetKind(candidate).startsWith('location_asset')
+        && Boolean(candidate.imageUrl)
+        && (
+          !timelineScope.hasScope
+          || timelineScope.scopedIds.has(nodeId)
+          || timelineScope.scopedIds.has(candidate.parentId ?? '')
+        )).length;
+    })()
+    : 0;
   const timelineBackdrop = node.nodeType === 'chapter_timeline'
     ? findTimelineBackdropImageNode(allNodes, id)
     : undefined;
@@ -722,7 +736,7 @@ const NodeRenderer: React.FC<NodeRendererProps> = ({
     : new Map<number, string>();
   const timelineStats = {
     scenes: timelineScenes.length,
-    locations: timelineScenes.filter(({ location }) => Boolean(location?.imageUrl)).length,
+    locations: timelineLocationReferenceCount,
     characters: timelineCharacterReferenceCount,
     frames: timelineScenes.filter(({ frame }) => Boolean(frame?.imageUrl)).length,
     shots: timelineScenes.reduce((count, sceneEntry) => count + sceneEntry.shots.length, 0),
@@ -1832,9 +1846,9 @@ const NodeRenderer: React.FC<NodeRendererProps> = ({
                   className="node-secondary-button chapter-timeline__workspace"
                   onMouseDown={stopMouseDown}
                   onClick={(event) => runWithoutDrag(event, () => onOpenChapterWorkspace(id))}
-                  title="Открыть техническую ветку этой главы на отдельном этаже"
+                  title="Показать созданные ноды героев, локаций, сцен, озвучки и медиа этой главы"
                 >
-                  Ветка генерации
+                  Показать ноды главы
                 </button>
               )}
             </div>

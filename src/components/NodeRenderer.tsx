@@ -81,8 +81,6 @@ interface NodeRendererProps {
   textModelOptions: string[];
   imageProvider: ImageProvider;
   onCancelGeneration: (nodeId: string) => void;
-  focusChainExpanded?: boolean;
-  onToggleFocusChain?: (nodeId: string) => void;
   onOpenChapterWorkspace?: (nodeId: string) => void;
   onDelete?: (nodeId: string) => void;
   onResizeMouseDown?: (event: React.MouseEvent<HTMLButtonElement>, nodeId: string) => void;
@@ -533,8 +531,6 @@ const NodeRenderer: React.FC<NodeRendererProps> = ({
   textModelOptions,
   imageProvider,
   onCancelGeneration,
-  focusChainExpanded = false,
-  onToggleFocusChain,
   onOpenChapterWorkspace,
   onDelete,
   onResizeMouseDown,
@@ -731,9 +727,6 @@ const NodeRenderer: React.FC<NodeRendererProps> = ({
   const renderedNodeSize = getRenderedNodeSize(node);
   const isPendingOutput = pendingOutputNodeId === id;
   const canAcceptPendingOutput = Boolean(pendingOutputNodeId && pendingOutputNodeId !== id);
-  const canToggleFocusChain = node.nodeType === 'split_item'
-    && /^\s*(?:<<<SPLIT>>>\s*)?(?:ГЛАВА|CHAPTER)\b/iu.test(`${node.label}\n${node.inputValue ?? ''}`);
-
   const renderCopyButton = (text: string) => (
     <button
       type="button"
@@ -806,18 +799,6 @@ const NodeRenderer: React.FC<NodeRendererProps> = ({
         </span>
         <span className="story-node__title" title={node.label}>{node.label}</span>
         <span className="story-node__header-actions">
-          {onToggleFocusChain && canToggleFocusChain && (
-            <button
-              type="button"
-              className={`node-icon-button node-chain-button${focusChainExpanded ? ' node-chain-button--active' : ''}`}
-              onMouseDown={stopMouseDown}
-              onClick={(event) => runWithoutDrag(event, () => onToggleFocusChain(id))}
-              aria-label={focusChainExpanded ? 'Скрыть цепочку главы' : 'Показать цепочку главы'}
-              title={focusChainExpanded ? 'Скрыть цепочку главы' : 'Показать цепочку главы'}
-            >
-              ◎
-            </button>
-          )}
           {node.nodeType === 'association' && node.canContinue && !node.isLoading && (
             <button
               type="button"
@@ -1818,8 +1799,8 @@ const NodeRenderer: React.FC<NodeRendererProps> = ({
                 onClick={(event) => runWithoutDrag(event, () => node.isLoadingVideo
                   ? onCancelGeneration(id)
                   : void onCompleteChapter(id))}
-                disabled={Boolean(node.isLoading || node.isLoadingImage || node.isLoadingAudio || timelineStats.scenes === 0)}
-                title="Добрать недостающие элементы, собрать клипы сцен и общий MP4 главы"
+                disabled={Boolean(node.isLoading || node.isLoadingImage || node.isLoadingAudio)}
+                title="При необходимости создать разбивку и сценарий главы, затем добрать медиа и собрать общий MP4"
               >
                 {node.isLoadingVideo ? 'Остановить сборку' : 'Собрать главу целиком'}
               </button>
@@ -1841,9 +1822,12 @@ const NodeRenderer: React.FC<NodeRendererProps> = ({
                 onClick={(event) => runWithoutDrag(event, () => node.isLoadingVideo
                   ? onCancelGeneration(id)
                   : void onGenerateTimelineMissingAssets(id))}
-                disabled={Boolean(node.isLoading || node.isLoadingImage || node.isLoadingAudio || timelineStats.scenes === 0)}
+                disabled={Boolean(node.isLoading || node.isLoadingImage || node.isLoadingAudio)}
+                title="При необходимости подготовить материал и автособрать сцены, затем добрать изображения и озвучку"
               >
-                {node.isLoadingVideo ? 'Остановить' : 'Добрать недостающее'}
+                {node.isLoadingVideo
+                  ? 'Остановить'
+                  : timelineStats.scenes > 0 ? 'Добрать недостающее' : 'Подготовить главу'}
               </button>
               <button
                 type="button"
@@ -1899,7 +1883,7 @@ const NodeRenderer: React.FC<NodeRendererProps> = ({
             )}
             {timelineScenes.length === 0 ? (
               <div className="chapter-timeline__empty">
-                Сцен пока нет. Сначала соберите сценарий, затем нажмите «Создать/обновить сцены».
+                Сцен пока нет. Нажмите «Подготовить главу»: таймлайн проверит разбивку, развернёт материал и запустит автосборку сцен.
               </div>
             ) : (
               <div className="chapter-timeline__rail" onMouseDown={stopMouseDown}>

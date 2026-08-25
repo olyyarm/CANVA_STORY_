@@ -6089,8 +6089,8 @@ export const useNodeManagement = (
   ]);
 
   const handleGenerateTimelineMissingAssets = useCallback(async (timelineNodeId: string) => {
-    const currentNodes = nodesRef.current;
-    const timelineNode = currentNodes[timelineNodeId];
+    let currentNodes = nodesRef.current;
+    let timelineNode = currentNodes[timelineNodeId];
     if (!timelineNode || timelineNode.nodeType !== 'chapter_timeline' || timelineNode.isLoadingVideo) return;
     const timelineTextModel = typeof timelineNode.selectedModel === 'string' && timelineNode.selectedModel.trim()
       ? timelineNode.selectedModel.trim()
@@ -6122,27 +6122,6 @@ export const useNodeManagement = (
         ? 'inherit'
         : 'comfy_openai_gpt_image_2_low';
 
-    const sourceScenarioId = typeof timelineNode.metadata?.sourceScenarioId === 'string'
-      ? timelineNode.metadata.sourceScenarioId
-      : timelineNode.parentId;
-    const sourceChapterId = typeof timelineNode.metadata?.sourceChapterId === 'string'
-      ? timelineNode.metadata.sourceChapterId
-      : '';
-    const timelineScope = getScopedNodeIds(currentNodes, [sourceScenarioId ?? '', sourceChapterId]);
-    const hasTimelineScope = timelineScope.size > 0;
-    const sceneEntries = Object.entries(currentNodes)
-      .filter(([, candidate]) =>
-        candidate.nodeType === 'scene'
-        && (!hasTimelineScope || timelineScope.has(candidate.parentId ?? '')))
-      .sort(([, first], [, second]) =>
-        (getSceneNumber(first.label) ?? 0) - (getSceneNumber(second.label) ?? 0)
-        || first.label.localeCompare(second.label, 'ru', { numeric: true }));
-
-    if (sceneEntries.length === 0) {
-      updateNode(timelineNodeId, { pollinationsApiError: 'Сначала создайте сцены для таймлайна.' });
-      return;
-    }
-
     const requestId = `timeline-missing:${timelineNodeId}`;
     if (activeRequests.current.has(requestId)) return;
     const controller = new AbortController();
@@ -6150,8 +6129,116 @@ export const useNodeManagement = (
 
     const waitForState = () => new Promise((resolve) => window.setTimeout(resolve, 40));
     const isCancelled = () => controller.signal.aborted || !activeRequests.current.has(requestId);
-    const detailSourceId = [sourceScenarioId, sourceChapterId]
-      .find((nodeId) => Boolean(nodeId && currentNodes[nodeId]?.inputValue));
+    let sourceScenarioId: string | undefined;
+    let sourceChapterId = '';
+    let sceneEntries: Array<[string, NodeData]> = [];
+    let detailSourceId: string | undefined;
+    const refreshTimelineContext = () => {
+      currentNodes = nodesRef.current;
+      timelineNode = currentNodes[timelineNodeId] ?? timelineNode;
+      sourceScenarioId = typeof timelineNode.metadata?.sourceScenarioId === 'string'
+        ? timelineNode.metadata.sourceScenarioId
+        : timelineNode.parentId;
+      sourceChapterId = typeof timelineNode.metadata?.sourceChapterId === 'string'
+        ? timelineNode.metadata.sourceChapterId
+        : '';
+      const timelineScope = getScopedNodeIds(currentNodes, [sourceScenarioId ?? '', sourceChapterId]);
+      const hasTimelineScope = timelineScope.size > 0;
+      sceneEntries = Object.entries(currentNodes)
+        .filter((entry): entry is [string, NodeData] => {
+          const candidate = entry[1];
+          return candidate.nodeType === 'scene'
+            && (!hasTimelineScope || timelineScope.has(candidate.parentId ?? ''));
+        })
+        .sort(([, first], [, second]) =>
+          (getSceneNumber(first.label) ?? 0) - (getSceneNumber(second.label) ?? 0)
+          || first.label.localeCompare(second.label, 'ru', { numeric: true }));
+      detailSourceId = [sourceScenarioId, sourceChapterId]
+        .find((nodeId) => Boolean(nodeId && currentNodes[nodeId]?.inputValue));
+    };
+    refreshTimelineContext();
+
+    const ensureChapterTextWorkflow = async () => {
+      if (sceneEntries.length > 0) return true;
+
+      let chapterPlanEntry = sourceChapterId
+        && getSourceKind(nodesRef.current[sourceChapterId]) === 'chapter_plan'
+        ? [sourceChapterId, nodesRef.current[sourceChapterId]] as [string, NodeData]
+        : undefined;
+      const plannerEntry = findNodeBySourceKind(nodesRef.current, 'chapter_planner');
+
+      if (!chapterPlanEntry && plannerEntry) {
+        let plannerHasJson = true;
+        try {
+          parseChapterPlanDocument(plannerEntry[1].inputValue ?? '');
+        } catch {
+          plannerHasJson = false;
+        }
+        if (!plannerHasJson) {
+          updateNode(timelineNodeId, { statusMessage: 'Разбиваем материал сезона на главы...' });
+          await handlePlanChapters(plannerEntry[0]);
+          await waitForState();
+        }
+        if (isCancelled()) return false;
+
+        const latestPlanner = nodesRef.current[plannerEntry[0]];
+        try {
+          parseChapterPlanDocument(latestPlanner?.inputValue ?? '');
+          updateNode(timelineNodeId, { statusMessage: 'Создаём карточки глав по плану...' });
+          handleCreateChapterPlanNodes(plannerEntry[0]);
+          await waitForState();
+        } catch {
+          return false;
+        }
+
+        const chapterPlanEntries = Object.entries(nodesRef.current)
+          .filter((entry): entry is [string, NodeData] =>
+            entry[1].nodeType === 'script_detail'
+            && getSourceKind(entry[1]) === 'chapter_plan');
+        const targetChapterNumber = getChapterNumber(timelineNode);
+        chapterPlanEntry = chapterPlanEntries.find(([, node]) =>
+          targetChapterNumber !== null && Number(node.metadata?.chapterNumber) === targetChapterNumber)
+          ?? (chapterPlanEntries.length === 1 ? chapterPlanEntries[0] : undefined);
+      }
+
+      if (!chapterPlanEntry) return false;
+      const [chapterPlanId, chapterPlanNode] = chapterPlanEntry;
+      if (sourceChapterId !== chapterPlanId) {
+        updateNode(timelineNodeId, {
+          parentId: chapterPlanId,
+          metadata: {
+            ...timelineNode.metadata,
+            sourceChapterId: chapterPlanId,
+            sourceLabel: chapterPlanNode.label,
+          },
+        });
+        refreshTimelineContext();
+      }
+
+      let chapterMaterialEntry = findPipelineNode(nodesRef.current, 'chapter_material', chapterPlanId);
+      const preparedMaterial = chapterMaterialEntry?.[1].inputValue?.trim();
+      if (!preparedMaterial || preparedMaterial === DEFAULT_CHAPTER_MATERIAL.trim()) {
+        updateNode(timelineNodeId, { statusMessage: `Разворачиваем материал: ${chapterPlanNode.label}...` });
+        await handleBuildChapterMaterial(chapterPlanId);
+        await waitForState();
+        chapterMaterialEntry = findPipelineNode(nodesRef.current, 'chapter_material', chapterPlanId);
+      }
+      if (isCancelled() || !chapterMaterialEntry?.[1].inputValue?.trim()) return false;
+
+      refreshTimelineContext();
+      if (sceneEntries.length === 0) {
+        updateNode(timelineNodeId, { statusMessage: `Автособираем сценарий и сцены: ${chapterPlanNode.label}...` });
+        await handleAutoBuildChapter(chapterMaterialEntry[0]);
+        await waitForState();
+      }
+      if (isCancelled()) return false;
+
+      handleEnsureChapterTimeline(timelineNodeId);
+      await waitForState();
+      refreshTimelineContext();
+      return sceneEntries.length > 0;
+    };
+
     const findScopedDetail = (label: string) => {
       const latestNodes = nodesRef.current;
       return findProjectDetail(latestNodes, sourceScenarioId, label)
@@ -6192,8 +6279,26 @@ export const useNodeManagement = (
       updateNode(timelineNodeId, {
         isLoadingVideo: true,
         pollinationsApiError: undefined,
-        statusMessage: 'Добираем недостающие элементы таймлайна...',
+        statusMessage: sceneEntries.length > 0
+          ? 'Добираем недостающие элементы таймлайна...'
+          : 'Проверяем разбивку на главы и сценарий...',
       });
+
+      if (sceneEntries.length === 0) {
+        const chapterReady = await ensureChapterTextWorkflow();
+        if (isCancelled()) return;
+        if (!chapterReady) {
+          const chapterPlanCount = Object.values(nodesRef.current).filter((node) =>
+            node.nodeType === 'script_detail' && getSourceKind(node) === 'chapter_plan').length;
+          const message = chapterPlanCount > 1
+            ? 'Таймлайн не привязан к конкретной главе. В пульте глав откройте нужную карточку и создайте её таймлайн.'
+            : 'Не удалось подготовить разбивку и сцены главы. Проверьте ноды «PDF / сырьё сезона» и «Планировщик глав».';
+          updateNode(timelineNodeId, { pollinationsApiError: message });
+          showNotice('error', message);
+          return;
+        }
+        updateNode(timelineNodeId, { statusMessage: 'Структура главы готова. Добираем изображения и озвучку...' });
+      }
 
       await ensureDetail('герои');
       if (isCancelled()) return;
@@ -6383,12 +6488,17 @@ export const useNodeManagement = (
       });
     }
   }, [
+    handleAutoBuildChapter,
+    handleBuildChapterMaterial,
     handleComposeSceneFlux2,
+    handleCreateChapterPlanNodes,
+    handleEnsureChapterTimeline,
     handleGenerateChapterBackdrop,
     handleGenerateDetailAsset,
     handleGenerateSceneLocationAsset,
     handleGenerateSceneOmniVoiceNarration,
     handleGenerateSceneShotGrid,
+    handlePlanChapters,
     handlePrepareNarrationTts,
     handleScenarioDetailClick,
     narrationSettings,

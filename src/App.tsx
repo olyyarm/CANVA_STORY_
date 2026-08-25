@@ -404,9 +404,8 @@ const App = () => {
       || workspaceViewportsRef.current[ROOT_WORKSPACE_ID]
       || bootstrap.project.viewport,
   );
-  const [timelineFocusMode, setTimelineFocusMode] = useState(true);
+  const [timelineFocusMode, setTimelineFocusMode] = useState(false);
   const [chapterNavigatorOpen, setChapterNavigatorOpen] = useState(true);
-  const [expandedFocusNodeIds, setExpandedFocusNodeIds] = useState<Set<string>>(() => new Set());
   const pendingWorkspaceFitRef = useRef(false);
   const pendingRootFocusNodeRef = useRef<string | null>(null);
   const handleNarrationSeedChange = useCallback((seed: number) => {
@@ -521,18 +520,6 @@ const App = () => {
     )),
     [nodeEntries],
   );
-  const toggleFocusChain = useCallback((nodeId: string) => {
-    setExpandedFocusNodeIds((previous) => {
-      const next = new Set(previous);
-      if (next.has(nodeId)) {
-        next.delete(nodeId);
-      } else {
-        next.add(nodeId);
-      }
-      return next;
-    });
-  }, []);
-
   const visibleNodeEntries = useMemo(() => {
     if (activeChapterWorkspaceId) {
       const workspaceNodeIds = getChapterWorkspaceNodeIds(nodes, activeChapterWorkspaceId);
@@ -542,32 +529,25 @@ const App = () => {
         && node.nodeType !== 'chapter_collector');
     }
     if (!timelineFocusMode) return canvasNodeEntries;
-    const expandedIds = new Set(expandedFocusNodeIds);
-    let changed = true;
-    while (changed) {
-      changed = false;
-      canvasNodeEntries.forEach(([nodeId, node]) => {
-        if (!node.parentId || !expandedIds.has(node.parentId) || expandedIds.has(nodeId)) return;
-        expandedIds.add(nodeId);
-        changed = true;
-      });
-    }
     const isChapterNode = (node: NodeData) =>
-      node.nodeType === 'split_item'
-      && /^\s*(?:<<<SPLIT>>>\s*)?(?:ГЛАВА|CHAPTER)\b/iu.test(`${node.label}\n${node.inputValue ?? ''}`);
+      (
+        node.nodeType === 'split_item'
+        && /^\s*(?:<<<SPLIT>>>\s*)?(?:ГЛАВА|CHAPTER)\b/iu.test(`${node.label}\n${node.inputValue ?? ''}`)
+      ) || (
+        node.nodeType === 'script_detail'
+        && node.metadata?.sourceKind === 'chapter_plan'
+      );
     const isSceneWriterNode = (node: NodeData) =>
       node.nodeType === 'prompt_node' && /Scene Writer/iu.test(node.label);
-    return canvasNodeEntries.filter(([nodeId, node]) =>
+    return canvasNodeEntries.filter(([, node]) =>
       node.nodeType === 'chapter_timeline'
       || node.nodeType === 'chapter_collector'
       || node.nodeType === 'video_output'
       || node.nodeType === 'script_input'
       || node.nodeType === 'script_output'
       || isChapterNode(node)
-      || isSceneWriterNode(node)
-      || expandedIds.has(nodeId)
-      || selectedNodeId === nodeId);
-  }, [activeChapterWorkspaceId, canvasNodeEntries, expandedFocusNodeIds, nodes, selectedNodeId, timelineFocusMode]);
+      || isSceneWriterNode(node));
+  }, [activeChapterWorkspaceId, canvasNodeEntries, nodes, timelineFocusMode]);
   const visibleNodeIds = useMemo(
     () => new Set(visibleNodeEntries.map(([nodeId]) => nodeId)),
     [visibleNodeEntries],
@@ -2087,8 +2067,6 @@ const App = () => {
               textModelOptions={textModelOptions}
               imageProvider={imageGenerationSettings.provider}
               onCancelGeneration={handleCancelGeneration}
-              focusChainExpanded={expandedFocusNodeIds.has(id)}
-              onToggleFocusChain={toggleFocusChain}
               onOpenChapterWorkspace={handleOpenChapterWorkspace}
             />
           ))}

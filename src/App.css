@@ -1114,16 +1114,6 @@
   background: var(--surface-2);
 }
 
-.node-chain-button {
-  color: #b793ff;
-}
-
-.node-chain-button--active {
-  border-color: #8b68e8;
-  color: #f2ecff;
-  background: #3a2c5f;
-}
-
 .node-delete-button {
   opacity: 0;
 }

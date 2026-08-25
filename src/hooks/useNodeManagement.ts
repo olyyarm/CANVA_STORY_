@@ -5092,8 +5092,8 @@ export const useNodeManagement = (
         error: undefined,
         pollinationsApiError: undefined,
         statusMessage: narrationSettings.mode === 'clone'
-          ? 'OmniVoice загружает голосовой референс и готовит стабильную озвучку...'
-          : 'OmniVoice поставлен в очередь ComfyUI и готовит озвучку...',
+          ? 'Отправляем Voice Clone в очередь ComfyUI...'
+          : 'Отправляем OmniVoice в очередь ComfyUI...',
       });
 
       const audioUrl = await generateComfyOmniVoiceAudio(
@@ -5103,6 +5103,14 @@ export const useNodeManagement = (
         await getOmniVoiceReferenceInput(),
         effectiveSeed,
         controller.signal,
+        (phase) => {
+          if (!activeRequests.current.has(requestId)) return;
+          updateNode(detailNodeId, {
+            statusMessage: phase === 'running'
+              ? 'OmniVoice выполняет озвучку в ComfyUI...'
+              : 'OmniVoice ждёт очередь: ComfyUI заканчивает предыдущую задачу...',
+          });
+        },
       );
 
       setNodes((previousNodes) => {
@@ -5173,8 +5181,8 @@ export const useNodeManagement = (
         loadingProvider: 'comfyui',
         pollinationsApiError: undefined,
         statusMessage: narrationSettings.mode === 'clone'
-          ? 'OmniVoice озвучивает сцену голосом из референса...'
-          : 'OmniVoice озвучивает эту сцену голосом проекта...',
+          ? 'Отправляем Voice Clone сцены в очередь ComfyUI...'
+          : 'Отправляем OmniVoice сцены в очередь ComfyUI...',
       });
 
       const audioUrl = await generateComfyOmniVoiceAudio(
@@ -5184,6 +5192,16 @@ export const useNodeManagement = (
         await getOmniVoiceReferenceInput(),
         effectiveSeed,
         controller.signal,
+        (phase) => {
+          if (!activeRequests.current.has(requestId)) return;
+          updateNode(sceneNodeId, {
+            statusMessage: phase === 'running'
+              ? narrationSettings.mode === 'clone'
+                ? 'OmniVoice озвучивает сцену голосом из референса...'
+                : 'OmniVoice озвучивает эту сцену голосом проекта...'
+              : 'OmniVoice ждёт очередь: ComfyUI заканчивает предыдущий рендер...',
+          });
+        },
       );
 
       setNodes((previousNodes) => {
@@ -6441,6 +6459,13 @@ export const useNodeManagement = (
 
         const sceneAfterLocation = nodesRef.current[sceneId] ?? latestScene;
         if (sceneAfterLocation.nodeType !== 'scene') continue;
+        if (!hasSceneLocation(sceneId, sceneAfterLocation)) {
+          const message = sceneAfterLocation.pollinationsApiError
+            ? `Автодобор остановился на локации «${sceneAfterLocation.label}»: ${sceneAfterLocation.pollinationsApiError}`
+            : `Автодобор остановлен: фон локации для «${sceneAfterLocation.label}» не создан или был отменён.`;
+          updateNode(timelineNodeId, { pollinationsApiError: message });
+          return;
+        }
         const narrationText = resolveSceneNarrationText(nodesRef.current, sceneAfterLocation);
         const currentTtsSignature = narrationText
           ? getSceneTtsGenerationSignature(narrationText, narrationSettings)
@@ -6460,6 +6485,14 @@ export const useNodeManagement = (
           await waitForState();
         }
         if (isCancelled()) return;
+        const sceneAfterAudio = nodesRef.current[sceneId] ?? sceneAfterLocation;
+        if (shouldRefreshAudio && !sceneAfterAudio.audioUrl) {
+          const message = sceneAfterAudio.pollinationsApiError
+            ? `Автодобор остановился на озвучке «${sceneAfterAudio.label}»: ${sceneAfterAudio.pollinationsApiError}`
+            : `Автодобор остановлен: озвучка для «${sceneAfterAudio.label}» не создана или была отменена.`;
+          updateNode(timelineNodeId, { pollinationsApiError: message });
+          return;
+        }
 
         if (!hasComposedFrame(sceneId)) {
           updateNode(timelineNodeId, {

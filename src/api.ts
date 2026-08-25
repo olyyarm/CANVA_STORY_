@@ -1035,8 +1035,10 @@ const waitForComfyAudio = async (
   promptId: string,
   timeoutMs: number,
   signal?: AbortSignal,
+  onQueuePhase?: (phase: 'queued' | 'running') => void,
 ) => {
   const startedAt = Date.now();
+  let lastQueuePhase: 'queued' | 'running' | undefined;
   while (Date.now() - startedAt < timeoutMs) {
     await wait(2000, signal);
     const historyResponse = await fetch(`${baseUrl}/history/${promptId}`, getComfyFetchOptions({ signal }));
@@ -1046,6 +1048,24 @@ const waitForComfyAudio = async (
     if (audio) return audio;
     const failure = getComfyExecutionFailure(history);
     if (failure) throw new Error(failure);
+    try {
+      const queueResponse = await fetch(`${baseUrl}/queue`, getComfyFetchOptions({ signal }));
+      if (queueResponse.ok) {
+        const queue = await queueResponse.json() as Record<string, unknown>;
+        const queuePhase = getComfyQueuePromptIds(queue.queue_running).includes(promptId)
+          ? 'running' as const
+          : getComfyQueuePromptIds(queue.queue_pending).includes(promptId)
+            ? 'queued' as const
+            : undefined;
+        if (queuePhase && queuePhase !== lastQueuePhase) {
+          lastQueuePhase = queuePhase;
+          onQueuePhase?.(queuePhase);
+        }
+      }
+    } catch (error) {
+      if (error instanceof DOMException && error.name === 'AbortError') throw error;
+      // History polling remains authoritative if the optional queue status is unavailable.
+    }
   }
   return null;
 };
@@ -1211,8 +1231,10 @@ export const generateComfyOmniVoiceAudio = async (
   reference: OmniVoiceReferenceInput | undefined,
   seedOverride?: number,
   signal?: AbortSignal,
+  onQueuePhase?: (phase: 'queued' | 'running') => void,
 ) => {
   const baseUrl = getComfyBaseUrl(settings.comfyEndpoint);
+  let promptId: string | null = null;
   try {
     const seed = seedOverride ?? narrationSettings.seed;
     let workflow: Record<string, { class_type: string; inputs: Record<string, unknown> }>;
@@ -1247,9 +1269,14 @@ export const generateComfyOmniVoiceAudio = async (
     }
     const promptData: ComfyPromptResponse = await promptResponse.json();
     if (!promptData.prompt_id) throw new Error('ComfyUI не вернул prompt_id для OmniVoice workflow.');
+    promptId = promptData.prompt_id;
+    onQueuePhase?.('queued');
 
-    const audio = await waitForComfyAudio(baseUrl, promptData.prompt_id, COMFY_TTS_TIMEOUT_MS, signal);
-    if (!audio) throw new Error('OmniVoice не вернул аудио за 45 минут. ComfyUI может ещё считать озвучку, проверьте его окно.');
+    const audio = await waitForComfyAudio(baseUrl, promptId, COMFY_TTS_TIMEOUT_MS, signal, onQueuePhase);
+    if (!audio) {
+      await cancelComfyPrompt(baseUrl, promptId);
+      throw new Error('OmniVoice не вернул аудио за 45 минут. Задача снята с очереди ComfyUI.');
+    }
 
     const params = new URLSearchParams({
       filename: audio.filename,
@@ -1263,7 +1290,10 @@ export const generateComfyOmniVoiceAudio = async (
 
     return URL.createObjectURL(await viewResponse.blob());
   } catch (error) {
-    if (error instanceof DOMException && error.name === 'AbortError') throw error;
+    if (error instanceof DOMException && error.name === 'AbortError') {
+      if (promptId) await cancelComfyPrompt(baseUrl, promptId);
+      throw error;
+    }
     if (error instanceof TypeError) {
       throw new Error(`Не удалось подключиться к ComfyUI по адресу ${baseUrl}. Проверьте ComfyUI, OmniVoice-ноды и CORS.`);
     }
@@ -1607,6 +1637,7 @@ const generateComfyImage = async (
   signal?: AbortSignal,
 ) => {
   const baseUrl = getComfyBaseUrl(settings.comfyEndpoint);
+  let promptId: string | null = null;
   try {
     if (pipeline !== 'sdxl' && pipeline !== 'z_image_turbo' && pipeline !== 'ernie_image_turbo') {
       throw new Error('Этот генератор ожидает pipeline SDXL, Z-Image Turbo или ERNIE Image Turbo.');
@@ -1631,14 +1662,18 @@ const generateComfyImage = async (
     }
     const promptData: ComfyPromptResponse = await promptResponse.json();
     if (!promptData.prompt_id) throw new Error('ComfyUI не вернул prompt_id. Проверьте workflow в консоли ComfyUI.');
+    promptId = promptData.prompt_id;
 
     const image = await waitForComfyImage(
       baseUrl,
-      promptData.prompt_id,
+      promptId,
       getComfyImageTimeoutMs(pipeline),
       signal,
     );
-    if (!image) throw new Error('ComfyUI не вернул изображение за отведённое время. Проверьте, не упал ли workflow в окне ComfyUI.');
+    if (!image) {
+      await cancelComfyPrompt(baseUrl, promptId);
+      throw new Error('ComfyUI не вернул изображение за отведённое время. Задача снята с очереди; проверьте окно ComfyUI.');
+    }
 
     const params = new URLSearchParams({
       filename: image.filename,
@@ -1652,7 +1687,10 @@ const generateComfyImage = async (
 
     return URL.createObjectURL(await viewResponse.blob());
   } catch (error) {
-    if (error instanceof DOMException && error.name === 'AbortError') throw error;
+    if (error instanceof DOMException && error.name === 'AbortError') {
+      if (promptId) await cancelComfyPrompt(baseUrl, promptId);
+      throw error;
+    }
     if (error instanceof TypeError) {
       throw new Error(`Не удалось подключиться к ComfyUI по адресу ${baseUrl}. Проверьте, что ComfyUI запущен, endpoint указан верно и разрешён CORS (--enable-cors-header).`);
     }

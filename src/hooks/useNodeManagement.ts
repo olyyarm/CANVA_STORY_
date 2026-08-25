@@ -2790,7 +2790,8 @@ export const useNodeManagement = (
       const inheritedAssetPipeline = existing?.[1].metadata?.timelineAssetPipeline
         ?? masterTimeline?.metadata?.timelineAssetPipeline;
       const inheritedAssetProvider = existing?.[1].metadata?.timelineAssetImageProvider
-        ?? masterTimeline?.metadata?.timelineAssetImageProvider;
+        ?? masterTimeline?.metadata?.timelineAssetImageProvider
+        ?? 'comfy_openai_gpt_image_2_low';
       const inheritedInsertPipeline = existing?.[1].metadata?.timelineSystemInsertPipeline
         ?? masterTimeline?.metadata?.timelineSystemInsertPipeline;
       const inheritedInsertProvider = existing?.[1].metadata?.timelineSystemInsertImageProvider
@@ -3941,6 +3942,7 @@ export const useNodeManagement = (
     const findDetail = (label: string) => details.find((node) => node.label === label)?.inputValue || 'Не задано';
     const sceneDescription = sceneNode.sceneText || sceneNode.inputValue || outputNode.inputValue;
     const useGptImage = providerOverride === 'comfy_openai_gpt_image_2_low';
+    const sceneLocationPipeline = pipelineOverride ?? getNodeImagePipeline(sceneNode, 'z_image_turbo');
     const prompt = [
       `Нужная сцена: ${sceneNode.label}`,
       `Описание сцены:\n${sceneDescription}`,
@@ -3973,14 +3975,22 @@ export const useNodeManagement = (
         loadingProvider: useGptImage ? 'comfy_openai_image' : imageGenerationSettings.provider,
         assetPrompt: styledLocationPrompt,
         productionStatus: 'in_production',
-        statusMessage: 'Генерируем фон локации без персонажей...',
+        statusMessage: useGptImage
+          ? 'GPT Image 2 API генерирует фон этой сцены без персонажей...'
+          : imageGenerationSettings.provider === 'comfyui'
+            ? `Локальный ${sceneLocationPipeline === 'sdxl'
+              ? 'SDXL'
+              : sceneLocationPipeline === 'ernie_image_turbo'
+                ? 'ERNIE Image Turbo'
+                : 'Z-Image Turbo'} генерирует фон этой сцены без персонажей...`
+            : 'Основной рендер генерирует фон этой сцены без персонажей...',
       });
 
       const imageUrl = useGptImage
         ? await generateComfyOpenAiGptImage2LowImage(styledLocationPrompt, 'location_asset', imageGenerationSettings, controller.signal)
         : await generateImage(
           styledLocationPrompt,
-          pipelineOverride ?? getNodeImagePipeline(sceneNode, 'z_image_turbo'),
+          sceneLocationPipeline,
           imageGenerationSettings,
           'scene_location',
           controller.signal,
@@ -6108,9 +6118,9 @@ export const useNodeManagement = (
         ? timelineNode.metadata.timelineAssetPipeline
         : 'z_image_turbo';
     const timelineAssetImageProvider: DetailAssetImageProvider =
-      timelineNode.metadata?.timelineAssetImageProvider === 'comfy_openai_gpt_image_2_low'
-        ? 'comfy_openai_gpt_image_2_low'
-        : 'inherit';
+      timelineNode.metadata?.timelineAssetImageProvider === 'inherit'
+        ? 'inherit'
+        : 'comfy_openai_gpt_image_2_low';
     const timelineSystemInsertPipeline: ImagePipeline =
       timelineNode.metadata?.timelineSystemInsertPipeline === 'sdxl'
       || timelineNode.metadata?.timelineSystemInsertPipeline === 'z_image_turbo'
@@ -6274,6 +6284,21 @@ export const useNodeManagement = (
         && candidate.parentId === detailNodeId
         && getAssetKind(candidate).startsWith(assetKindPrefix)
         && Boolean(candidate.imageUrl));
+    const syncDetailRenderer = (
+      detailNodeId: string,
+      pipeline: ImagePipeline,
+      provider: DetailAssetImageProvider,
+    ) => {
+      const detailNode = nodesRef.current[detailNodeId];
+      if (!detailNode || detailNode.nodeType !== 'script_detail') return;
+      updateNode(detailNodeId, {
+        imagePipeline: pipeline,
+        metadata: {
+          ...detailNode.metadata,
+          detailAssetImageProvider: provider,
+        },
+      });
+    };
 
     try {
       updateNode(timelineNodeId, {
@@ -6326,6 +6351,7 @@ export const useNodeManagement = (
       if (heroesNode?.inputValue && getNewCharacterDescriptions(heroesNode.inputValue, nodesRef.current).length > 0) {
         const heroesNodeId = Object.entries(nodesRef.current).find(([, node]) => node === heroesNode)?.[0];
         if (heroesNodeId) {
+          syncDetailRenderer(heroesNodeId, timelineAssetPipeline, timelineAssetImageProvider);
           updateNode(timelineNodeId, {
             statusMessage: timelineAssetImageProvider === 'comfy_openai_gpt_image_2_low'
               ? 'Генерируем недостающие ассеты персонажей через GPT Image 2 API...'
@@ -6347,6 +6373,7 @@ export const useNodeManagement = (
         && !hasLocationsForEveryScene()
         && !hasDetailImages(locationsNodeId, 'location_asset')
       ) {
+        syncDetailRenderer(locationsNodeId, timelineAssetPipeline, timelineAssetImageProvider);
         updateNode(timelineNodeId, {
           statusMessage: timelineAssetImageProvider === 'comfy_openai_gpt_image_2_low'
             ? 'Генерируем общий набор локаций главы через GPT Image 2 API...'
@@ -6362,6 +6389,7 @@ export const useNodeManagement = (
         ? Object.entries(nodesRef.current).find(([, node]) => node === systemInsertsNode)?.[0]
         : undefined;
       if (systemInsertsNode?.inputValue && systemInsertsNodeId && !hasDetailImages(systemInsertsNodeId, 'system_insert')) {
+        syncDetailRenderer(systemInsertsNodeId, timelineSystemInsertPipeline, timelineSystemInsertImageProvider);
         updateNode(timelineNodeId, {
           statusMessage: timelineSystemInsertImageProvider === 'comfy_openai_gpt_image_2_low'
             ? 'Генерируем системные вставки главы через GPT Image 2 API...'

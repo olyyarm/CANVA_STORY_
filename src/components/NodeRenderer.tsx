@@ -603,6 +603,7 @@ const NodeRenderer: React.FC<NodeRendererProps> = ({
     ? node.selectedModel
     : modelOptions[0];
   const isBusy = Boolean(node.isLoading || node.isLoadingImage || node.isLoadingAudio || node.isLoadingVideo || node.isSpeaking);
+  const isGptImageLoading = node.loadingProvider === 'comfy_openai_image';
   const showInlineModelSelect = (
     node.nodeType === 'script_output'
     || node.nodeType === 'scene'
@@ -701,11 +702,11 @@ const NodeRenderer: React.FC<NodeRendererProps> = ({
       : 'z_image_turbo';
   const timelineAssetRendererValue =
     node.nodeType === 'chapter_timeline'
-    && node.metadata?.timelineAssetImageProvider === 'comfy_openai_gpt_image_2_low'
-      ? 'comfy_openai_gpt_image_2_low'
-      : imageProvider === 'comfyui'
+    && node.metadata?.timelineAssetImageProvider === 'inherit'
+      ? imageProvider === 'comfyui'
         ? timelineAssetPipelineValue
-        : 'inherit';
+        : 'inherit'
+      : 'comfy_openai_gpt_image_2_low';
   const timelineSystemInsertPipelineValue =
     node.nodeType === 'chapter_timeline'
     && (
@@ -1571,13 +1572,16 @@ const NodeRenderer: React.FC<NodeRendererProps> = ({
             )}
             {imageProvider === 'comfyui' && (
               <label className="node-field node-field--inline">
-                <span>Pipeline</span>
+                <span>{isGptImageLoading ? 'Рендер' : 'Pipeline'}</span>
                 <select
-                  value={node.imagePipeline ?? 'z_image_turbo'}
+                  value={isGptImageLoading ? 'comfy_openai_gpt_image_2_low' : node.imagePipeline ?? 'z_image_turbo'}
                   onChange={(event) => onImagePipelineChange(event, id)}
                   onMouseDown={stopMouseDown}
                   disabled={node.isLoadingImage}
                 >
+                  {isGptImageLoading && (
+                    <option value="comfy_openai_gpt_image_2_low">GPT Image 2 API</option>
+                  )}
                   <option value="sdxl">SDXL</option>
                   <option value="z_image_turbo">Z-Image Turbo</option>
                   <option value="ernie_image_turbo">ERNIE Image Turbo</option>

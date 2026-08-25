@@ -1759,6 +1759,23 @@ export const useNodeManagement = (
     });
   }, [setNodes]);
 
+  const setNodeActiveOperation = useCallback((nodeId: string, activeOperation?: string) => {
+    setNodes((previousNodes) => {
+      const node = previousNodes[nodeId];
+      if (!node) return previousNodes;
+      return {
+        ...previousNodes,
+        [nodeId]: {
+          ...node,
+          metadata: {
+            ...node.metadata,
+            activeOperation: activeOperation ?? null,
+          },
+        },
+      };
+    });
+  }, [setNodes]);
+
   const requestText = useCallback(async (
     nodeId: string,
     request: GenerationRequest,
@@ -3755,14 +3772,20 @@ export const useNodeManagement = (
       'Задача: написать реплики и маленькие действия только для этой сцены.',
     ].filter(Boolean).join('\n\n');
 
-    const result = await requestText(sceneNodeId, {
-      operation: 'scene_dialogue',
-      prompt: withStoryReferenceContext(prompt, currentNodes),
-      systemPrompt: getNodeSystemPrompt(sceneNode, SCENE_DIALOGUE_SYSTEM_PROMPT),
-      model,
-      sceneCount: sceneNode.sceneCount ?? outputNode?.sceneCount,
-      sceneLabel: sceneNode.label,
-    }, 'Пишем диалог персонажей...');
+    setNodeActiveOperation(sceneNodeId, 'scene_dialogue');
+    let result: string | null = null;
+    try {
+      result = await requestText(sceneNodeId, {
+        operation: 'scene_dialogue',
+        prompt: withStoryReferenceContext(prompt, currentNodes),
+        systemPrompt: getNodeSystemPrompt(sceneNode, SCENE_DIALOGUE_SYSTEM_PROMPT),
+        model,
+        sceneCount: sceneNode.sceneCount ?? outputNode?.sceneCount,
+        sceneLabel: sceneNode.label,
+      }, 'Пишем диалог персонажей...');
+    } finally {
+      setNodeActiveOperation(sceneNodeId);
+    }
     if (!result) return;
 
     setNodes((previousNodes) => upsertScriptDetailNode(previousNodes, sceneNodeId, `Диалог · ${sceneNode.label}`, result, {
@@ -3780,7 +3803,7 @@ export const useNodeManagement = (
       },
     }));
     showNotice('success', `Диалог для «${sceneNode.label}» готов.`);
-  }, [requestText, setNodes, showNotice, updateNode]);
+  }, [requestText, setNodeActiveOperation, setNodes, showNotice, updateNode]);
 
   const handleCreateSceneNodes = useCallback((sourceNodeId: string) => {
     const sourceNode = nodesRef.current[sourceNodeId];
@@ -3935,6 +3958,7 @@ export const useNodeManagement = (
     if (activeRequests.current.has(requestId)) return;
     const controller = new AbortController();
     activeRequests.current.set(requestId, controller);
+    setNodeActiveOperation(sceneNodeId, 'scene_location');
 
     const details = Object.values(currentNodes).filter(
       (node) => node.parentId === sceneNode.parentId && node.nodeType === 'script_detail',
@@ -4016,6 +4040,7 @@ export const useNodeManagement = (
       }
     } finally {
       activeRequests.current.delete(requestId);
+      setNodeActiveOperation(sceneNodeId);
       updateNode(sceneNodeId, {
         isLoading: false,
         isLoadingImage: false,
@@ -4023,7 +4048,7 @@ export const useNodeManagement = (
         statusMessage: undefined,
       });
     }
-  }, [generationSettings, imageGenerationSettings, showNotice, updateNode, upsertImageNode]);
+  }, [generationSettings, imageGenerationSettings, setNodeActiveOperation, showNotice, updateNode, upsertImageNode]);
 
   const handleGenerateSceneCharacterLayer = useCallback(async (sceneNodeId: string) => {
     const currentNodes = nodesRef.current;
@@ -4158,6 +4183,14 @@ export const useNodeManagement = (
     if (activeRequests.current.has(requestId)) return;
     const controller = new AbortController();
     activeRequests.current.set(requestId, controller);
+    setNodeActiveOperation(
+      sceneNodeId,
+      isNanoBanana
+        ? 'scene_compose_banana'
+        : isTurbo
+          ? 'scene_compose_flux2_turbo'
+          : 'scene_compose_flux2',
+    );
 
     const referenceSummary = referenceLabels.map((label, index) => `${index + 1}. ${label}`).join('; ');
     const projectVisualStyle = sanitizePositiveImagePrompt(getProjectVisualStyle(currentNodes));
@@ -4237,13 +4270,14 @@ export const useNodeManagement = (
       }
     } finally {
       activeRequests.current.delete(requestId);
+      setNodeActiveOperation(sceneNodeId);
       updateNode(sceneNodeId, {
         isLoadingImage: false,
         loadingProvider: undefined,
         statusMessage: undefined,
       });
     }
-  }, [imageGenerationSettings, setNodes, showNotice, updateNode, upsertImageNode]);
+  }, [imageGenerationSettings, setNodeActiveOperation, setNodes, showNotice, updateNode, upsertImageNode]);
 
   const unloadLmStudioBeforeComfyRender = useCallback(async (
     nodeId: string,
@@ -5172,6 +5206,7 @@ export const useNodeManagement = (
     if (activeRequests.current.has(requestId)) return;
     const controller = new AbortController();
     activeRequests.current.set(requestId, controller);
+    setNodeActiveOperation(sceneNodeId, 'scene_tts');
     const effectiveSeed = seedOverride ?? narrationSettings.seed;
     const ttsGenerationSignature = getSceneTtsGenerationSignature(text, narrationSettings, effectiveSeed);
 
@@ -5251,13 +5286,14 @@ export const useNodeManagement = (
       }
     } finally {
       activeRequests.current.delete(requestId);
+      setNodeActiveOperation(sceneNodeId);
       updateNode(sceneNodeId, {
         isLoadingAudio: false,
         loadingProvider: undefined,
         statusMessage: undefined,
       });
     }
-  }, [getOmniVoiceReferenceInput, imageGenerationSettings, narrationSettings, setNodes, showNotice, updateNode]);
+  }, [getOmniVoiceReferenceInput, imageGenerationSettings, narrationSettings, setNodeActiveOperation, setNodes, showNotice, updateNode]);
 
   const handleGenerateAlternateOmniVoiceNarration = useCallback(async (detailNodeId: string) => {
     const nextSeed = getNextNarrationSeed(narrationSettings.seed);
@@ -5289,6 +5325,7 @@ export const useNodeManagement = (
     if (activeRequests.current.has(requestId)) return;
     const controller = new AbortController();
     activeRequests.current.set(requestId, controller);
+    setNodeActiveOperation(sceneNodeId, 'scene_shot_grid');
     let sheetImageUrl = '';
     let generatedShotUrls: string[] = [];
     let committed = false;
@@ -5474,13 +5511,14 @@ export const useNodeManagement = (
         });
       }
       activeRequests.current.delete(requestId);
+      setNodeActiveOperation(sceneNodeId);
       updateNode(sceneNodeId, {
         isLoadingImage: false,
         loadingProvider: undefined,
         statusMessage: undefined,
       });
     }
-  }, [imageGenerationSettings, setNodes, showNotice, updateNode]);
+  }, [imageGenerationSettings, setNodeActiveOperation, setNodes, showNotice, updateNode]);
 
   const handleBuildSceneVideoClip = useCallback(async (sceneNodeId: string) => {
     const currentNodes = nodesRef.current;
@@ -6989,6 +7027,9 @@ export const useNodeManagement = (
     activeRequests.current.get(`image:${nodeId}`)?.abort();
     activeRequests.current.get(`reroll-image:${nodeId}`)?.abort();
     activeRequests.current.get(`flux2-compose:${nodeId}`)?.abort();
+    activeRequests.current.get(`compose-frame:flux2_compose:${nodeId}`)?.abort();
+    activeRequests.current.get(`compose-frame:flux2_turbo_compose:${nodeId}`)?.abort();
+    activeRequests.current.get(`compose-frame:nano_banana_2_lite_compose:${nodeId}`)?.abort();
     activeRequests.current.get(`scene-location:${nodeId}`)?.abort();
     activeRequests.current.get(`scene-characters:${nodeId}`)?.abort();
     activeRequests.current.get(`detail-asset:${nodeId}`)?.abort();

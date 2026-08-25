@@ -603,6 +603,23 @@ const NodeRenderer: React.FC<NodeRendererProps> = ({
     ? node.selectedModel
     : modelOptions[0];
   const isBusy = Boolean(node.isLoading || node.isLoadingImage || node.isLoadingAudio || node.isLoadingVideo || node.isSpeaking);
+  const activeSceneOperation = typeof node.metadata?.activeOperation === 'string'
+    ? node.metadata.activeOperation
+    : node.isLoadingAudio
+      ? 'scene_tts'
+      : node.isLoadingVideo
+        ? 'scene_video'
+        : node.isLoadingImage
+          ? 'scene_image_unknown'
+          : node.isLoading
+            ? 'scene_text_unknown'
+            : '';
+  const isSceneLocationActive = activeSceneOperation === 'scene_location';
+  const isSceneDialogueActive = activeSceneOperation === 'scene_dialogue';
+  const isSceneFlux2Active = activeSceneOperation === 'scene_compose_flux2';
+  const isSceneFlux2TurboActive = activeSceneOperation === 'scene_compose_flux2_turbo';
+  const isSceneBananaActive = activeSceneOperation === 'scene_compose_banana';
+  const isSceneShotGridActive = activeSceneOperation === 'scene_shot_grid';
   const isGptImageLoading = node.loadingProvider === 'comfy_openai_image';
   const showInlineModelSelect = (
     node.nodeType === 'script_output'
@@ -1591,72 +1608,76 @@ const NodeRenderer: React.FC<NodeRendererProps> = ({
             <div className="scene-node__actions">
               <button
                 type="button"
-                className={`node-secondary-button${isBusy ? ' node-secondary-button--cancel' : ''}`}
+                className={`node-secondary-button${isSceneLocationActive ? ' node-secondary-button--cancel' : ''}`}
                 onMouseDown={stopMouseDown}
-                onClick={(event) => runWithoutDrag(event, () => isBusy
+                onClick={(event) => runWithoutDrag(event, () => isSceneLocationActive
                   ? onCancelGeneration(id)
                   : void onGenerateSceneLocationAsset(id))}
+                disabled={isBusy && !isSceneLocationActive}
               >
-                {isBusy ? 'Отменить локацию' : `Локация · ${imageProvider === 'comfyui' ? 'ComfyUI' : 'Pollinations'}`}
+                {isSceneLocationActive ? 'Отменить локацию' : `Локация · ${imageProvider === 'comfyui' ? 'ComfyUI' : 'Pollinations'}`}
               </button>
               <button
                 type="button"
-                className={`node-secondary-button${isBusy ? ' node-secondary-button--cancel' : ''}`}
+                className={`node-secondary-button${isSceneDialogueActive ? ' node-secondary-button--cancel' : ''}`}
                 onMouseDown={stopMouseDown}
-                onClick={(event) => runWithoutDrag(event, () => isBusy
+                onClick={(event) => runWithoutDrag(event, () => isSceneDialogueActive
                   ? onCancelGeneration(id)
                   : void onBuildSceneDialogue(id))}
-                disabled={Boolean(node.isLoadingImage || node.isLoadingAudio || node.isLoadingVideo)}
+                disabled={isBusy && !isSceneDialogueActive}
               >
-                {isBusy ? 'Отменить диалог' : 'Диалог'}
+                {isSceneDialogueActive ? 'Отменить диалог' : 'Диалог'}
               </button>
               {imageProvider === 'comfyui' && (
                 <button
                   type="button"
-                  className={`node-primary-button${isBusy ? ' node-primary-button--cancel' : ''}`}
+                  className={`node-primary-button${isSceneFlux2Active ? ' node-primary-button--cancel' : ''}`}
                   onMouseDown={stopMouseDown}
-                  onClick={(event) => runWithoutDrag(event, () => isBusy
+                  onClick={(event) => runWithoutDrag(event, () => isSceneFlux2Active
                     ? onCancelGeneration(id)
                     : void onComposeSceneFlux2(id, 'flux2_compose'))}
+                  disabled={isBusy && !isSceneFlux2Active}
                 >
-                  {isBusy ? 'Отменить Flux2' : 'Собрать кадр Flux2'}
+                  {isSceneFlux2Active ? 'Отменить Flux2' : 'Собрать кадр Flux2'}
                 </button>
               )}
               {imageProvider === 'comfyui' && (
                 <button
                   type="button"
-                  className={`node-secondary-button${isBusy ? ' node-secondary-button--cancel' : ''}`}
+                  className={`node-secondary-button${isSceneFlux2TurboActive ? ' node-secondary-button--cancel' : ''}`}
                   onMouseDown={stopMouseDown}
-                  onClick={(event) => runWithoutDrag(event, () => isBusy
+                  onClick={(event) => runWithoutDrag(event, () => isSceneFlux2TurboActive
                     ? onCancelGeneration(id)
                     : void onComposeSceneFlux2(id, 'flux2_turbo_compose'))}
+                  disabled={isBusy && !isSceneFlux2TurboActive}
                 >
-                  {isBusy ? 'Отменить Turbo' : 'Собрать кадр Flux2 Turbo'}
+                  {isSceneFlux2TurboActive ? 'Отменить Turbo' : 'Собрать кадр Flux2 Turbo'}
                 </button>
               )}
               {imageProvider === 'comfyui' && (
                 <button
                   type="button"
-                  className={`node-secondary-button${isBusy ? ' node-secondary-button--cancel' : ''}`}
+                  className={`node-secondary-button${isSceneBananaActive ? ' node-secondary-button--cancel' : ''}`}
                   onMouseDown={stopMouseDown}
-                  onClick={(event) => runWithoutDrag(event, () => isBusy
+                  onClick={(event) => runWithoutDrag(event, () => isSceneBananaActive
                     ? onCancelGeneration(id)
                     : void onComposeSceneFlux2(id, 'nano_banana_2_lite_compose'))}
+                  disabled={isBusy && !isSceneBananaActive}
                 >
-                  {isBusy ? 'Отменить Banana' : 'Собрать кадр Nano Banana'}
+                  {isSceneBananaActive ? 'Отменить Banana' : 'Собрать кадр Nano Banana'}
                 </button>
               )}
               {imageProvider === 'comfyui' && (
                 <button
                   type="button"
-                  className={`node-secondary-button${node.isLoadingImage ? ' node-secondary-button--cancel' : ''}`}
+                  className={`node-secondary-button${isSceneShotGridActive ? ' node-secondary-button--cancel' : ''}`}
                   onMouseDown={stopMouseDown}
-                  onClick={(event) => runWithoutDrag(event, () => node.isLoadingImage
+                  onClick={(event) => runWithoutDrag(event, () => isSceneShotGridActive
                     ? onCancelGeneration(id)
                     : void onGenerateSceneShotGrid(id))}
-                  disabled={Boolean(node.isLoading || node.isLoadingAudio || node.isLoadingVideo)}
+                  disabled={isBusy && !isSceneShotGridActive}
                 >
-                  {node.isLoadingImage
+                  {isSceneShotGridActive
                     ? 'Отменить 4 плана'
                     : sceneShotNodes.length === 4 ? 'Пересобрать 4 плана' : '4 дополнительных плана'}
                 </button>

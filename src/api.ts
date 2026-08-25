@@ -2206,6 +2206,7 @@ export const generateComfyFlux2ComposeImage = async (
 ) => {
   const baseUrl = getComfyBaseUrl(settings.comfyEndpoint);
   let referenceBoardUrl: string | null = null;
+  let promptId: string | null = null;
   try {
     if (settings.provider !== 'comfyui') throw new Error('Flux2 compose работает только через ComfyUI.');
     const normalizedReferences = Array.isArray(characterReferences)
@@ -2236,9 +2237,13 @@ export const generateComfyFlux2ComposeImage = async (
     }
     const promptData: ComfyPromptResponse = await promptResponse.json();
     if (!promptData.prompt_id) throw new Error('ComfyUI не вернул prompt_id для Flux2 workflow.');
+    promptId = promptData.prompt_id;
 
-    const image = await waitForComfyImage(baseUrl, promptData.prompt_id, COMFY_FLUX2_TIMEOUT_MS, signal);
-    if (!image) throw new Error('Flux2 не вернул изображение за 6 часов. ComfyUI может ещё считать кадр, проверьте его окно и output.');
+    const image = await waitForComfyImage(baseUrl, promptId, COMFY_FLUX2_TIMEOUT_MS, signal);
+    if (!image) {
+      await cancelComfyPrompt(baseUrl, promptId);
+      throw new Error('Flux2 не вернул изображение за 6 часов. Задача снята с очереди ComfyUI.');
+    }
 
     const params = new URLSearchParams({
       filename: image.filename,
@@ -2253,7 +2258,10 @@ export const generateComfyFlux2ComposeImage = async (
     const blob = await viewResponse.blob();
     return URL.createObjectURL(blob);
   } catch (error) {
-    if (error instanceof DOMException && error.name === 'AbortError') throw error;
+    if (error instanceof DOMException && error.name === 'AbortError') {
+      if (promptId) await cancelComfyPrompt(baseUrl, promptId);
+      throw error;
+    }
     if (error instanceof TypeError) {
       throw new Error(`Не удалось подключиться к ComfyUI по адресу ${baseUrl}. Проверьте ComfyUI и CORS.`);
     }
@@ -2272,6 +2280,7 @@ export const generateComfyNanoBanana2LiteComposeImage = async (
 ) => {
   const baseUrl = getComfyBaseUrl(settings.comfyEndpoint);
   let referenceBoardUrl: string | null = null;
+  let promptId: string | null = null;
   try {
     if (settings.provider !== 'comfyui') throw new Error('Nano Banana compose работает только через ComfyUI.');
     const normalizedReferences = Array.isArray(characterReferences)
@@ -2302,9 +2311,13 @@ export const generateComfyNanoBanana2LiteComposeImage = async (
     }
     const promptData: ComfyPromptResponse = await promptResponse.json();
     if (!promptData.prompt_id) throw new Error('ComfyUI не вернул prompt_id для Nano Banana workflow.');
+    promptId = promptData.prompt_id;
 
-    const image = await waitForComfyImage(baseUrl, promptData.prompt_id, COMFY_NANO_BANANA_TIMEOUT_MS, signal);
-    if (!image) throw new Error('Nano Banana не вернул изображение за 45 минут. Проверьте очередь ComfyUI и output.');
+    const image = await waitForComfyImage(baseUrl, promptId, COMFY_NANO_BANANA_TIMEOUT_MS, signal);
+    if (!image) {
+      await cancelComfyPrompt(baseUrl, promptId);
+      throw new Error('Nano Banana не вернул изображение за 45 минут. Задача снята с очереди ComfyUI.');
+    }
 
     const params = new URLSearchParams({
       filename: image.filename,
@@ -2319,7 +2332,10 @@ export const generateComfyNanoBanana2LiteComposeImage = async (
     const blob = await viewResponse.blob();
     return URL.createObjectURL(blob);
   } catch (error) {
-    if (error instanceof DOMException && error.name === 'AbortError') throw error;
+    if (error instanceof DOMException && error.name === 'AbortError') {
+      if (promptId) await cancelComfyPrompt(baseUrl, promptId);
+      throw error;
+    }
     if (error instanceof TypeError) {
       throw new Error(`Не удалось подключиться к ComfyUI по адресу ${baseUrl}. Проверьте ComfyUI и CORS.`);
     }
@@ -2347,6 +2363,7 @@ export const generateComfyNanoBanana2LiteShotGrid = async (
   signal?: AbortSignal,
 ) => {
   const baseUrl = getComfyBaseUrl(settings.comfyEndpoint);
+  let promptId: string | null = null;
   try {
     if (settings.provider !== 'comfyui') {
       throw new Error('Дополнительные планы Nano Banana работают только через ComfyUI API.');
@@ -2376,10 +2393,12 @@ export const generateComfyNanoBanana2LiteShotGrid = async (
     }
     const promptData: ComfyPromptResponse = await promptResponse.json();
     if (!promptData.prompt_id) throw new Error('ComfyUI не вернул prompt_id для листа дополнительных планов.');
+    promptId = promptData.prompt_id;
 
-    const image = await waitForComfyImage(baseUrl, promptData.prompt_id, COMFY_NANO_BANANA_TIMEOUT_MS, signal);
+    const image = await waitForComfyImage(baseUrl, promptId, COMFY_NANO_BANANA_TIMEOUT_MS, signal);
     if (!image) {
-      throw new Error('Nano Banana не вернула лист дополнительных планов за 45 минут. Проверьте очередь ComfyUI.');
+      await cancelComfyPrompt(baseUrl, promptId);
+      throw new Error('Nano Banana не вернула лист дополнительных планов за 45 минут. Задача снята с очереди ComfyUI.');
     }
     const params = new URLSearchParams({
       filename: image.filename,
@@ -2396,7 +2415,10 @@ export const generateComfyNanoBanana2LiteShotGrid = async (
     }
     return URL.createObjectURL(await viewResponse.blob());
   } catch (error) {
-    if (error instanceof DOMException && error.name === 'AbortError') throw error;
+    if (error instanceof DOMException && error.name === 'AbortError') {
+      if (promptId) await cancelComfyPrompt(baseUrl, promptId);
+      throw error;
+    }
     if (error instanceof TypeError) {
       throw new Error(`Не удалось подключиться к ComfyUI по адресу ${baseUrl}. Проверьте ComfyUI, CORS и Comfy.org API key.`);
     }

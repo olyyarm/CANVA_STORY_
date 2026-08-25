@@ -6640,7 +6640,43 @@ export const useNodeManagement = (
       }
 
       updateNode(timelineNodeId, {
-        statusMessage: 'Все элементы готовы. FFmpeg собирает клипы и ролик главы...',
+        statusMessage: 'Все элементы готовы. FFmpeg собирает клипы сцен...',
+      });
+      await handleBuildChapterSceneClips(timelineNodeId);
+      if (controller.signal.aborted) return;
+
+      const timelineAfterClips = nodesRef.current[timelineNodeId];
+      if (!timelineAfterClips || timelineAfterClips.nodeType !== 'chapter_timeline') return;
+      if (timelineAfterClips.pollinationsApiError) {
+        showNotice('error', 'Полная сборка остановлена: клипы сцен не удалось подготовить.');
+        return;
+      }
+
+      const sourceScenarioId = typeof timelineAfterClips.metadata?.sourceScenarioId === 'string'
+        ? timelineAfterClips.metadata.sourceScenarioId
+        : timelineAfterClips.parentId;
+      const sourceChapterId = typeof timelineAfterClips.metadata?.sourceChapterId === 'string'
+        ? timelineAfterClips.metadata.sourceChapterId
+        : '';
+      const timelineScope = getScopedNodeIds(nodesRef.current, [sourceScenarioId ?? '', sourceChapterId]);
+      const hasTimelineScope = timelineScope.size > 0;
+      const chapterScenes = Object.values(nodesRef.current).filter((candidate) =>
+        candidate.nodeType === 'scene'
+        && (!hasTimelineScope || timelineScope.has(candidate.parentId ?? '')));
+      const missingClipLabels = chapterScenes
+        .filter((scene) => !scene.videoUrl)
+        .map((scene) => scene.label);
+      if (chapterScenes.length === 0 || missingClipLabels.length > 0) {
+        const message = chapterScenes.length === 0
+          ? 'Полная сборка остановлена: для этой главы не найдены сцены.'
+          : `Полная сборка остановлена: не созданы клипы — ${missingClipLabels.join(', ')}.`;
+        updateNode(timelineNodeId, { pollinationsApiError: message, statusMessage: undefined });
+        showNotice('error', message);
+        return;
+      }
+
+      updateNode(timelineNodeId, {
+        statusMessage: 'Клипы сцен готовы. FFmpeg собирает общий ролик главы...',
       });
       await handleBuildChapterVideo(timelineNodeId, { requireFfmpeg: true });
       if (controller.signal.aborted) return;
@@ -6656,7 +6692,13 @@ export const useNodeManagement = (
     } finally {
       activeRequests.current.delete(requestId);
     }
-  }, [handleBuildChapterVideo, handleGenerateTimelineMissingAssets, showNotice, updateNode]);
+  }, [
+    handleBuildChapterSceneClips,
+    handleBuildChapterVideo,
+    handleGenerateTimelineMissingAssets,
+    showNotice,
+    updateNode,
+  ]);
 
   const handleBuildSeasonVideo = useCallback(async (collectorNodeId: string) => {
     const currentNodes = nodesRef.current;

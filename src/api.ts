@@ -28,7 +28,7 @@ const COMFY_Z_IMAGE_TIMEOUT_MS = 45 * 60 * 1000;
 const COMFY_ERNIE_IMAGE_TIMEOUT_MS = 45 * 60 * 1000;
 const COMFY_FLUX2_TIMEOUT_MS = 6 * 60 * 60 * 1000;
 const COMFY_NANO_BANANA_TIMEOUT_MS = 45 * 60 * 1000;
-const COMFY_PARTNER_IMAGE_TIMEOUT_MS = 2 * 60 * 1000;
+const COMFY_PARTNER_IMAGE_TIMEOUT_MS = 15 * 60 * 1000;
 const COMFY_TTS_TIMEOUT_MS = 45 * 60 * 1000;
 const COMFY_GEMINI_TEXT_TIMEOUT_MS = 45 * 60 * 1000;
 const WIDE_FRAME_WIDTH = 1344;
@@ -855,6 +855,7 @@ interface ComfyUploadResponse {
 }
 
 interface ComfyHistoryEntry {
+  prompt?: unknown;
   outputs?: Record<string, {
     images?: ComfyImageRef[];
     audio?: ComfyAudioRef[];
@@ -997,6 +998,49 @@ const waitForComfyImage = async (
     if (failure) throw new Error(failure);
   }
   return null;
+};
+
+const getComfyHistoryWorkflow = (entry: ComfyHistoryEntry) => {
+  if (!Array.isArray(entry.prompt) || !entry.prompt[2] || typeof entry.prompt[2] !== 'object') return null;
+  return entry.prompt[2] as Record<string, {
+    class_type?: unknown;
+    inputs?: Record<string, unknown>;
+  }>;
+};
+
+const findCompletedComfyImageByPrompt = (
+  history: unknown,
+  prompt: string,
+  classType: string,
+): ComfyImageRef | null => {
+  if (!history || typeof history !== 'object') return null;
+  const entries = Object.values(history as Record<string, ComfyHistoryEntry>).reverse();
+  for (const entry of entries) {
+    const workflow = getComfyHistoryWorkflow(entry);
+    const hasExactPrompt = workflow && Object.values(workflow).some((node) =>
+      node.class_type === classType && node.inputs?.prompt === prompt);
+    if (!hasExactPrompt) continue;
+    const image = getImageFromComfyHistory({ entry });
+    if (image) return image;
+  }
+  return null;
+};
+
+const recoverCompletedComfyImage = async (
+  baseUrl: string,
+  prompt: string,
+  classType: string,
+  signal?: AbortSignal,
+) => {
+  try {
+    const historyResponse = await fetch(`${baseUrl}/history?max_items=100`, getComfyFetchOptions({ signal }));
+    if (!historyResponse.ok) return null;
+    const history: unknown = await historyResponse.json();
+    return findCompletedComfyImageByPrompt(history, prompt, classType);
+  } catch (error) {
+    if (error instanceof DOMException && error.name === 'AbortError') throw error;
+    return null;
+  }
 };
 
 const getComfyQueuePromptIds = (value: unknown) => (
@@ -2431,10 +2475,32 @@ export const generateComfyOpenAiGptImage2LowImage = async (
   promptKind: Extract<ImagePromptKind, 'character_asset' | 'location_asset' | 'system_insert' | 'chapter_backdrop'>,
   settings: ImageGenerationSettings,
   signal?: AbortSignal,
+  options?: { reuseCompleted?: boolean },
 ) => {
   const baseUrl = getComfyBaseUrl(settings.comfyEndpoint);
   let promptId: string | null = null;
   try {
+    if (options?.reuseCompleted) {
+      const recoveredImage = await recoverCompletedComfyImage(
+        baseUrl,
+        prompt,
+        'OpenAIGPTImageNodeV2',
+        signal,
+      );
+      if (recoveredImage) {
+        const recoveredParams = new URLSearchParams({
+          filename: recoveredImage.filename,
+          subfolder: recoveredImage.subfolder ?? '',
+          type: recoveredImage.type ?? 'output',
+        });
+        const recoveredResponse = await fetch(
+          `${baseUrl}/view?${recoveredParams.toString()}`,
+          getComfyFetchOptions({ signal }),
+        );
+        if (recoveredResponse.ok) return URL.createObjectURL(await recoveredResponse.blob());
+      }
+    }
+
     const workflow = buildComfyOpenAiGptImage2LowWorkflow(prompt, promptKind);
     const clientId = typeof crypto.randomUUID === 'function'
       ? crypto.randomUUID()
@@ -2460,7 +2526,7 @@ export const generateComfyOpenAiGptImage2LowImage = async (
     const image = await waitForComfyImage(baseUrl, promptId, COMFY_PARTNER_IMAGE_TIMEOUT_MS, signal);
     if (!image) {
       await cancelComfyPrompt(baseUrl, promptId);
-      throw new Error('GPT Image 2 не вернул изображение за 2 минуты. Зависшая задача снята с очереди ComfyUI.');
+      throw new Error('GPT Image 2 не вернул изображение за 15 минут. Зависшая задача снята с очереди ComfyUI.');
     }
 
     const params = new URLSearchParams({

@@ -1,6 +1,11 @@
 import React from 'react';
 import { DetailAssetImageProvider, ImageProvider } from '../api';
-import { getNewCharacterDescriptions } from '../characterRegistry';
+import {
+  extractRequiredCharacterTagGroups,
+  getKnownCharacterTags,
+  getNewCharacterDescriptions,
+  isCharacterAssetNode,
+} from '../characterRegistry';
 import { DetailType, ImagePipeline, NodeData, NodesState } from '../types';
 import { assetPath, getNodeIcon } from '../utils';
 
@@ -385,20 +390,27 @@ const getTimelineScenes = (nodes: NodesState, timelineNode: NodeData) => {
 
 const getSortedTimelineScenes = (nodes: NodesState, timelineNode: NodeData) => {
   const timelineScope = getTimelineScope(nodes, timelineNode);
+  const knownCharacterTags = getKnownCharacterTags(nodes);
   return getTimelineScenes(nodes, timelineNode)
     .sort(([, first], [, second]) =>
       getSceneNumberFromLabel(first.label) - getSceneNumberFromLabel(second.label)
       || first.label.localeCompare(second.label, 'ru', { numeric: true }))
-    .map(([sceneId, scene]) => ({
-      sceneId,
-      scene,
-      location: findTimelineLocationNode(nodes, sceneId, scene),
-      characters: findSceneImageNode(nodes, sceneId, ['scene_characters']),
-      frame: findSceneImageNode(nodes, sceneId, ['scene_flux2_frame', 'scene_frame']),
-      shots: findSceneShotImageNodes(nodes, sceneId),
-      shotSheet: findSceneImageNode(nodes, sceneId, ['scene_contact_sheet']),
-      systemFrame: findSystemInsertImageNode(nodes, getSceneNumberFromLabel(scene.label), timelineScope.scopedIds),
-    }));
+    .map(([sceneId, scene]) => {
+      const requiredCharacterGroups = extractRequiredCharacterTagGroups(
+        scene.sceneText || scene.inputValue || scene.label,
+      );
+      return {
+        sceneId,
+        scene,
+        location: findTimelineLocationNode(nodes, sceneId, scene),
+        charactersReady: requiredCharacterGroups.length === 0
+          || requiredCharacterGroups.every((group) => group.some((tag) => knownCharacterTags.has(tag))),
+        frame: findSceneImageNode(nodes, sceneId, ['scene_flux2_frame', 'scene_frame']),
+        shots: findSceneShotImageNodes(nodes, sceneId),
+        shotSheet: findSceneImageNode(nodes, sceneId, ['scene_contact_sheet']),
+        systemFrame: findSystemInsertImageNode(nodes, getSceneNumberFromLabel(scene.label), timelineScope.scopedIds),
+      };
+    });
 };
 
 type SceneComposePipeline = Extract<
@@ -680,6 +692,20 @@ const NodeRenderer: React.FC<NodeRendererProps> = ({
     : undefined;
   const sceneComposePipelineValue = getTimelineComposePipeline(sceneTimelineNode);
   const timelineScenes = node.nodeType === 'chapter_timeline' ? getSortedTimelineScenes(allNodes, node) : [];
+  const timelineCharacterReferenceCount = node.nodeType === 'chapter_timeline'
+    ? (() => {
+      const timelineScope = getTimelineScope(allNodes, node);
+      return Object.entries(allNodes).filter(([nodeId, candidate]) =>
+        isCharacterAssetNode(candidate)
+        && Boolean(candidate.imageUrl)
+        && (
+          !timelineScope.hasScope
+          || timelineScope.scopedIds.has(nodeId)
+          || timelineScope.scopedIds.has(candidate.parentId ?? '')
+          || candidate.metadata?.canonicalCharacter === true
+        )).length;
+    })()
+    : 0;
   const timelineBackdrop = node.nodeType === 'chapter_timeline'
     ? findTimelineBackdropImageNode(allNodes, id)
     : undefined;
@@ -697,7 +723,7 @@ const NodeRenderer: React.FC<NodeRendererProps> = ({
   const timelineStats = {
     scenes: timelineScenes.length,
     locations: timelineScenes.filter(({ location }) => Boolean(location?.imageUrl)).length,
-    characters: timelineScenes.filter(({ characters }) => Boolean(characters?.imageUrl)).length,
+    characters: timelineCharacterReferenceCount,
     frames: timelineScenes.filter(({ frame }) => Boolean(frame?.imageUrl)).length,
     shots: timelineScenes.reduce((count, sceneEntry) => count + sceneEntry.shots.length, 0),
     audio: timelineScenes.filter(({ scene }) => Boolean(scene.audioUrl)).length,
@@ -1821,7 +1847,7 @@ const NodeRenderer: React.FC<NodeRendererProps> = ({
               </div>
             ) : (
               <div className="chapter-timeline__rail" onMouseDown={stopMouseDown}>
-                {timelineScenes.map(({ sceneId, scene, location, characters, frame, shots, shotSheet, systemFrame }) => {
+                {timelineScenes.map(({ sceneId, scene, location, charactersReady, frame, shots, shotSheet, systemFrame }) => {
                   const sceneText = scene.sceneText || scene.inputValue || '';
                   const sceneNumber = getSceneNumberFromLabel(scene.label);
                   const systemInsert = timelineSystemInserts.get(sceneNumber);
@@ -1885,7 +1911,11 @@ const NodeRenderer: React.FC<NodeRendererProps> = ({
                         <div className="chapter-timeline__badges">
                           {renderTimelineBadge('Текст', Boolean(sceneText), 'Описание сцены')}
                           {renderTimelineBadge('Локация', Boolean(location?.imageUrl), location?.label)}
-                          {renderTimelineBadge('Герои', Boolean(characters?.imageUrl), characters?.label)}
+                          {renderTimelineBadge(
+                            'Герои',
+                            charactersReady,
+                            charactersReady ? 'Канонические референсы сцены найдены' : 'Не хватает канонического референса',
+                          )}
                           {renderTimelineBadge('Кадр', Boolean(frame?.imageUrl), frame?.label)}
                           {renderTimelineBadge('Планы', shots.length === 4, `${shots.length}/4 дополнительных планов`)}
                           {renderTimelineBadge('Аудио', Boolean(scene.audioUrl), 'Озвучка сцены')}

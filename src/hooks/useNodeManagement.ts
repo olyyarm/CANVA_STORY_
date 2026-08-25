@@ -1038,6 +1038,58 @@ const getLocationDescriptions = (locationsText: string) =>
     .map((line) => line.trim())
     .filter((line) => line.length > 0);
 
+interface PreparedAssetPromptRecord {
+  key: string;
+  heading: string;
+  prompt: string;
+}
+
+const getPreparedAssetPromptRecords = (node?: NodeData) => {
+  const value = node?.metadata?.preparedAssetPromptsJson;
+  if (typeof value !== 'string' || !value.trim()) return [];
+  try {
+    const parsed = JSON.parse(value) as unknown;
+    if (!Array.isArray(parsed)) return [];
+    return parsed.filter((entry): entry is PreparedAssetPromptRecord => Boolean(
+      entry
+      && typeof entry === 'object'
+      && typeof (entry as PreparedAssetPromptRecord).key === 'string'
+      && typeof (entry as PreparedAssetPromptRecord).heading === 'string'
+      && typeof (entry as PreparedAssetPromptRecord).prompt === 'string',
+    ));
+  } catch {
+    return [];
+  }
+};
+
+const getLegacyPreparedAssetPrompt = (
+  bundle: string | undefined,
+  heading: string,
+  allHeadings: string[],
+) => {
+  if (!bundle?.trim() || !heading.trim()) return '';
+  const marker = `${heading}\n`;
+  const start = bundle.startsWith(marker)
+    ? 0
+    : bundle.indexOf(`\n\n${marker}`) + 2;
+  if (start < 0 || !bundle.slice(start).startsWith(marker)) return '';
+  const promptStart = start + marker.length;
+  const nextStarts = allHeadings
+    .filter((candidate) => candidate !== heading)
+    .map((candidate) => bundle.indexOf(`\n\n${candidate}\n`, promptStart))
+    .filter((index) => index >= 0);
+  const promptEnd = nextStarts.length > 0 ? Math.min(...nextStarts) : bundle.length;
+  return bundle.slice(promptStart, promptEnd).trim();
+};
+
+const getReusablePreparedAssetPrompt = (
+  node: NodeData,
+  key: string,
+  heading: string,
+  allHeadings: string[],
+) => getPreparedAssetPromptRecords(node).find((entry) => entry.key === key)?.prompt.trim()
+  || getLegacyPreparedAssetPrompt(node.assetPrompt, heading, allHeadings);
+
 const getLocationName = (description: string, index: number) => {
   const firstLine = description.split(/\n/)[0]?.trim() || '';
   const normalized = firstLine
@@ -4364,33 +4416,52 @@ export const useNodeManagement = (
           return;
         }
 
+        const allCharacterHeadings = allCharacterDescriptions
+          .map((characterDescription, index) => getCharacterName(characterDescription, index));
+        let preparedPromptRecords = getPreparedAssetPromptRecords(detailNode);
         const preparedAssets: Array<{ name: string; description: string; prompt: string }> = [];
         for (let index = 0; index < characterDescriptions.length; index += 1) {
           const characterDescription = characterDescriptions[index];
           const characterName = getCharacterName(characterDescription, index);
+          const promptKey = `character:${createCharacterTag(characterName) || index}`;
+          const reusablePrompt = getReusablePreparedAssetPrompt(
+            detailNode,
+            promptKey,
+            characterName,
+            allCharacterHeadings,
+          );
           updateNode(detailNodeId, {
             isLoading: true,
             loadingProvider: generationSettings.mode,
             error: undefined,
             pollinationsApiError: undefined,
-            statusMessage: `Собираем prompt персонажа ${index + 1}/${characterDescriptions.length}: ${characterName}`,
+            statusMessage: reusablePrompt
+              ? `Ищем готовый рендер персонажа ${index + 1}/${characterDescriptions.length}: ${characterName}`
+              : `Собираем prompt персонажа ${index + 1}/${characterDescriptions.length}: ${characterName}`,
           });
 
-          const assetPrompt = await generateText({
-            operation: 'character_asset_prompt',
-            prompt: withProjectVisualStyle(characterDescription, nodesRef.current),
-            systemPrompt: CHARACTER_ASSET_PROMPT_SYSTEM_PROMPT,
-            model: modelOverride || detailNode.selectedModel || MISTRAL_MODELS[0],
-          }, controller.signal, generationSettings);
-          const styledAssetPrompt = appendProjectVisualStyleToImagePrompt(assetPrompt, nodesRef.current);
+          const styledAssetPrompt = reusablePrompt || appendProjectVisualStyleToImagePrompt(await generateText({
+              operation: 'character_asset_prompt',
+              prompt: withProjectVisualStyle(characterDescription, nodesRef.current),
+              systemPrompt: CHARACTER_ASSET_PROMPT_SYSTEM_PROMPT,
+              model: modelOverride || detailNode.selectedModel || MISTRAL_MODELS[0],
+            }, controller.signal, generationSettings), nodesRef.current);
           preparedAssets.push({
             name: characterName,
             description: characterDescription,
             prompt: styledAssetPrompt,
           });
+          preparedPromptRecords = [
+            ...preparedPromptRecords.filter((entry) => entry.key !== promptKey),
+            { key: promptKey, heading: characterName, prompt: styledAssetPrompt },
+          ];
 
           updateNode(detailNodeId, {
             assetPrompt: preparedAssets.map((asset) => `${asset.name}\n${asset.prompt}`).join('\n\n'),
+            metadata: {
+              ...nodesRef.current[detailNodeId]?.metadata,
+              preparedAssetPromptsJson: JSON.stringify(preparedPromptRecords),
+            },
           });
         }
 
@@ -4407,7 +4478,13 @@ export const useNodeManagement = (
             statusMessage: `Генерируем референс ${index + 1}/${preparedAssets.length}: ${preparedAsset.name}`,
           });
           const imageUrl = useGptImage
-            ? await generateComfyOpenAiGptImage2LowImage(preparedAsset.prompt, 'character_asset', imageGenerationSettings, controller.signal)
+            ? await generateComfyOpenAiGptImage2LowImage(
+              preparedAsset.prompt,
+              'character_asset',
+              imageGenerationSettings,
+              controller.signal,
+              { reuseCompleted: true },
+            )
             : await generateImage(
               preparedAsset.prompt,
               pipelineOverride ?? getDetailImagePipeline(detailNode),
@@ -4463,35 +4540,55 @@ export const useNodeManagement = (
           return nextNodes;
         });
 
+        const systemInsertHeadings = systemInsertDescriptions
+          .map((insert) => `Сцена ${insert.sceneNumber} · ${insert.title}`);
+        let preparedPromptRecords = getPreparedAssetPromptRecords(detailNode);
         const preparedAssets: Array<{ sceneNumber: number; title: string; body: string; prompt: string }> = [];
         for (let index = 0; index < systemInsertDescriptions.length; index += 1) {
           const insert = systemInsertDescriptions[index];
+          const heading = systemInsertHeadings[index];
+          const promptKey = `system_insert:${insert.sceneNumber}:${index}`;
+          const reusablePrompt = getReusablePreparedAssetPrompt(
+            detailNode,
+            promptKey,
+            heading,
+            systemInsertHeadings,
+          );
           updateNode(detailNodeId, {
             isLoading: true,
             loadingProvider: generationSettings.mode,
             error: undefined,
             pollinationsApiError: undefined,
-            statusMessage: `Собираем prompt системной вставки ${index + 1}/${systemInsertDescriptions.length}: сцена ${insert.sceneNumber}`,
+            statusMessage: reusablePrompt
+              ? `Ищем готовый рендер вставки ${index + 1}/${systemInsertDescriptions.length}: сцена ${insert.sceneNumber}`
+              : `Собираем prompt системной вставки ${index + 1}/${systemInsertDescriptions.length}: сцена ${insert.sceneNumber}`,
           });
 
-          const assetPrompt = await generateText({
-            operation: 'system_insert_asset_prompt',
-            prompt: withProjectVisualStyle(insert.body, nodesRef.current),
-            systemPrompt: SYSTEM_INSERT_ASSET_PROMPT_SYSTEM_PROMPT,
-            model: modelOverride || detailNode.selectedModel || MISTRAL_MODELS[0],
-          }, controller.signal, generationSettings);
-          const styledAssetPrompt = appendProjectVisualStyleToImagePrompt(assetPrompt, nodesRef.current);
+          const styledAssetPrompt = reusablePrompt || appendProjectVisualStyleToImagePrompt(await generateText({
+              operation: 'system_insert_asset_prompt',
+              prompt: withProjectVisualStyle(insert.body, nodesRef.current),
+              systemPrompt: SYSTEM_INSERT_ASSET_PROMPT_SYSTEM_PROMPT,
+              model: modelOverride || detailNode.selectedModel || MISTRAL_MODELS[0],
+            }, controller.signal, generationSettings), nodesRef.current);
           preparedAssets.push({
             sceneNumber: insert.sceneNumber,
             title: insert.title,
             body: insert.body,
             prompt: styledAssetPrompt,
           });
+          preparedPromptRecords = [
+            ...preparedPromptRecords.filter((entry) => entry.key !== promptKey),
+            { key: promptKey, heading, prompt: styledAssetPrompt },
+          ];
 
           updateNode(detailNodeId, {
             assetPrompt: preparedAssets
               .map((asset) => `Сцена ${asset.sceneNumber} · ${asset.title}\n${asset.prompt}`)
               .join('\n\n'),
+            metadata: {
+              ...nodesRef.current[detailNodeId]?.metadata,
+              preparedAssetPromptsJson: JSON.stringify(preparedPromptRecords),
+            },
           });
         }
 
@@ -4511,7 +4608,13 @@ export const useNodeManagement = (
           const imageUrl = useNanoBanana
             ? await generateComfyNanoBanana2LiteImage(preparedAsset.prompt, imageGenerationSettings, controller.signal)
             : useGptImage
-              ? await generateComfyOpenAiGptImage2LowImage(preparedAsset.prompt, 'system_insert', imageGenerationSettings, controller.signal)
+              ? await generateComfyOpenAiGptImage2LowImage(
+                preparedAsset.prompt,
+                'system_insert',
+                imageGenerationSettings,
+                controller.signal,
+                { reuseCompleted: true },
+              )
               : await generateImage(
                 preparedAsset.prompt,
                 imagePipeline,
@@ -4557,33 +4660,52 @@ export const useNodeManagement = (
         return nextNodes;
       });
 
+      const locationHeadings = locationDescriptions
+        .map((locationDescription, index) => getLocationName(locationDescription, index));
+      let preparedPromptRecords = getPreparedAssetPromptRecords(detailNode);
       const preparedAssets: Array<{ name: string; description: string; prompt: string }> = [];
       for (let index = 0; index < locationDescriptions.length; index += 1) {
         const locationDescription = locationDescriptions[index];
         const locationName = getLocationName(locationDescription, index);
+        const promptKey = `location:${index}:${locationName}`;
+        const reusablePrompt = getReusablePreparedAssetPrompt(
+          detailNode,
+          promptKey,
+          locationName,
+          locationHeadings,
+        );
         updateNode(detailNodeId, {
           isLoading: true,
           loadingProvider: generationSettings.mode,
           error: undefined,
           pollinationsApiError: undefined,
-          statusMessage: `Собираем prompt локации ${index + 1}/${locationDescriptions.length}: ${locationName}`,
+          statusMessage: reusablePrompt
+            ? `Ищем готовый рендер локации ${index + 1}/${locationDescriptions.length}: ${locationName}`
+            : `Собираем prompt локации ${index + 1}/${locationDescriptions.length}: ${locationName}`,
         });
 
-        const assetPrompt = await generateText({
-          operation: 'location_asset_prompt',
-          prompt: withProjectVisualStyle(locationDescription, nodesRef.current),
-          systemPrompt: LOCATION_ASSET_PROMPT_SYSTEM_PROMPT,
-          model: modelOverride || detailNode.selectedModel || MISTRAL_MODELS[0],
-        }, controller.signal, generationSettings);
-        const styledAssetPrompt = appendProjectVisualStyleToImagePrompt(assetPrompt, nodesRef.current);
+        const styledAssetPrompt = reusablePrompt || appendProjectVisualStyleToImagePrompt(await generateText({
+            operation: 'location_asset_prompt',
+            prompt: withProjectVisualStyle(locationDescription, nodesRef.current),
+            systemPrompt: LOCATION_ASSET_PROMPT_SYSTEM_PROMPT,
+            model: modelOverride || detailNode.selectedModel || MISTRAL_MODELS[0],
+          }, controller.signal, generationSettings), nodesRef.current);
         preparedAssets.push({
           name: locationName,
           description: locationDescription,
           prompt: styledAssetPrompt,
         });
+        preparedPromptRecords = [
+          ...preparedPromptRecords.filter((entry) => entry.key !== promptKey),
+          { key: promptKey, heading: locationName, prompt: styledAssetPrompt },
+        ];
 
         updateNode(detailNodeId, {
           assetPrompt: preparedAssets.map((asset) => `${asset.name}\n${asset.prompt}`).join('\n\n'),
+          metadata: {
+            ...nodesRef.current[detailNodeId]?.metadata,
+            preparedAssetPromptsJson: JSON.stringify(preparedPromptRecords),
+          },
         });
       }
 
@@ -4600,7 +4722,13 @@ export const useNodeManagement = (
           statusMessage: `Генерируем локацию ${index + 1}/${preparedAssets.length}: ${preparedAsset.name}`,
         });
         const imageUrl = useGptImage
-          ? await generateComfyOpenAiGptImage2LowImage(preparedAsset.prompt, 'location_asset', imageGenerationSettings, controller.signal)
+          ? await generateComfyOpenAiGptImage2LowImage(
+            preparedAsset.prompt,
+            'location_asset',
+            imageGenerationSettings,
+            controller.signal,
+            { reuseCompleted: true },
+          )
           : await generateImage(
             preparedAsset.prompt,
             pipelineOverride ?? getDetailImagePipeline(detailNode),

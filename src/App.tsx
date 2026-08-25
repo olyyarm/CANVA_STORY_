@@ -457,8 +457,6 @@ const App = () => {
     handleScenarioDetailClick,
     handleCreateSceneNodes,
     handleBuildCharacterMemory,
-    handleBuildSceneDialogue,
-    handleGenerateSceneLocationAsset,
     handleComposeSceneFlux2,
     handleGenerateDetailAsset,
     handleEditNarration,
@@ -470,8 +468,6 @@ const App = () => {
     handleGenerateOmniVoiceNarration,
     handleGenerateAlternateOmniVoiceNarration,
     handleGenerateSceneOmniVoiceNarration,
-    handleGenerateAlternateSceneOmniVoiceNarration,
-    handleGenerateSceneShotGrid,
     handleBuildSceneVideoClip,
     handleGenerateChapterBackdrop,
     handleGenerateTimelineMissingAssets,
@@ -2038,8 +2034,6 @@ const App = () => {
               onScenarioDetailClick={handleScenarioDetailClick}
               onCreateSceneNodes={handleCreateSceneNodes}
               onBuildCharacterMemory={handleBuildCharacterMemory}
-              onBuildSceneDialogue={handleBuildSceneDialogue}
-              onGenerateSceneLocationAsset={handleGenerateSceneLocationAsset}
               onComposeSceneFlux2={handleComposeSceneFlux2}
               onGenerateDetailAsset={handleGenerateDetailAsset}
               onEditNarration={handleEditNarration}
@@ -2051,8 +2045,6 @@ const App = () => {
               onGenerateOmniVoiceNarration={handleGenerateOmniVoiceNarration}
               onGenerateAlternateOmniVoiceNarration={handleGenerateAlternateOmniVoiceNarration}
               onGenerateSceneOmniVoiceNarration={handleGenerateSceneOmniVoiceNarration}
-              onGenerateAlternateSceneOmniVoiceNarration={handleGenerateAlternateSceneOmniVoiceNarration}
-              onGenerateSceneShotGrid={handleGenerateSceneShotGrid}
               onBuildSceneVideoClip={handleBuildSceneVideoClip}
               onGenerateChapterBackdrop={handleGenerateChapterBackdrop}
               onGenerateTimelineMissingAssets={handleGenerateTimelineMissingAssets}

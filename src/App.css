@@ -1781,9 +1781,7 @@
   flex: 0 0 auto;
 }
 
-.scene-node__actions .node-primary-button,
-.scene-node__actions .node-secondary-button,
-.scene-node__media-actions button {
+.scene-node__actions button {
   min-height: 36px;
   padding: 0 8px;
   font-size: 11px;
@@ -1792,10 +1790,6 @@
 
 .scene-node__actions .node-primary-button {
   grid-column: 1 / -1;
-}
-
-.scene-node__media-actions {
-  margin-top: 0;
 }
 
 .scene-node__shot-summary {

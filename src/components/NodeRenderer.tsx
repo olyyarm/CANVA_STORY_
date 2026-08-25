@@ -52,8 +52,6 @@ interface NodeRendererProps {
   onScenarioDetailClick: (nodeId: string, detailType: DetailType) => void;
   onCreateSceneNodes: (nodeId: string) => void;
   onBuildCharacterMemory: (nodeId: string) => Promise<void>;
-  onBuildSceneDialogue: (nodeId: string) => Promise<void>;
-  onGenerateSceneLocationAsset: (nodeId: string, pipelineOverride?: ImagePipeline, modelOverride?: string) => Promise<void>;
   onComposeSceneFlux2: (nodeId: string, pipeline?: Extract<ImagePipeline, 'flux2_compose' | 'flux2_turbo_compose' | 'nano_banana_2_lite_compose'>) => Promise<void>;
   onGenerateDetailAsset: (nodeId: string, pipelineOverride?: ImagePipeline, modelOverride?: string) => Promise<void>;
   onEditNarration: (nodeId: string) => Promise<void>;
@@ -65,8 +63,6 @@ interface NodeRendererProps {
   onGenerateOmniVoiceNarration: (nodeId: string) => Promise<void>;
   onGenerateAlternateOmniVoiceNarration: (nodeId: string) => Promise<void>;
   onGenerateSceneOmniVoiceNarration: (nodeId: string) => Promise<void>;
-  onGenerateAlternateSceneOmniVoiceNarration: (nodeId: string) => Promise<void>;
-  onGenerateSceneShotGrid: (nodeId: string) => Promise<void>;
   onBuildSceneVideoClip: (nodeId: string) => Promise<void>;
   onGenerateChapterBackdrop: (nodeId: string) => Promise<void>;
   onGenerateTimelineMissingAssets: (nodeId: string) => Promise<void>;
@@ -405,6 +401,19 @@ const getSortedTimelineScenes = (nodes: NodesState, timelineNode: NodeData) => {
     }));
 };
 
+type SceneComposePipeline = Extract<
+  ImagePipeline,
+  'flux2_compose' | 'flux2_turbo_compose' | 'nano_banana_2_lite_compose'
+>;
+
+const getTimelineComposePipeline = (timelineNode?: NodeData): SceneComposePipeline => (
+  timelineNode?.imagePipeline === 'flux2_compose'
+  || timelineNode?.imagePipeline === 'flux2_turbo_compose'
+  || timelineNode?.imagePipeline === 'nano_banana_2_lite_compose'
+    ? timelineNode.imagePipeline
+    : 'nano_banana_2_lite_compose'
+);
+
 const getSystemInsertDetail = (nodes: NodesState, timelineNode: NodeData) => {
   const timelineScope = getTimelineScope(nodes, timelineNode);
   return Object.entries(nodes).find(([nodeId, candidate]) =>
@@ -502,8 +511,6 @@ const NodeRenderer: React.FC<NodeRendererProps> = ({
   onScenarioDetailClick,
   onCreateSceneNodes,
   onBuildCharacterMemory,
-  onBuildSceneDialogue,
-  onGenerateSceneLocationAsset,
   onComposeSceneFlux2,
   onGenerateDetailAsset,
   onEditNarration,
@@ -515,8 +522,6 @@ const NodeRenderer: React.FC<NodeRendererProps> = ({
   onGenerateOmniVoiceNarration,
   onGenerateAlternateOmniVoiceNarration,
   onGenerateSceneOmniVoiceNarration,
-  onGenerateAlternateSceneOmniVoiceNarration,
-  onGenerateSceneShotGrid,
   onBuildSceneVideoClip,
   onGenerateChapterBackdrop,
   onGenerateTimelineMissingAssets,
@@ -614,16 +619,9 @@ const NodeRenderer: React.FC<NodeRendererProps> = ({
           : node.isLoading
             ? 'scene_text_unknown'
             : '';
-  const isSceneLocationActive = activeSceneOperation === 'scene_location';
-  const isSceneDialogueActive = activeSceneOperation === 'scene_dialogue';
-  const isSceneFlux2Active = activeSceneOperation === 'scene_compose_flux2';
-  const isSceneFlux2TurboActive = activeSceneOperation === 'scene_compose_flux2_turbo';
-  const isSceneBananaActive = activeSceneOperation === 'scene_compose_banana';
-  const isSceneShotGridActive = activeSceneOperation === 'scene_shot_grid';
-  const isGptImageLoading = node.loadingProvider === 'comfy_openai_image';
+  const isSceneComposeActive = activeSceneOperation.startsWith('scene_compose_');
   const showInlineModelSelect = (
     node.nodeType === 'script_output'
-    || node.nodeType === 'scene'
     || node.nodeType === 'script_detail'
   ) && !canAutoBuildChapter && !isPromptSnippetNode;
   const canEditSystemPrompt = typeof node.systemPrompt === 'string'
@@ -632,6 +630,7 @@ const NodeRenderer: React.FC<NodeRendererProps> = ({
     && node.nodeType !== 'split_node'
     && node.nodeType !== 'split_item'
     && node.nodeType !== 'character_registry'
+    && node.nodeType !== 'scene'
     && node.nodeType !== 'chapter_timeline'
     && node.nodeType !== 'video_output';
   const loadingLabel = node.isSpeaking
@@ -674,6 +673,12 @@ const NodeRenderer: React.FC<NodeRendererProps> = ({
   const videoFormat = node.metadata?.videoFormat === 'mp4' ? 'mp4' : 'webm';
   const safeDownloadName = `${node.label.replace(/[^\p{L}\p{N}_-]+/gu, '-').replace(/^-+|-+$/gu, '') || 'scene'}.${videoFormat}`;
   const sceneShotNodes = node.nodeType === 'scene' ? findSceneShotImageNodes(allNodes, id) : [];
+  const sceneTimelineNode = node.nodeType === 'scene'
+    ? Object.values(allNodes).find((candidate) =>
+      candidate.nodeType === 'chapter_timeline'
+      && getTimelineScenes(allNodes, candidate).some(([sceneId]) => sceneId === id))
+    : undefined;
+  const sceneComposePipelineValue = getTimelineComposePipeline(sceneTimelineNode);
   const timelineScenes = node.nodeType === 'chapter_timeline' ? getSortedTimelineScenes(allNodes, node) : [];
   const timelineBackdrop = node.nodeType === 'chapter_timeline'
     ? findTimelineBackdropImageNode(allNodes, id)
@@ -699,15 +704,9 @@ const NodeRenderer: React.FC<NodeRendererProps> = ({
     clips: timelineScenes.filter(({ scene }) => Boolean(scene.videoUrl)).length,
     inserts: timelineSystemInserts.size,
   };
-  const timelineComposePipelineValue =
-    node.nodeType === 'chapter_timeline'
-    && (
-      node.imagePipeline === 'flux2_compose'
-      || node.imagePipeline === 'flux2_turbo_compose'
-      || node.imagePipeline === 'nano_banana_2_lite_compose'
-    )
-      ? node.imagePipeline
-      : 'nano_banana_2_lite_compose';
+  const timelineComposePipelineValue = getTimelineComposePipeline(
+    node.nodeType === 'chapter_timeline' ? node : undefined,
+  );
   const timelineAssetPipelineValue =
     node.nodeType === 'chapter_timeline'
     && (
@@ -1587,101 +1586,41 @@ const NodeRenderer: React.FC<NodeRendererProps> = ({
             {node.pollinationsApiError && (
               <div className="node-message node-message--error" role="alert">{node.pollinationsApiError}</div>
             )}
-            {imageProvider === 'comfyui' && (
-              <label className="node-field node-field--inline">
-                <span>{isGptImageLoading ? 'Рендер' : 'Pipeline'}</span>
-                <select
-                  value={isGptImageLoading ? 'comfy_openai_gpt_image_2_low' : node.imagePipeline ?? 'z_image_turbo'}
-                  onChange={(event) => onImagePipelineChange(event, id)}
-                  onMouseDown={stopMouseDown}
-                  disabled={node.isLoadingImage}
-                >
-                  {isGptImageLoading && (
-                    <option value="comfy_openai_gpt_image_2_low">GPT Image 2 API</option>
-                  )}
-                  <option value="sdxl">SDXL</option>
-                  <option value="z_image_turbo">Z-Image Turbo</option>
-                  <option value="ernie_image_turbo">ERNIE Image Turbo</option>
-                </select>
-              </label>
-            )}
             <div className="scene-node__actions">
+              {imageProvider === 'comfyui' && (
+                <button
+                  type="button"
+                  className={`node-primary-button${isSceneComposeActive ? ' node-primary-button--cancel' : ''}`}
+                  onMouseDown={stopMouseDown}
+                  onClick={(event) => runWithoutDrag(event, () => isSceneComposeActive
+                    ? onCancelGeneration(id)
+                    : void onComposeSceneFlux2(id, sceneComposePipelineValue))}
+                  disabled={isBusy && !isSceneComposeActive}
+                  title="Объединить референс локации и канонических персонажей выбранным в таймлайне Compose"
+                >
+                  {isSceneComposeActive ? 'Отменить объединение' : 'Объединить'}
+                </button>
+              )}
               <button
                 type="button"
-                className={`node-secondary-button${isSceneLocationActive ? ' node-secondary-button--cancel' : ''}`}
                 onMouseDown={stopMouseDown}
-                onClick={(event) => runWithoutDrag(event, () => isSceneLocationActive
+                onClick={(event) => runWithoutDrag(event, () => node.isLoadingAudio
                   ? onCancelGeneration(id)
-                  : void onGenerateSceneLocationAsset(id))}
-                disabled={isBusy && !isSceneLocationActive}
+                  : void onGenerateSceneOmniVoiceNarration(id))}
+                disabled={Boolean(node.isLoading || node.isLoadingImage || node.isLoadingVideo)}
               >
-                {isSceneLocationActive ? 'Отменить локацию' : `Локация · ${imageProvider === 'comfyui' ? 'ComfyUI' : 'Pollinations'}`}
+                {node.isLoadingAudio ? 'Отменить озвучку' : 'Озвучить'}
               </button>
               <button
                 type="button"
-                className={`node-secondary-button${isSceneDialogueActive ? ' node-secondary-button--cancel' : ''}`}
                 onMouseDown={stopMouseDown}
-                onClick={(event) => runWithoutDrag(event, () => isSceneDialogueActive
+                onClick={(event) => runWithoutDrag(event, () => node.isLoadingVideo
                   ? onCancelGeneration(id)
-                  : void onBuildSceneDialogue(id))}
-                disabled={isBusy && !isSceneDialogueActive}
+                  : void onBuildSceneVideoClip(id))}
+                disabled={Boolean(node.isLoading || node.isLoadingImage || node.isLoadingAudio)}
               >
-                {isSceneDialogueActive ? 'Отменить диалог' : 'Диалог'}
+                {node.isLoadingVideo ? 'Отменить клип' : 'Сделать клип'}
               </button>
-              {imageProvider === 'comfyui' && (
-                <button
-                  type="button"
-                  className={`node-primary-button${isSceneFlux2Active ? ' node-primary-button--cancel' : ''}`}
-                  onMouseDown={stopMouseDown}
-                  onClick={(event) => runWithoutDrag(event, () => isSceneFlux2Active
-                    ? onCancelGeneration(id)
-                    : void onComposeSceneFlux2(id, 'flux2_compose'))}
-                  disabled={isBusy && !isSceneFlux2Active}
-                >
-                  {isSceneFlux2Active ? 'Отменить Flux2' : 'Собрать кадр Flux2'}
-                </button>
-              )}
-              {imageProvider === 'comfyui' && (
-                <button
-                  type="button"
-                  className={`node-secondary-button${isSceneFlux2TurboActive ? ' node-secondary-button--cancel' : ''}`}
-                  onMouseDown={stopMouseDown}
-                  onClick={(event) => runWithoutDrag(event, () => isSceneFlux2TurboActive
-                    ? onCancelGeneration(id)
-                    : void onComposeSceneFlux2(id, 'flux2_turbo_compose'))}
-                  disabled={isBusy && !isSceneFlux2TurboActive}
-                >
-                  {isSceneFlux2TurboActive ? 'Отменить Turbo' : 'Собрать кадр Flux2 Turbo'}
-                </button>
-              )}
-              {imageProvider === 'comfyui' && (
-                <button
-                  type="button"
-                  className={`node-secondary-button${isSceneBananaActive ? ' node-secondary-button--cancel' : ''}`}
-                  onMouseDown={stopMouseDown}
-                  onClick={(event) => runWithoutDrag(event, () => isSceneBananaActive
-                    ? onCancelGeneration(id)
-                    : void onComposeSceneFlux2(id, 'nano_banana_2_lite_compose'))}
-                  disabled={isBusy && !isSceneBananaActive}
-                >
-                  {isSceneBananaActive ? 'Отменить Banana' : 'Собрать кадр Nano Banana'}
-                </button>
-              )}
-              {imageProvider === 'comfyui' && (
-                <button
-                  type="button"
-                  className={`node-secondary-button${isSceneShotGridActive ? ' node-secondary-button--cancel' : ''}`}
-                  onMouseDown={stopMouseDown}
-                  onClick={(event) => runWithoutDrag(event, () => isSceneShotGridActive
-                    ? onCancelGeneration(id)
-                    : void onGenerateSceneShotGrid(id))}
-                  disabled={isBusy && !isSceneShotGridActive}
-                >
-                  {isSceneShotGridActive
-                    ? 'Отменить 4 плана'
-                    : sceneShotNodes.length === 4 ? 'Пересобрать 4 плана' : '4 дополнительных плана'}
-                </button>
-              )}
             </div>
             {sceneShotNodes.length > 0 && (
               <div className="scene-node__shot-summary" onMouseDown={stopMouseDown}>
@@ -1689,38 +1628,6 @@ const NodeRenderer: React.FC<NodeRendererProps> = ({
                 <span>Они будут автоматически добавлены между основным кадром и системной вставкой.</span>
               </div>
             )}
-            <div className="node-segmented-actions node-segmented-actions--voice scene-node__media-actions">
-                <button
-                  type="button"
-                  onMouseDown={stopMouseDown}
-                  onClick={(event) => runWithoutDrag(event, () => node.isLoadingAudio
-                    ? onCancelGeneration(id)
-                    : void onGenerateSceneOmniVoiceNarration(id))}
-                  disabled={Boolean(node.isLoading || node.isLoadingImage || node.isLoadingVideo)}
-                >
-                  {node.isLoadingAudio ? 'Отменить озвучку' : 'Озвучить сцену'}
-                </button>
-                {node.audioUrl && (
-                  <button
-                    type="button"
-                    onMouseDown={stopMouseDown}
-                    onClick={(event) => runWithoutDrag(event, () => void onGenerateAlternateSceneOmniVoiceNarration(id))}
-                    disabled={Boolean(node.isLoading || node.isLoadingImage || node.isLoadingAudio || node.isLoadingVideo)}
-                  >
-                    Другой дубль
-                  </button>
-                )}
-                <button
-                  type="button"
-                  onMouseDown={stopMouseDown}
-                  onClick={(event) => runWithoutDrag(event, () => node.isLoadingVideo
-                    ? onCancelGeneration(id)
-                    : void onBuildSceneVideoClip(id))}
-                  disabled={Boolean(node.isLoading || node.isLoadingImage || node.isLoadingAudio)}
-                >
-                  {node.isLoadingVideo ? 'Отменить клип' : 'Клип 16:9'}
-                </button>
-              </div>
             {node.audioUrl && (
               <div className="node-audio-player" onMouseDown={stopMouseDown}>
                 <audio controls src={node.audioUrl} />
@@ -1920,6 +1827,10 @@ const NodeRenderer: React.FC<NodeRendererProps> = ({
                     ? frame.metadata.visionStatus
                     : 'ожидает';
                   const sceneBusy = Boolean(scene.isLoading || scene.isLoadingImage || scene.isLoadingAudio || scene.isLoadingVideo || scene.isSpeaking);
+                  const sceneActiveOperation = typeof scene.metadata?.activeOperation === 'string'
+                    ? scene.metadata.activeOperation
+                    : '';
+                  const sceneComposeActive = sceneActiveOperation.startsWith('scene_compose_');
                   return (
                     <React.Fragment key={sceneId}>
                       <article className="chapter-timeline__scene">
@@ -1981,69 +1892,18 @@ const NodeRenderer: React.FC<NodeRendererProps> = ({
                           {renderTimelineBadge('QA', qaStatus !== 'ожидает', `Vision: ${qaStatus}`)}
                         </div>
                         <div className="chapter-timeline__actions">
-                          <button
-                            type="button"
-                            onMouseDown={stopMouseDown}
-                            onClick={(event) => runWithoutDrag(event, () => sceneBusy
-                              ? onCancelGeneration(sceneId)
-                              : void onGenerateSceneLocationAsset(sceneId))}
-                          >
-                            {sceneBusy ? 'Отмена' : 'Локация'}
-                          </button>
-                          <button
-                            type="button"
-                            onMouseDown={stopMouseDown}
-                            onClick={(event) => runWithoutDrag(event, () => sceneBusy
-                              ? onCancelGeneration(sceneId)
-                              : void onBuildSceneDialogue(sceneId))}
-                            disabled={Boolean(scene.isLoadingImage || scene.isLoadingAudio || scene.isLoadingVideo)}
-                          >
-                            Диалог
-                          </button>
                           {imageProvider === 'comfyui' && (
                             <button
                               type="button"
+                              className={sceneComposeActive ? 'node-secondary-button--cancel' : undefined}
                               onMouseDown={stopMouseDown}
-                              onClick={(event) => runWithoutDrag(event, () => sceneBusy
+                              onClick={(event) => runWithoutDrag(event, () => sceneComposeActive
                                 ? onCancelGeneration(sceneId)
-                                : void onComposeSceneFlux2(sceneId, 'flux2_compose'))}
+                                : void onComposeSceneFlux2(sceneId, timelineComposePipelineValue))}
+                              disabled={sceneBusy && !sceneComposeActive}
+                              title="Объединить локацию и канонических персонажей выбранным Compose-режимом"
                             >
-                              Flux2
-                            </button>
-                          )}
-                          {imageProvider === 'comfyui' && (
-                            <button
-                              type="button"
-                              onMouseDown={stopMouseDown}
-                              onClick={(event) => runWithoutDrag(event, () => sceneBusy
-                                ? onCancelGeneration(sceneId)
-                                : void onComposeSceneFlux2(sceneId, 'flux2_turbo_compose'))}
-                            >
-                              Turbo
-                            </button>
-                          )}
-                          {imageProvider === 'comfyui' && (
-                            <button
-                              type="button"
-                              onMouseDown={stopMouseDown}
-                              onClick={(event) => runWithoutDrag(event, () => sceneBusy
-                                ? onCancelGeneration(sceneId)
-                                : void onComposeSceneFlux2(sceneId, 'nano_banana_2_lite_compose'))}
-                            >
-                              Banana
-                            </button>
-                          )}
-                          {imageProvider === 'comfyui' && (
-                            <button
-                              type="button"
-                              onMouseDown={stopMouseDown}
-                              onClick={(event) => runWithoutDrag(event, () => scene.isLoadingImage
-                                ? onCancelGeneration(sceneId)
-                                : void onGenerateSceneShotGrid(sceneId))}
-                              disabled={Boolean(scene.isLoading || scene.isLoadingAudio || scene.isLoadingVideo || !frame?.imageUrl)}
-                              title={frame?.imageUrl ? 'Создать четыре дополнительных горизонтальных плана 16:9' : 'Сначала создайте основной кадр'}
-                            >
-                              {scene.isLoadingImage ? 'Отмена 4 планов' : shots.length === 4 ? 'Новые 4 плана' : '4 плана'}
+                              {sceneComposeActive ? 'Отменить объединение' : 'Объединить'}
                             </button>
                           )}
                           <button
@@ -2054,30 +1914,18 @@ const NodeRenderer: React.FC<NodeRendererProps> = ({
                               : void onGenerateSceneOmniVoiceNarration(sceneId))}
                             disabled={Boolean(scene.isLoading || scene.isLoadingImage || scene.isLoadingVideo)}
                           >
-                            Озвучка
+                            {scene.isLoadingAudio ? 'Отменить озвучку' : 'Озвучить'}
                           </button>
-                          {scene.audioUrl && (
-                            <button
-                              type="button"
-                              onMouseDown={stopMouseDown}
-                              onClick={(event) => runWithoutDrag(event, () => void onGenerateAlternateSceneOmniVoiceNarration(sceneId))}
-                              disabled={Boolean(scene.isLoading || scene.isLoadingImage || scene.isLoadingAudio || scene.isLoadingVideo)}
-                            >
-                              Другой дубль
-                            </button>
-                          )}
-                          {imageProvider === 'comfyui' && (
-                            <button
-                              type="button"
-                              onMouseDown={stopMouseDown}
-                              onClick={(event) => runWithoutDrag(event, () => scene.isLoadingVideo
-                                ? onCancelGeneration(sceneId)
-                                : void onBuildSceneVideoClip(sceneId))}
-                              disabled={Boolean(scene.isLoading || scene.isLoadingImage || scene.isLoadingAudio)}
-                            >
-                              Клип
-                            </button>
-                          )}
+                          <button
+                            type="button"
+                            onMouseDown={stopMouseDown}
+                            onClick={(event) => runWithoutDrag(event, () => scene.isLoadingVideo
+                              ? onCancelGeneration(sceneId)
+                              : void onBuildSceneVideoClip(sceneId))}
+                            disabled={Boolean(scene.isLoading || scene.isLoadingImage || scene.isLoadingAudio)}
+                          >
+                            {scene.isLoadingVideo ? 'Отменить клип' : 'Сделать клип'}
+                          </button>
                         </div>
                       </article>
                       {systemInsert && (

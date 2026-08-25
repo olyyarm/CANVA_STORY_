@@ -6167,6 +6167,11 @@ export const useNodeManagement = (
       || timelineNode.imagePipeline === 'nano_banana_2_lite_compose'
         ? timelineNode.imagePipeline
         : 'nano_banana_2_lite_compose';
+    const timelineComposeLabel = timelineComposePipeline === 'flux2_compose'
+      ? 'Flux2'
+      : timelineComposePipeline === 'flux2_turbo_compose'
+        ? 'Flux2 Turbo'
+        : 'Nano Banana';
     const timelineAssetPipeline: ImagePipeline =
       timelineNode.metadata?.timelineAssetPipeline === 'sdxl'
       || timelineNode.metadata?.timelineAssetPipeline === 'ernie_image_turbo'
@@ -6487,20 +6492,15 @@ export const useNodeManagement = (
         if (!latestScene || latestScene.nodeType !== 'scene') continue;
 
         updateNode(timelineNodeId, {
-          statusMessage: `Сцена ${index + 1}/${sceneEntries.length}: проверяем локацию...`,
+          statusMessage: `Сцена ${index + 1}/${sceneEntries.length}: выбираем референс из ноды «Локации»...`,
         });
-        if (!hasSceneLocation(sceneId, latestScene)) {
-          await handleGenerateSceneLocationAsset(sceneId, timelineAssetPipeline, timelineTextModel, timelineAssetImageProvider);
-          await waitForState();
-        }
-        if (isCancelled()) return;
 
         const sceneAfterLocation = nodesRef.current[sceneId] ?? latestScene;
         if (sceneAfterLocation.nodeType !== 'scene') continue;
         if (!hasSceneLocation(sceneId, sceneAfterLocation)) {
           const message = sceneAfterLocation.pollinationsApiError
             ? `Автодобор остановился на локации «${sceneAfterLocation.label}»: ${sceneAfterLocation.pollinationsApiError}`
-            : `Автодобор остановлен: фон локации для «${sceneAfterLocation.label}» не создан или был отменён.`;
+            : `Для «${sceneAfterLocation.label}» не найден общий референс. Сначала создайте локации в ноде «Локации».`;
           updateNode(timelineNodeId, { pollinationsApiError: message });
           return;
         }
@@ -6534,7 +6534,7 @@ export const useNodeManagement = (
 
         if (!hasComposedFrame(sceneId)) {
           updateNode(timelineNodeId, {
-            statusMessage: `Сцена ${index + 1}/${sceneEntries.length}: собираем Nano Banana композ...`,
+            statusMessage: `Сцена ${index + 1}/${sceneEntries.length}: объединяем кадр через ${timelineComposeLabel}...`,
           });
           await handleComposeSceneFlux2(sceneId, timelineComposePipeline);
           await waitForState();
@@ -6594,7 +6594,6 @@ export const useNodeManagement = (
     handleEnsureChapterTimeline,
     handleGenerateChapterBackdrop,
     handleGenerateDetailAsset,
-    handleGenerateSceneLocationAsset,
     handleGenerateSceneOmniVoiceNarration,
     handleGenerateSceneShotGrid,
     handlePlanChapters,

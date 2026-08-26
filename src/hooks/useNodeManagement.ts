@@ -1589,6 +1589,54 @@ const getSceneVisualGenerationSignature = (
   chapterBackdrop: getVisualAssetIdentity(chapterBackdropNode),
 });
 
+const getSceneClipRefreshState = (
+  scene: NodeData,
+  frameNode: NodeData | undefined,
+  shotNodes: NodeData[],
+  systemInsertNode: NodeData | undefined,
+  chapterBackdropNode: NodeData | undefined,
+  chapterBackdropGeneratedAt: string,
+  requireFfmpeg = false,
+) => {
+  const canBuildFromSources = Boolean(scene.audioUrl && frameNode?.imageUrl);
+  const visualGenerationSignature = getSceneVisualGenerationSignature(
+    frameNode,
+    shotNodes,
+    systemInsertNode,
+    chapterBackdropNode,
+  );
+  const storedVisualGenerationSignature = typeof scene.metadata?.videoVisualGenerationSignature === 'string'
+    ? scene.metadata.videoVisualGenerationSignature
+    : '';
+  const appliedBackdropGeneratedAt = typeof scene.metadata?.chapterBackdropGeneratedAt === 'string'
+    ? scene.metadata.chapterBackdropGeneratedAt
+    : '';
+  const ttsGeneratedAt = typeof scene.metadata?.ttsGeneratedAt === 'string'
+    ? scene.metadata.ttsGeneratedAt
+    : '';
+  const videoAudioGeneratedAt = typeof scene.metadata?.videoAudioGeneratedAt === 'string'
+    ? scene.metadata.videoAudioGeneratedAt
+    : '';
+  const clipNeedsRefresh = !scene.videoUrl
+    || storedVisualGenerationSignature !== visualGenerationSignature
+    || scene.metadata?.videoLayoutVersion !== SCENE_VIDEO_LAYOUT_VERSION
+    || Boolean(requireFfmpeg && scene.metadata?.videoRenderer !== 'ffmpeg')
+    || Boolean(ttsGeneratedAt && videoAudioGeneratedAt !== ttsGeneratedAt)
+    || Boolean(
+      chapterBackdropNode?.imageUrl
+      && (
+        scene.metadata?.chapterBackdropSource !== chapterBackdropNode.label
+        || appliedBackdropGeneratedAt !== chapterBackdropGeneratedAt
+      ),
+    );
+  return {
+    canBuildFromSources,
+    clipNeedsRefresh,
+    shouldBuildFromSources: canBuildFromSources && clipNeedsRefresh,
+    visualGenerationSignature,
+  };
+};
+
 const findSystemInsertImageNodeForScene = (nodes: NodesState, sceneNumber: number, sourceScenarioId = '') =>
   Object.entries(nodes)
     .filter(([nodeId, node]) => {
@@ -6218,19 +6266,36 @@ export const useNodeManagement = (
       return;
     }
 
-    const scenePlans = sceneEntries.map(([sceneId, scene]) => {
+    const chapterBackdropNode = findChapterBackdropImageNode(currentNodes, timelineNodeId, timelineNode);
+    const chapterBackdropGeneratedAt = getChapterBackdropGeneratedAt(chapterBackdropNode);
+    const scenePlans = sceneEntries.map(([sceneId, scene], sceneIndex) => {
       const sceneNumber = getSceneNumber(scene.label) ?? 0;
       const systemInsertNode = sceneNumber
         ? findSystemInsertImageNodeForScene(currentNodes, sceneNumber, sourceScenarioId ?? '')
         : undefined;
       const frameNode = findBestSceneFrameNode(currentNodes, sceneId);
       const shotNodes = findSceneShotNodes(currentNodes, sceneId);
-      return { sceneId, scene, frameNode, shotNodes, systemInsertNode };
+      const refreshState = getSceneClipRefreshState(
+        scene,
+        frameNode,
+        shotNodes,
+        systemInsertNode,
+        chapterBackdropNode,
+        chapterBackdropGeneratedAt,
+        options?.requireFfmpeg,
+      );
+      return {
+        sceneId,
+        scene,
+        sceneIndex,
+        frameNode,
+        shotNodes,
+        systemInsertNode,
+        ...refreshState,
+      };
     });
-    const chapterBackdropNode = findChapterBackdropImageNode(currentNodes, timelineNodeId, timelineNode);
-    const chapterBackdropGeneratedAt = getChapterBackdropGeneratedAt(chapterBackdropNode);
     const missingSourceLabels = scenePlans
-      .filter((plan) => !plan.scene.videoUrl && (!plan.scene.audioUrl || !plan.frameNode?.imageUrl))
+      .filter((plan) => plan.clipNeedsRefresh && !plan.canBuildFromSources)
       .map((plan) => plan.scene.label);
     if (missingSourceLabels.length > 0) {
       updateNode(timelineNodeId, {
@@ -6239,16 +6304,18 @@ export const useNodeManagement = (
       return;
     }
 
-    const plansToBuild = scenePlans.filter((plan) => plan.scene.audioUrl && plan.frameNode?.imageUrl);
+    const plansToBuild = scenePlans.filter((plan) => plan.shouldBuildFromSources);
+    const readyClipCount = scenePlans.length - plansToBuild.length;
     if (plansToBuild.length === 0) {
+      const message = `Все клипы главы уже готовы: ${scenePlans.length}/${scenePlans.length}.`;
       updateNode(timelineNodeId, {
         pollinationsApiError: undefined,
-        statusMessage: 'Нет сцен с кадром и озвучкой для пересборки клипов.',
+        statusMessage: message,
       });
-      showNotice('info', 'Нет сцен с кадром и озвучкой для пересборки клипов.');
+      showNotice('info', message);
       window.setTimeout(() => {
         const latestNode = nodesRef.current[timelineNodeId];
-        if (latestNode?.statusMessage === 'Нет сцен с кадром и озвучкой для пересборки клипов.') {
+        if (latestNode?.statusMessage === message) {
           updateNode(timelineNodeId, { statusMessage: undefined });
         }
       }, 2500);
@@ -6264,7 +6331,7 @@ export const useNodeManagement = (
       updateNode(timelineNodeId, {
         isLoadingVideo: true,
         pollinationsApiError: undefined,
-        statusMessage: `Собираем клипы главы по очереди: 0/${plansToBuild.length}`,
+        statusMessage: `Продолжаем клипы главы: готово ${readyClipCount}/${scenePlans.length}, осталось ${plansToBuild.length}`,
       });
 
       for (let index = 0; index < plansToBuild.length; index += 1) {
@@ -6272,7 +6339,7 @@ export const useNodeManagement = (
         const plan = plansToBuild[index];
         if (!plan.scene.audioUrl || !plan.frameNode?.imageUrl) continue;
         updateNode(timelineNodeId, {
-          statusMessage: `Собираем клип ${index + 1}/${plansToBuild.length}: ${plan.scene.label}`,
+          statusMessage: `Собираем клип ${plan.sceneIndex + 1}/${scenePlans.length}: ${plan.scene.label}`,
         });
         updateNode(plan.sceneId, {
           isLoadingVideo: true,
@@ -6283,12 +6350,6 @@ export const useNodeManagement = (
         const shotUrls = plan.shotNodes
           .map((shotNode) => shotNode.imageUrl)
           .filter((imageUrl): imageUrl is string => Boolean(imageUrl));
-        const visualGenerationSignature = getSceneVisualGenerationSignature(
-          plan.frameNode,
-          plan.shotNodes,
-          plan.systemInsertNode,
-          chapterBackdropNode,
-        );
         const imageUrls = [
           plan.frameNode.imageUrl,
           ...shotUrls,
@@ -6322,7 +6383,7 @@ export const useNodeManagement = (
                 videoAspectRatio: '16:9',
                 videoFrameSource: plan.frameNode.label,
                 sceneShotCountUsed: shotUrls.length,
-                videoVisualGenerationSignature: visualGenerationSignature,
+                videoVisualGenerationSignature: plan.visualGenerationSignature,
                 ...(plan.systemInsertNode ? { systemInsertSource: plan.systemInsertNode.label } : {}),
                 chapterBackdropSource: chapterBackdropNode?.label ?? null,
                 chapterBackdropGeneratedAt: chapterBackdropGeneratedAt || null,
@@ -6337,12 +6398,12 @@ export const useNodeManagement = (
       updateNode(timelineNodeId, {
         isLoadingVideo: false,
         statusMessage: chapterBackdropNode
-          ? `Клипы главы с фоном готовы: ${plansToBuild.length}.`
-          : `Клипы главы готовы: ${plansToBuild.length}.`,
+          ? `Клипы главы с фоном готовы: ${scenePlans.length}. Собрано сейчас: ${plansToBuild.length}.`
+          : `Клипы главы готовы: ${scenePlans.length}. Собрано сейчас: ${plansToBuild.length}.`,
       });
       showNotice('success', chapterBackdropNode
-        ? `Фон главы применён к клипам: ${plansToBuild.length}.`
-        : `Клипы главы готовы: ${plansToBuild.length}.`);
+        ? `Клипы с фоном готовы: ${scenePlans.length}. Ранее готовых пропущено: ${readyClipCount}.`
+        : `Клипы главы готовы: ${scenePlans.length}. Ранее готовых пропущено: ${readyClipCount}.`);
     } catch (error) {
       if (isAbortError(error)) {
         showNotice('info', 'Очередь клипов остановлена.');
@@ -6403,39 +6464,14 @@ export const useNodeManagement = (
         : undefined;
       const frameNode = findBestSceneFrameNode(currentNodes, sceneId);
       const shotNodes = findSceneShotNodes(currentNodes, sceneId);
-      const canBuildFromSources = Boolean(scene.audioUrl && frameNode?.imageUrl);
-      const appliedBackdropGeneratedAt = typeof scene.metadata?.chapterBackdropGeneratedAt === 'string'
-        ? scene.metadata.chapterBackdropGeneratedAt
-        : '';
-      const backdropNeedsRefresh = Boolean(
-        chapterBackdropNode?.imageUrl
-        && (
-          scene.metadata?.chapterBackdropSource !== chapterBackdropNode.label
-          || appliedBackdropGeneratedAt !== chapterBackdropGeneratedAt
-        ),
-      );
-      const visualGenerationSignature = getSceneVisualGenerationSignature(
+      const refreshState = getSceneClipRefreshState(
+        scene,
         frameNode,
         shotNodes,
         systemInsertNode,
         chapterBackdropNode,
-      );
-      const storedVisualGenerationSignature = typeof scene.metadata?.videoVisualGenerationSignature === 'string'
-        ? scene.metadata.videoVisualGenerationSignature
-        : '';
-      const visualsNeedRefresh = storedVisualGenerationSignature !== visualGenerationSignature;
-      const rendererNeedsRefresh = Boolean(
-        options?.requireFfmpeg
-        && scene.metadata?.videoRenderer !== 'ffmpeg',
-      );
-      const layoutNeedsRefresh = scene.metadata?.videoLayoutVersion !== SCENE_VIDEO_LAYOUT_VERSION;
-      const shouldBuildFromSources = canBuildFromSources && (
-        Boolean(systemInsertNode?.imageUrl)
-        || !scene.videoUrl
-        || backdropNeedsRefresh
-        || visualsNeedRefresh
-        || rendererNeedsRefresh
-        || layoutNeedsRefresh
+        chapterBackdropGeneratedAt,
+        options?.requireFfmpeg,
       );
       return {
         sceneId,
@@ -6443,19 +6479,11 @@ export const useNodeManagement = (
         frameNode,
         shotNodes,
         systemInsertNode,
-        canBuildFromSources,
-        shouldBuildFromSources,
-        visualGenerationSignature,
+        ...refreshState,
       };
     });
     const missingClipLabels = scenePlans
-      .filter((plan) => {
-        const needsGeneratedClip = !plan.scene.videoUrl || Boolean(
-          options?.requireFfmpeg
-          && plan.scene.metadata?.videoRenderer !== 'ffmpeg',
-        ) || plan.scene.metadata?.videoLayoutVersion !== SCENE_VIDEO_LAYOUT_VERSION;
-        return needsGeneratedClip && !plan.canBuildFromSources;
-      })
+      .filter((plan) => plan.clipNeedsRefresh && !plan.canBuildFromSources)
       .map((plan) => plan.scene.label);
     if (sceneEntries.length === 0) {
       updateNode(timelineNodeId, { pollinationsApiError: 'Сначала создайте сцены для таймлайна.' });
@@ -6507,6 +6535,9 @@ export const useNodeManagement = (
             const currentSceneNode = previousNodes[plan.sceneId];
             if (!currentSceneNode) return previousNodes;
             if (currentSceneNode.videoUrl?.startsWith('blob:')) URL.revokeObjectURL(currentSceneNode.videoUrl);
+            const audioGeneratedAt = typeof currentSceneNode.metadata?.ttsGeneratedAt === 'string'
+              ? currentSceneNode.metadata.ttsGeneratedAt
+              : '';
             return {
               ...previousNodes,
               [plan.sceneId]: {
@@ -6524,6 +6555,7 @@ export const useNodeManagement = (
                   ...(plan.systemInsertNode ? { systemInsertSource: plan.systemInsertNode.label } : {}),
                   chapterBackdropSource: chapterBackdropNode?.label ?? null,
                   chapterBackdropGeneratedAt: chapterBackdropGeneratedAt || null,
+                  ...(audioGeneratedAt ? { videoAudioGeneratedAt: audioGeneratedAt } : {}),
                   videoGeneratedAt: new Date().toISOString(),
                 },
               },

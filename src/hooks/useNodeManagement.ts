@@ -210,6 +210,7 @@ const getExistingChild = (nodes: NodesState, parentId: string, predicate: (node:
 const referenceSourceKinds = new Set(['format_bible', 'knowledge_base', 'chapter_planner', 'chapter_plan', 'chapter_knowledge', 'season_skeleton', 'season_memory', 'character_memory']);
 const chapterProductionReferenceSourceKinds = new Set(['format_bible', 'knowledge_base', 'season_memory']);
 const CHAPTER_MATERIAL_PROMPT_VERSION = 3;
+const NARRATION_PROMPT_VERSION = 2;
 const promptSnippetSourceKind = 'system_prompt_snippet';
 const fantasyStyleSourceKind = 'fantasy_style_bible';
 
@@ -222,11 +223,14 @@ const getNodeSystemPrompt = (node: NodeData | undefined, fallback: string) =>
 const legacyNarrationPromptPrefixes = [
   'Ты — закадровый рассказчик манхвы. Твоя задача — ясно рассказать историю по сценам',
   'Напиши закадровый текст рассказчика для озвучки по сценам',
+  'Ты — сюжетный закадровый рассказчик манхвы. Картинка и голос работают вместе',
 ];
 
 const shouldRefreshNarrationSystemPrompt = (node: NodeData | undefined) => {
   const savedPrompt = node?.systemPrompt?.trim();
-  return !savedPrompt || legacyNarrationPromptPrefixes.some((prefix) => savedPrompt.startsWith(prefix));
+  return !savedPrompt
+    || node?.metadata?.narrationPromptVersion !== NARRATION_PROMPT_VERSION
+    || legacyNarrationPromptPrefixes.some((prefix) => savedPrompt.startsWith(prefix));
 };
 
 const getDetailSystemPrompt = (
@@ -1178,6 +1182,7 @@ const upsertScriptDetailNode = (
     metadata: {
       ...existing?.[1].metadata,
       ...options.metadata,
+      ...(isNarration ? { narrationPromptVersion: NARRATION_PROMPT_VERSION } : {}),
     },
   };
   const nextNodes: NodesState = {

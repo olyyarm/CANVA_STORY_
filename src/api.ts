@@ -29,6 +29,8 @@ const COMFY_ERNIE_IMAGE_TIMEOUT_MS = 45 * 60 * 1000;
 const COMFY_FLUX2_TIMEOUT_MS = 6 * 60 * 60 * 1000;
 const COMFY_NANO_BANANA_TIMEOUT_MS = 45 * 60 * 1000;
 const COMFY_PARTNER_IMAGE_TIMEOUT_MS = 15 * 60 * 1000;
+const COMFY_PARTNER_AUTH_RETRY_DELAY_MS = 1500;
+const COMFY_PARTNER_AUTH_RETRY_COUNT = 2;
 const COMFY_TTS_TIMEOUT_MS = 45 * 60 * 1000;
 const COMFY_GEMINI_TEXT_TIMEOUT_MS = 45 * 60 * 1000;
 const WIDE_FRAME_WIDTH = 1344;
@@ -347,7 +349,8 @@ const createComfyPromptPayload = (
 };
 
 const getComfyOrgApiKey = (settings: { comfyOrgApiKey?: string; comfyGeminiApiKey?: string }) =>
-  (settings.comfyOrgApiKey ?? settings.comfyGeminiApiKey ?? '').trim()
+  settings.comfyOrgApiKey?.trim()
+  || settings.comfyGeminiApiKey?.trim()
   || import.meta.env.VITE_COMFY_ORG_API_KEY?.trim()
   || '';
 
@@ -2502,32 +2505,56 @@ export const generateComfyOpenAiGptImage2LowImage = async (
     }
 
     const workflow = buildComfyOpenAiGptImage2LowWorkflow(prompt, promptKind);
-    const clientId = typeof crypto.randomUUID === 'function'
-      ? crypto.randomUUID()
-      : `canva-story-gpt-image-2-low-${Date.now()}`;
+    let image: ComfyImageRef | null = null;
+    for (let attempt = 0; attempt <= COMFY_PARTNER_AUTH_RETRY_COUNT; attempt += 1) {
+      try {
+        const clientId = typeof crypto.randomUUID === 'function'
+          ? crypto.randomUUID()
+          : `canva-story-gpt-image-2-low-${Date.now()}-${attempt}`;
+        const promptResponse = await fetch(`${baseUrl}/prompt`, getComfyFetchOptions({
+          method: 'POST',
+          signal,
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(createComfyPromptPayload(clientId, workflow, settings)),
+        }));
+        if (!promptResponse.ok) {
+          throw new Error(getComfyError(
+            'ComfyUI не принял GPT Image 2 workflow',
+            promptResponse,
+            await readResponseDetails(promptResponse),
+          ));
+        }
+        const promptData: ComfyPromptResponse = await promptResponse.json();
+        if (!promptData.prompt_id) throw new Error('ComfyUI не вернул prompt_id для GPT Image 2.');
+        promptId = promptData.prompt_id;
 
-    const promptResponse = await fetch(`${baseUrl}/prompt`, getComfyFetchOptions({
-      method: 'POST',
-      signal,
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(createComfyPromptPayload(clientId, workflow, settings)),
-    }));
-    if (!promptResponse.ok) {
-      throw new Error(getComfyError(
-        'ComfyUI не принял GPT Image 2 workflow',
-        promptResponse,
-        await readResponseDetails(promptResponse),
-      ));
-    }
-    const promptData: ComfyPromptResponse = await promptResponse.json();
-    if (!promptData.prompt_id) throw new Error('ComfyUI не вернул prompt_id для GPT Image 2.');
-    promptId = promptData.prompt_id;
+        image = await waitForComfyImage(baseUrl, promptId, COMFY_PARTNER_IMAGE_TIMEOUT_MS, signal);
+        if (!image) {
+          await cancelComfyPrompt(baseUrl, promptId);
+          throw new Error('GPT Image 2 не вернул изображение за 15 минут. Зависшая задача снята с очереди ComfyUI.');
+        }
+        break;
+      } catch (error) {
+        if (error instanceof DOMException && error.name === 'AbortError') throw error;
+        const message = error instanceof Error ? error.message : String(error);
+        const canRetryAuthorization = Boolean(getComfyOrgApiKey(settings))
+          && isComfyAuthorizationError(message)
+          && attempt < COMFY_PARTNER_AUTH_RETRY_COUNT;
+        if (!canRetryAuthorization) {
+          if (isComfyAuthorizationError(message) && attempt > 0) {
+            throw new Error(
+              `Comfy API отклонил GPT Image 2 после ${attempt + 1} попыток. ${message}`,
+            );
+          }
+          throw error;
+        }
 
-    const image = await waitForComfyImage(baseUrl, promptId, COMFY_PARTNER_IMAGE_TIMEOUT_MS, signal);
-    if (!image) {
-      await cancelComfyPrompt(baseUrl, promptId);
-      throw new Error('GPT Image 2 не вернул изображение за 15 минут. Зависшая задача снята с очереди ComfyUI.');
+        promptId = null;
+        await wait(COMFY_PARTNER_AUTH_RETRY_DELAY_MS, signal);
+      }
     }
+
+    if (!image) throw new Error('GPT Image 2 завершился без изображения.');
 
     const params = new URLSearchParams({
       filename: image.filename,

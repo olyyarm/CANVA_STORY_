@@ -24,6 +24,11 @@ credentials were not passed into the API run:
 GeminiNodeV2: Unauthorized: Please login first to use this node.
 ```
 
+The same authorization error can come from any Comfy Partner/API node, for
+example `OpenAIGPTImageNodeV2` or `GeminiNanoBanana2V2`. It does not mean that
+Canva Story switched to Mistral: the node type in the ComfyUI traceback is the
+source of truth.
+
 ## Cause
 
 `GeminiNodeV2` is a Comfy API node with a `COMFY_DYNAMICCOMBO_V3` input named `model`.
@@ -136,6 +141,23 @@ Image settings -> ComfyUI -> Comfy.org API key
 If one field is filled, the other should be updated too. If text generation
 still returns `Unauthorized`, paste a fresh key from `https://platform.comfy.org/profile/api-keys`
 and retry. Do not change the Gemini workflow shape while fixing auth.
+
+### Intermittent authorization during a batch
+
+If a long GPT Image 2 batch stops with `Unauthorized`, but immediately
+regenerating the same asset succeeds, compare the failed and successful entries
+in ComfyUI history. When both use `OpenAIGPTImageNodeV2` and the same prompt,
+this is a transient Partner API authorization failure, not a model-routing or
+Mistral problem.
+
+Canva Story automatically retries only this exact authorization failure. It
+reuses the same workflow and prompt, never falls back to a local model, and does
+not regenerate assets that were already saved. A permanently missing or invalid
+key still ends with a clear error after the bounded retries.
+
+ComfyUI may redact `api_key_comfy_org` from stored history, so the absence of a
+visible key in `/history` is not proof that the app omitted it. Never print the
+key while diagnosing this path.
 
 ## Local Source Of Truth
 

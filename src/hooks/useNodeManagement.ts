@@ -7268,7 +7268,10 @@ export const useNodeManagement = (
         return;
       }
       if (!assetsReady) {
-        const message = 'Полная сборка остановлена: этап подготовки ассетов не завершился. Повторите запуск — уже готовые элементы сохранятся.';
+        const latestTimelineError = nodesRef.current[timelineNodeId]?.pollinationsApiError?.trim();
+        const message = latestTimelineError
+          ? `Полная сборка остановлена: ${latestTimelineError}`
+          : 'Полная сборка остановлена: этап подготовки ассетов не завершился. Повторите запуск — уже готовые элементы сохранятся.';
         updateNode(timelineNodeId, { pollinationsApiError: message, statusMessage: undefined });
         showNotice('error', message);
         return;

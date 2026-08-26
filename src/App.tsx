@@ -1439,12 +1439,6 @@ const App = () => {
     }));
   }, []);
 
-  const handleComfyGeminiApiKeyChange = useCallback((event: React.ChangeEvent<HTMLInputElement>) => {
-    const apiKey = event.target.value;
-    setGenerationSettings((settings) => ({ ...settings, comfyGeminiApiKey: apiKey }));
-    setImageGenerationSettings((settings) => ({ ...settings, comfyOrgApiKey: apiKey }));
-  }, []);
-
   const handleImageProviderChange = useCallback((event: React.ChangeEvent<HTMLSelectElement>) => {
     const provider = event.target.value;
     if (!isImageProvider(provider)) return;
@@ -1562,7 +1556,29 @@ const App = () => {
               {generationModeLabels[generationSettings.mode]}
             </span>
           </div>
-          <div className="generation-controls" aria-label="Режим генерации текста">
+          <details className="generation-settings-panel">
+            <summary>
+              <span>Настройки генерации</span>
+              <small>
+                {generationModeLabels[generationSettings.mode]} · {imageProviderLabels[imageGenerationSettings.provider]}
+              </small>
+            </summary>
+            <div className="generation-settings-panel__content">
+              <label className="shared-comfy-key-field">
+                <span>Comfy.org API key</span>
+                <input
+                  type="password"
+                  value={imageGenerationSettings.comfyOrgApiKey}
+                  onChange={handleComfyOrgApiKeyChange}
+                  placeholder="Вставьте единый ключ для Gemini, GPT Image и Nano Banana"
+                  aria-label="Общий Comfy.org API key"
+                  autoComplete="off"
+                />
+                <strong className={imageGenerationSettings.comfyOrgApiKey.trim() ? 'shared-comfy-key-field--ready' : ''}>
+                  {imageGenerationSettings.comfyOrgApiKey.trim() ? 'Ключ указан' : 'Ключ не указан'}
+                </strong>
+              </label>
+              <div className="generation-controls" aria-label="Режим генерации текста">
             <select
               className="generation-select"
               value={generationSettings.mode}
@@ -1666,29 +1682,20 @@ const App = () => {
                   aria-label="Max output tokens Gemini"
                   title="max_output_tokens для GeminiNodeV2"
                 />
-                <input
-                  className="generation-secret-input"
-                  type="password"
-                  value={generationSettings.comfyGeminiApiKey}
-                  onChange={handleComfyGeminiApiKeyChange}
-                  placeholder="Comfy.org API key"
-                  aria-label="Comfy.org API key для Gemini"
-                  title="Если GeminiNodeV2 требует ключ Comfy.org, он будет отправлен в extra_data. Хранится только в localStorage этого браузера."
-                />
               </>
             )}
-          </div>
-          {hasLmStudioMixedContentRisk && (
-            <div className="generation-warning" role="status">
-              GitHub Pages работает по HTTPS. Для HTTP-адреса в домашней сети браузер может потребовать локальный запуск приложения или HTTPS/proxy.
-            </div>
-          )}
-          {hasComfyGeminiMixedContentRisk && (
-            <div className="generation-warning" role="status">
-              GitHub Pages по HTTPS может блокировать HTTP ComfyUI для Gemini. Для такого режима лучше локальный запуск или HTTPS/proxy.
-            </div>
-          )}
-          <div className="image-generation-controls" aria-label="Генерация кадров">
+              </div>
+              {hasLmStudioMixedContentRisk && (
+                <div className="generation-warning" role="status">
+                  GitHub Pages работает по HTTPS. Для HTTP-адреса в домашней сети браузер может потребовать локальный запуск приложения или HTTPS/proxy.
+                </div>
+              )}
+              {hasComfyGeminiMixedContentRisk && (
+                <div className="generation-warning" role="status">
+                  GitHub Pages по HTTPS может блокировать HTTP ComfyUI для Gemini. Для такого режима лучше локальный запуск или HTTPS/proxy.
+                </div>
+              )}
+              <div className="image-generation-controls" aria-label="Генерация кадров">
             <span className={`mode-badge mode-badge--image-${imageGenerationSettings.provider}`}>
               {imageProviderLabels[imageGenerationSettings.provider]}
             </span>
@@ -1719,19 +1726,10 @@ const App = () => {
                     aria-label="Checkpoint SDXL для ComfyUI"
                   />
                 )}
-                <input
-                  className="generation-secret-input"
-                  type="password"
-                  value={imageGenerationSettings.comfyOrgApiKey}
-                  onChange={handleComfyOrgApiKeyChange}
-                  placeholder="Comfy.org API key"
-                  aria-label="Comfy.org API key"
-                  title="Ключ Comfy.org для API-нод вроде Nano Banana. Хранится только в localStorage этого браузера."
-                />
               </>
             )}
-          </div>
-          <details className="narration-generation-controls">
+              </div>
+              <details className="narration-generation-controls">
             <summary>
               Озвучка · {narrationSettings.mode === 'clone' ? 'Voice Clone' : 'Голос по описанию'} ·{' '}
               {narrationSettings.model === 'OmniVoice' ? 'FP32' : 'BF16'}
@@ -1847,18 +1845,20 @@ const App = () => {
               tabIndex={-1}
               aria-hidden="true"
             />
-          </details>
-          {hasComfyMixedContentRisk && (
-            <div className="generation-warning" role="status">
-              GitHub Pages по HTTPS может блокировать HTTP ComfyUI в домашней сети. Для такого режима лучше локальный запуск или HTTPS/proxy.
+              </details>
+              {hasComfyMixedContentRisk && (
+                <div className="generation-warning" role="status">
+                  GitHub Pages по HTTPS может блокировать HTTP ComfyUI в домашней сети. Для такого режима лучше локальный запуск или HTTPS/proxy.
+                </div>
+              )}
+              <div className="workflow-hint" aria-label="Текущий рабочий процесс">
+                <span>1 · Текст</span>
+                <span>2 · Детали</span>
+                <span>3 · Сцены</span>
+                <span>4 · Промпты</span>
+              </div>
             </div>
-          )}
-          <div className="workflow-hint" aria-label="Текущий рабочий процесс">
-            <span>1 · Текст</span>
-            <span>2 · Детали</span>
-            <span>3 · Сцены</span>
-            <span>4 · Промпты</span>
-          </div>
+          </details>
         </div>
         <div className="project-actions" aria-label="Действия с проектом">
           <span className="node-count">{visibleNodeEntries.length} из {canvasNodeEntries.length} нод</span>
@@ -1890,13 +1890,6 @@ const App = () => {
           <button type="button" onClick={handleEnsureCharacterRegistry}>Реестр персонажей</button>
           <button type="button" onClick={() => handleEnsureChapterTimeline(selectedNodeId ?? undefined)}>Таймлайн</button>
           <button type="button" onClick={handleEnsureChapterCollector}>Собиратель глав</button>
-          <button type="button" onClick={() => void handleRestoreImageAssets()}>Восстановить медиа</button>
-          <button type="button" onClick={() => handleCreatePromptNode(selectedNodeId ?? undefined)}>Prompt Node</button>
-          <button type="button" onClick={() => handleCreateSceneWriterPromptNode(selectedNodeId ?? undefined)}>Scene Writer</button>
-          <button type="button" onClick={() => handleCreateSplitNode(selectedNodeId ?? undefined)}>Split Node</button>
-          <button type="button" onClick={handleUnloadLocalModels} disabled={isUnloadingModels}>
-            {isUnloadingModels ? 'Выгружаю…' : 'Выгрузить модели'}
-          </button>
           {!activeChapterWorkspaceId && (
             <button
               type="button"
@@ -1936,9 +1929,6 @@ const App = () => {
           >
             {isSavingPackage ? 'Сохраняю ZIP…' : 'Скачать ZIP'}
           </button>
-          <button type="button" onClick={handleExportJson} title="Скачать только структуру проекта без медиафайлов">
-            Экспорт JSON
-          </button>
           <button
             type="button"
             onClick={() => fileInputRef.current?.click()}
@@ -1946,7 +1936,22 @@ const App = () => {
           >
             {isImportingProject ? 'Открываю…' : 'Открыть проект'}
           </button>
-          <button type="button" className="toolbar-danger-button" onClick={() => setPendingProjectAction('reset')}>Сброс</button>
+          <details className="toolbar-more">
+            <summary>Ещё</summary>
+            <div className="toolbar-more__menu">
+              <button type="button" onClick={() => void handleRestoreImageAssets()}>Восстановить медиа</button>
+              <button type="button" onClick={() => handleCreatePromptNode(selectedNodeId ?? undefined)}>Prompt Node</button>
+              <button type="button" onClick={() => handleCreateSceneWriterPromptNode(selectedNodeId ?? undefined)}>Scene Writer</button>
+              <button type="button" onClick={() => handleCreateSplitNode(selectedNodeId ?? undefined)}>Split Node</button>
+              <button type="button" onClick={handleUnloadLocalModels} disabled={isUnloadingModels}>
+                {isUnloadingModels ? 'Выгружаю…' : 'Выгрузить модели'}
+              </button>
+              <button type="button" onClick={handleExportJson} title="Скачать только структуру проекта без медиафайлов">
+                Экспорт JSON
+              </button>
+              <button type="button" className="toolbar-danger-button" onClick={() => setPendingProjectAction('reset')}>Сброс</button>
+            </div>
+          </details>
           <input
             ref={fileInputRef}
             type="file"

@@ -3188,7 +3188,7 @@ export const useNodeManagement = (
         const currentPlanner = previousNodes[plannerNodeId] ?? plannerNode;
         const nextNodes = { ...previousNodes };
         const chapterWidth = 440;
-        const chapterHeight = 430;
+        const chapterHeight = 560;
         document.chapters.forEach((chapter, index) => {
           const existing = Object.entries(previousNodes).find(([, node]) =>
             node.nodeType === 'script_detail'

@@ -471,7 +471,7 @@ const getRenderedNodeSize = (node: NodeData) => {
             ? 420
             : node.nodeType === 'split_item'
             ? 430
-            : node.nodeType === 'scene' ? 520 : sourceKind === 'chapter_plan' ? 430 : 0,
+            : node.nodeType === 'scene' ? 520 : sourceKind === 'chapter_plan' ? 560 : 0,
     ),
   };
 };

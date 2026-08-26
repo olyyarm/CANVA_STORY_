@@ -3748,7 +3748,7 @@ export const useNodeManagement = (
         systemPrompt: CHAPTER_MATERIAL_SYSTEM_PROMPT,
         model: sourceNode.selectedModel || MISTRAL_MODELS[0],
         sceneCount: sourceNode.sceneCount,
-      }, 'Материал получился без причинной цепочки. Исправляем улики, проверки и последствия...');
+      }, 'Материал получился без причинной цепочки. Исправляем улики, проверки и последствия...', true);
       if (!repairedResult) return;
       result = repairedResult;
     }

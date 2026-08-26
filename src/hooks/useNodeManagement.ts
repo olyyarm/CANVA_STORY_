@@ -208,6 +208,8 @@ const getExistingChild = (nodes: NodesState, parentId: string, predicate: (node:
   Object.entries(nodes).find(([, node]) => node.parentId === parentId && predicate(node));
 
 const referenceSourceKinds = new Set(['format_bible', 'knowledge_base', 'chapter_planner', 'chapter_plan', 'chapter_knowledge', 'season_skeleton', 'season_memory', 'character_memory']);
+const chapterProductionReferenceSourceKinds = new Set(['format_bible', 'knowledge_base', 'season_memory']);
+const CHAPTER_MATERIAL_PROMPT_VERSION = 2;
 const promptSnippetSourceKind = 'system_prompt_snippet';
 const fantasyStyleSourceKind = 'fantasy_style_bible';
 
@@ -518,12 +520,15 @@ const isPlaceholderSeasonMemory = (text: string) => {
     && !normalized.includes('глава:');
 };
 
-const getStoryReferenceContext = (nodes: NodesState) => {
+const getStoryReferenceContext = (
+  nodes: NodesState,
+  allowedSourceKinds = referenceSourceKinds,
+) => {
   const references = Object.values(nodes)
     .filter((node) =>
       node.nodeType === 'script_detail'
       && typeof node.metadata?.sourceKind === 'string'
-      && referenceSourceKinds.has(node.metadata.sourceKind)
+      && allowedSourceKinds.has(node.metadata.sourceKind)
       && (node.metadata.sourceKind !== 'season_memory' || !isPlaceholderSeasonMemory(node.inputValue ?? ''))
       && node.inputValue?.trim())
     .sort((first, second) => first.label.localeCompare(second.label, 'ru'));
@@ -540,6 +545,16 @@ const withStoryReferenceContext = (prompt: string, nodes: NodesState) => {
   return [
     prompt,
     'Справочные базы проекта. Используй как ориентир для структуры, фактуры, профессий, лазеек и эмоционального тона. Не копируй дословно, если это пример или шаблон.',
+    context,
+  ].join('\n\n');
+};
+
+const withChapterProductionReferenceContext = (prompt: string, nodes: NodesState) => {
+  const context = getStoryReferenceContext(nodes, chapterProductionReferenceSourceKinds);
+  if (!context) return prompt;
+  return [
+    prompt,
+    'Общие базы проекта ниже нужны только для правил мира, стиля и continuity. Они не могут заменять события целевой главы и не являются планами соседних глав.',
     context,
   ].join('\n\n');
 };
@@ -687,11 +702,13 @@ const buildScenarioRepairPrompt = (scenario: string, requestedSceneCount: number
   ].join('\n\n');
 
 const buildChapterPrompt = (material: string, sceneCount: number, nodes: NodesState) =>
-  withStoryReferenceContext([
+  withChapterProductionReferenceContext([
     `Нужно ровно ${sceneCount} сцен. Не сокращай главу до 5-8 сцен, если запрошено больше.`,
     'Материал текущей главы:',
     material,
     'Задача: собрать главу как последовательный сценарий сцен. Используй материал главы как главный источник, а базы проекта и сезонную память как контекст.',
+    'Строка «Целевая глава» и её драматическое зерно имеют высший приоритет. Не бери события, клиента, дефект, финал или переход из соседней главы.',
+    'Если материал помечает смерть, перерождение, первую ночь или первое системное окно как уже показанные ранее, не превращай их в новые сцены и не начинай ими позднюю главу.',
     'Перед профессиональной работой обязательно покажи: кто страдает от проблемы, как выглядит его обычная жизнь, чего он хочет сегодня, почему спешит, что потеряет при провале, где и как он встречает протагониста, какая между ними первая эмоция, почему протагонист решает вмешаться.',
     'Каждая сцена должна быть не паузой для размышления, а маленьким событием: состояние до сцены, ближайшая цель персонажа, препятствие, физическое действие, реакция мира или другого персонажа, что персонаж узнаёт сейчас, что меняется и крючок на следующую сцену.',
     'Держи одну техническую цепочку главы: один предмет, один дефект, один симптом, одна причина, одно решение. Протагонист может ошибиться или увидеть только часть причины до финальной проверки.',
@@ -759,6 +776,179 @@ const getDescendantNodeIds = (nodes: NodesState, rootId: string) => {
     });
   }
   return descendants;
+};
+
+const normalizeGeneratedText = (value = '') => value.replace(/\s+/gu, ' ').trim();
+
+const revokeNodeObjectUrls = (node?: NodeData) => {
+  if (!node) return;
+  [node.imageUrl, node.audioUrl, node.videoUrl].forEach((url) => {
+    if (url?.startsWith('blob:')) URL.revokeObjectURL(url);
+  });
+};
+
+const removeNodeBranch = (nodes: NodesState, rootId: string, includeRoot = true) => {
+  const nodeIds = getDescendantNodeIds(nodes, rootId);
+  if (includeRoot) nodeIds.add(rootId);
+  nodeIds.forEach((nodeId) => {
+    revokeNodeObjectUrls(nodes[nodeId]);
+    delete nodes[nodeId];
+  });
+};
+
+const omitMetadataKeys = (metadata: NodeData['metadata'], keys: string[]) => {
+  const nextMetadata = { ...(metadata ?? {}) };
+  keys.forEach((key) => delete nextMetadata[key]);
+  return nextMetadata;
+};
+
+const ttsMetadataKeys = [
+  'preparedTtsText',
+  'preparedTtsSourceNodeId',
+  'preparedTtsAt',
+  'ttsProvider',
+  'voiceInstruct',
+  'ttsMode',
+  'ttsModel',
+  'ttsQuality',
+  'ttsSeed',
+  'ttsGenerationSignature',
+  'sceneNarrationText',
+  'ttsGeneratedAt',
+];
+
+const videoMetadataKeys = [
+  'videoAspectRatio',
+  'videoAudioGeneratedAt',
+  'videoFormat',
+  'videoFrameSource',
+  'videoGeneratedAt',
+  'videoRenderer',
+  'videoVisualGenerationSignature',
+  'systemInsertSource',
+  'chapterBackdropSource',
+  'chapterBackdropGeneratedAt',
+  'sceneShotCountUsed',
+];
+
+const shotMetadataKeys = [
+  'sceneShotCount',
+  'sceneShotGridGeneratedAt',
+  'sceneShotGridPrompt',
+];
+
+const resetSceneNarrationMedia = (sceneNode: NodeData): NodeData => {
+  if (sceneNode.audioUrl?.startsWith('blob:')) URL.revokeObjectURL(sceneNode.audioUrl);
+  if (sceneNode.videoUrl?.startsWith('blob:')) URL.revokeObjectURL(sceneNode.videoUrl);
+  return {
+    ...sceneNode,
+    audioUrl: undefined,
+    videoUrl: undefined,
+    assets: sceneNode.assets
+      ? { image: sceneNode.assets.image }
+      : undefined,
+    isLoadingAudio: false,
+    isLoadingVideo: false,
+    loadingProvider: undefined,
+    error: undefined,
+    pollinationsApiError: undefined,
+    statusMessage: 'Закадр изменился: озвучку и клип нужно обновить.',
+    productionStatus: 'in_production',
+    metadata: omitMetadataKeys(sceneNode.metadata, [...ttsMetadataKeys, ...videoMetadataKeys]),
+  };
+};
+
+const resetSceneVisualMedia = (sceneNode: NodeData): NodeData => {
+  if (sceneNode.videoUrl?.startsWith('blob:')) URL.revokeObjectURL(sceneNode.videoUrl);
+  return {
+    ...sceneNode,
+    masterPrompt: '',
+    assetPrompt: '',
+    videoUrl: undefined,
+    sceneShotNodeIds: undefined,
+    assets: sceneNode.assets
+      ? { audio: sceneNode.assets.audio }
+      : undefined,
+    isLoadingImage: false,
+    isLoadingVideo: false,
+    loadingProvider: undefined,
+    error: undefined,
+    pollinationsApiError: undefined,
+    statusMessage: 'Визуальный материал изменился: кадры и клип нужно обновить.',
+    productionStatus: 'in_production',
+    metadata: omitMetadataKeys(sceneNode.metadata, [...videoMetadataKeys, ...shotMetadataKeys]),
+  };
+};
+
+const resetSceneAfterTextChange = (sceneNode: NodeData): NodeData => {
+  revokeNodeObjectUrls(sceneNode);
+  return {
+    ...sceneNode,
+    masterPrompt: '',
+    assetPrompt: '',
+    audioUrl: undefined,
+    videoUrl: undefined,
+    sceneShotNodeIds: undefined,
+    assets: undefined,
+    isLoadingImage: false,
+    isLoadingAudio: false,
+    isLoadingVideo: false,
+    loadingProvider: undefined,
+    error: undefined,
+    pollinationsApiError: undefined,
+    statusMessage: 'Текст сцены изменился: производные материалы нужно обновить.',
+    productionStatus: 'draft',
+    metadata: omitMetadataKeys(sceneNode.metadata, [
+      ...ttsMetadataKeys,
+      ...videoMetadataKeys,
+      ...shotMetadataKeys,
+    ]),
+  };
+};
+
+const resetLinkedChapterRenders = (
+  nodes: NodesState,
+  sourceScenarioId: string,
+  removeBackdrop = false,
+) => {
+  Object.entries(nodes).forEach(([timelineNodeId, timelineNode]) => {
+    if (
+      timelineNode.nodeType !== 'chapter_timeline'
+      || (
+        timelineNode.parentId !== sourceScenarioId
+        && timelineNode.metadata?.sourceScenarioId !== sourceScenarioId
+      )
+    ) return;
+
+    Object.entries(nodes).forEach(([nodeId, node]) => {
+      const isChapterVideo = node.nodeType === 'video_output' && node.parentId === timelineNodeId;
+      const isChapterBackdrop = removeBackdrop
+        && node.nodeType === 'pollinations_image'
+        && node.parentId === timelineNodeId
+        && typeof node.metadata?.assetKind === 'string'
+        && node.metadata.assetKind.startsWith('chapter_backdrop');
+      if (isChapterVideo || isChapterBackdrop) removeNodeBranch(nodes, nodeId);
+    });
+
+    const currentTimeline = nodes[timelineNodeId];
+    if (!currentTimeline) return;
+    nodes[timelineNodeId] = {
+      ...currentTimeline,
+      videoUrl: undefined,
+      ...(removeBackdrop ? { assetPrompt: '' } : {}),
+      error: undefined,
+      pollinationsApiError: undefined,
+      statusMessage: 'Материалы главы изменились: итоговый ролик нужно пересобрать.',
+      productionStatus: 'in_production',
+      metadata: omitMetadataKeys(currentTimeline.metadata, [
+        'chapterClipCount',
+        'chapterSystemInsertCount',
+        'chapterBackdropSource',
+        'videoRenderer',
+        'videoGeneratedAt',
+      ]),
+    };
+  });
 };
 
 const getAncestorNodeId = (
@@ -922,7 +1112,12 @@ const upsertScriptDetailNode = (
   const nodeId = existing?.[0] ?? generateNodeId();
   const column = options.column ?? 0;
   const isNarration = label === 'Закадр';
+  const isLocations = label === 'Локации';
   const isSystemInserts = label === 'Системные вставки';
+  const inputChanged = Boolean(
+    existing
+    && normalizeGeneratedText(existing[1].inputValue) !== normalizeGeneratedText(inputValue),
+  );
   const defaultWidth = isNarration || isSystemInserts ? 420 : 380;
   const defaultHeight = isNarration ? 520 : isSystemInserts ? 470 : 400;
   const currentWidth = existing?.[1].width ?? options.width ?? defaultWidth;
@@ -949,10 +1144,74 @@ const upsertScriptDetailNode = (
       ...options.metadata,
     },
   };
-  return {
+  const nextNodes: NodesState = {
     ...previousNodes,
     [nodeId]: nextNode,
   };
+
+  if (!inputChanged) return nextNodes;
+
+  if (isNarration) {
+    revokeNodeObjectUrls(existing?.[1]);
+    nextNodes[nodeId] = {
+      ...nextNode,
+      audioUrl: undefined,
+      videoUrl: undefined,
+      assets: undefined,
+      metadata: omitMetadataKeys(nextNode.metadata, ttsMetadataKeys),
+    };
+    Object.entries(previousNodes).forEach(([childId, childNode]) => {
+      if (
+        childNode.parentId === nodeId
+        && childNode.nodeType === 'script_detail'
+        && (
+          childNode.metadata?.sourceKind === 'tts_cleanup'
+          || childNode.label === 'TTS · Закадр'
+        )
+      ) removeNodeBranch(nextNodes, childId);
+    });
+    Object.entries(previousNodes).forEach(([sceneNodeId, sceneNode]) => {
+      if (sceneNode.parentId !== parentId || sceneNode.nodeType !== 'scene') return;
+      nextNodes[sceneNodeId] = resetSceneNarrationMedia(sceneNode);
+    });
+    resetLinkedChapterRenders(nextNodes, parentId);
+    return nextNodes;
+  }
+
+  if (isLocations || isSystemInserts) {
+    Object.entries(previousNodes).forEach(([childId, childNode]) => {
+      if (childNode.parentId !== nodeId || childNode.nodeType !== 'pollinations_image') return;
+      const assetKind = typeof childNode.metadata?.assetKind === 'string' ? childNode.metadata.assetKind : '';
+      if (
+        (isLocations && assetKind.startsWith('location_asset'))
+        || (isSystemInserts && assetKind.startsWith('system_insert'))
+      ) removeNodeBranch(nextNodes, childId);
+    });
+    Object.entries(previousNodes).forEach(([sceneNodeId, sceneNode]) => {
+      if (sceneNode.parentId !== parentId || sceneNode.nodeType !== 'scene') return;
+      if (isLocations) {
+        Object.entries(nextNodes).forEach(([childId, childNode]) => {
+          if (childNode.parentId === sceneNodeId && childNode.nodeType === 'pollinations_image') {
+            removeNodeBranch(nextNodes, childId);
+          }
+        });
+        nextNodes[sceneNodeId] = resetSceneVisualMedia(sceneNode);
+      } else {
+        if (sceneNode.videoUrl?.startsWith('blob:')) URL.revokeObjectURL(sceneNode.videoUrl);
+        nextNodes[sceneNodeId] = {
+          ...sceneNode,
+          videoUrl: undefined,
+          assets: sceneNode.assets ? { image: sceneNode.assets.image, audio: sceneNode.assets.audio } : undefined,
+          metadata: omitMetadataKeys(sceneNode.metadata, videoMetadataKeys),
+          statusMessage: 'Системные вставки изменились: клип нужно обновить.',
+          productionStatus: 'in_production',
+        };
+      }
+    });
+    resetLinkedChapterRenders(nextNodes, parentId, isLocations);
+  }
+
+  return nextNodes;
 };
 
 const upsertVideoOutputNode = (
@@ -1722,6 +1981,10 @@ const upsertScenarioGraph = (
   );
   const outputNodeId = existingOutput?.[0] ?? preferredOutputNodeId ?? generateNodeId();
   const existingOutputNode = existingOutput?.[1];
+  const outputContentChanged = Boolean(
+    existingOutputNode
+    && normalizeGeneratedText(existingOutputNode.inputValue) !== normalizeGeneratedText(generatedContent),
+  );
   const outputNode: NodeData = {
     nodeType: 'script_output',
     x: existingOutputNode?.x ?? sourceNode.x + (sourceNode.width ?? 360) + 56,
@@ -1742,6 +2005,7 @@ const upsertScenarioGraph = (
   const scenes = parseSceneBlocks(generatedContent, requestedSceneCount);
   outputNode.sceneCount = scenes.length;
   const nextNodes: NodesState = { ...previousNodes, [outputNodeId]: outputNode };
+  if (outputContentChanged) resetLinkedChapterRenders(nextNodes, outputNodeId, true);
   const existingScenes = Object.entries(previousNodes)
     .filter(([, node]) => node.parentId === outputNodeId && node.nodeType === 'scene')
     .sort(([, first], [, second]) => first.label.localeCompare(second.label, 'ru', { numeric: true }));
@@ -1753,37 +2017,44 @@ const upsertScenarioGraph = (
     const existingScene = existingScenes[index];
     const sceneNodeId = existingScene?.[0] ?? generateNodeId();
     const existingSceneNode = existingScene?.[1];
+    const sceneTextChanged = Boolean(
+      existingSceneNode
+      && normalizeGeneratedText(existingSceneNode.sceneText || existingSceneNode.inputValue)
+        !== normalizeGeneratedText(scene.text),
+    );
+    if (sceneTextChanged) removeNodeBranch(nextNodes, sceneNodeId, false);
+    const reusableSceneNode = sceneTextChanged && existingSceneNode
+      ? resetSceneAfterTextChange(existingSceneNode)
+      : existingSceneNode;
     const column = index % 2;
     const row = Math.floor(index / 2);
     keptSceneIds.add(sceneNodeId);
     nextNodes[sceneNodeId] = {
-      ...existingSceneNode,
+      ...reusableSceneNode,
       nodeType: 'scene',
-      x: existingSceneNode?.x ?? outputNode.x + (outputNode.width ?? 440) + 56 + column * (sceneNodeWidth + 28),
-      y: existingSceneNode?.y ?? outputNode.y + row * (sceneNodeHeight + 36),
+      x: reusableSceneNode?.x ?? outputNode.x + (outputNode.width ?? 440) + 56 + column * (sceneNodeWidth + 28),
+      y: reusableSceneNode?.y ?? outputNode.y + row * (sceneNodeHeight + 36),
       label: scene.label,
-      width: Math.max(existingSceneNode?.width ?? sceneNodeWidth, sceneNodeWidth),
-      height: Math.max(existingSceneNode?.height ?? sceneNodeHeight, sceneNodeHeight),
+      width: Math.max(reusableSceneNode?.width ?? sceneNodeWidth, sceneNodeWidth),
+      height: Math.max(reusableSceneNode?.height ?? sceneNodeHeight, sceneNodeHeight),
       level: (outputNode.level ?? 0) + 1,
       parentId: outputNodeId,
       isGenerated: true,
       hasGenerationButton: true,
-      masterPrompt: existingSceneNode?.masterPrompt ?? '',
+      masterPrompt: reusableSceneNode?.masterPrompt ?? '',
       sceneText: scene.text,
       inputValue: scene.text,
-      systemPrompt: existingSceneNode?.systemPrompt ?? SCENE_DIALOGUE_SYSTEM_PROMPT,
+      systemPrompt: reusableSceneNode?.systemPrompt ?? SCENE_DIALOGUE_SYSTEM_PROMPT,
       selectedModel: sourceNode.selectedModel,
-      entityRef: existingSceneNode?.entityRef ?? { type: 'scene', id: sceneNodeId },
-      productionStatus: existingSceneNode?.productionStatus ?? 'draft',
+      entityRef: reusableSceneNode?.entityRef ?? { type: 'scene', id: sceneNodeId },
+      productionStatus: reusableSceneNode?.productionStatus ?? 'draft',
       error: undefined,
     };
   });
 
   existingScenes.forEach(([sceneId]) => {
     if (keptSceneIds.has(sceneId)) return;
-    Object.entries(nextNodes).forEach(([nodeId, node]) => {
-      if (nodeId === sceneId || node.parentId === sceneId) delete nextNodes[nodeId];
-    });
+    removeNodeBranch(nextNodes, sceneId);
   });
 
   return nextNodes;
@@ -3399,21 +3670,36 @@ export const useNodeManagement = (
     const knowledge = sourceKind === 'chapter_plan'
       ? findNodeBySourceKind(nodesRef.current, 'chapter_knowledge')?.[1].inputValue?.trim() || DEFAULT_CHAPTER_KNOWLEDGE
       : knowledgeNode?.inputValue?.trim() || DEFAULT_CHAPTER_KNOWLEDGE;
-
-    const result = await requestText(sourceNodeId, {
-      operation: 'chapter_material',
-      prompt: [
+    const chapterNumber = sourceKind === 'chapter_plan'
+      ? Number(sourceNode.metadata?.chapterNumber)
+      : 0;
+    const chapterIdentity = sourceText.split(/\r?\n/u).find((line) => line.trim())?.trim()
+      || (chapterNumber > 0 ? `Глава ${chapterNumber}` : sourceNode.label);
+    const chapterMaterialPrompt = sourceKind === 'chapter_plan'
+      ? [
+        `ЦЕЛЕВАЯ ГЛАВА: ${chapterIdentity}`,
+        'Ниже паспорт единственной главы, которую нужно развернуть. Все её события, клиент, профессиональная проблема, поворот, финал и переход обязательны.',
+        `ПАСПОРТ ЦЕЛЕВОЙ ГЛАВЫ:\n${sourceText}`,
+        `СЕЗОННАЯ ПАМЯТЬ ДО НАЧАЛА ГЛАВЫ:\n${seasonMemory}`,
+        topicNode?.inputValue?.trim()
+          ? `ОБЩАЯ БИБЛИЯ СЕЗОНА — только постоянные сведения о герое и мире, не сюжет текущей главы:\n${buildReferenceExcerpt(topicNode.inputValue, 9000)}`
+          : '',
+        'Задача: развернуть только целевую главу в техническое задание по шаблону. Не повторяй пролог и события главы 1, если целевая глава имеет другой номер. Не подменяй текущего клиента, предмет, дефект и финал глобальным логлайном.',
+      ].filter(Boolean).join('\n\n')
+      : [
         `Паспорт главы:\n${topicNode?.inputValue?.trim() || DEFAULT_CHAPTER_TOPIC}`,
         `Структурированная база главы:\n${knowledge}`,
         sourceKind === 'season_skeleton' ? `Скелет сезона:\n${sourceText}` : '',
-        sourceKind === 'chapter_plan' ? `План конкретной главы:\n${sourceText}` : '',
-        sourceKind === 'chapter_plan' && plannerNode?.inputValue ? `Общий JSON-план арки:\n${plannerNode.inputValue}` : '',
         `Сезонная память:\n${seasonMemory}`,
-        sourceKind === 'chapter_plan'
-          ? 'Задача: развернуть именно эту главу в материал главы как техническое задание по шаблону. Не превращай в эссе: сначала человек, боль, встреча, причина вмешаться, потом профессиональная проверка.'
-          : 'Задача: собрать материал главы как техническое задание по шаблону. Возьми главу, указанную в скелете как "Глава для разворачивания сейчас". Не превращай в эссе и не начинай сразу с работы: сначала человек, боль, встреча, причина вмешаться, потом профессиональная проверка.',
-      ].filter(Boolean).join('\n\n'),
-      systemPrompt: getNodeSystemPrompt(sourceNode, CHAPTER_MATERIAL_SYSTEM_PROMPT),
+        'Задача: собрать материал главы как техническое задание по шаблону. Возьми главу, указанную в скелете как "Глава для разворачивания сейчас". Не превращай в эссе и не начинай сразу с работы: сначала человек, боль, встреча, причина вмешаться, потом профессиональная проверка.',
+      ].filter(Boolean).join('\n\n');
+
+    const result = await requestText(sourceNodeId, {
+      operation: 'chapter_material',
+      prompt: chapterMaterialPrompt,
+      systemPrompt: sourceKind === 'chapter_plan'
+        ? CHAPTER_MATERIAL_SYSTEM_PROMPT
+        : getNodeSystemPrompt(sourceNode, CHAPTER_MATERIAL_SYSTEM_PROMPT),
       model: sourceNode.selectedModel || MISTRAL_MODELS[0],
       sceneCount: sourceNode.sceneCount,
     }, 'Собираем материал главы из скелета сезона...');
@@ -3436,12 +3722,23 @@ export const useNodeManagement = (
       const materialMetadata = {
         ...existing?.[1].metadata,
         sourceKind: 'chapter_material',
+        chapterMaterialPromptVersion: CHAPTER_MATERIAL_PROMPT_VERSION,
         ...(sourceKind === 'season_skeleton' ? { sourceSkeletonId: sourceNodeId } : {}),
         ...(sourceKind === 'chapter_plan' ? { sourceChapterPlanId: sourceNodeId, chapterNumber: sourceNode.metadata?.chapterNumber ?? null } : {}),
         ...(knowledgeNodeId ? { sourceKnowledgeId: knowledgeNodeId } : {}),
       };
       return {
         ...previousNodes,
+        [sourceNodeId]: sourceKind === 'chapter_plan'
+          ? {
+            ...currentSource,
+            systemPrompt: CHAPTER_MATERIAL_SYSTEM_PROMPT,
+            metadata: {
+              ...currentSource.metadata,
+              chapterMaterialPromptVersion: CHAPTER_MATERIAL_PROMPT_VERSION,
+            },
+          }
+          : currentSource,
         [nodeId]: {
           ...existing?.[1],
           nodeType: 'script_detail',
@@ -3550,7 +3847,7 @@ export const useNodeManagement = (
       ].filter(Boolean).join('\n\n');
       const detailText = await requestText(outputNodeId, {
         operation: config.operation,
-        prompt: withStoryReferenceContext(detailPrompt, nodesRef.current),
+        prompt: withChapterProductionReferenceContext(detailPrompt, nodesRef.current),
         systemPrompt: detailSystemPrompt,
         model,
         sceneCount,
@@ -3574,7 +3871,7 @@ export const useNodeManagement = (
         ].join('\n\n');
         const memoryText = await requestText(outputNodeId, {
           operation: 'character_memory',
-          prompt: withStoryReferenceContext(memoryPrompt, nodesRef.current),
+          prompt: withChapterProductionReferenceContext(memoryPrompt, nodesRef.current),
           systemPrompt: CHARACTER_MEMORY_SYSTEM_PROMPT,
           model,
           sceneCount,
@@ -3600,7 +3897,7 @@ export const useNodeManagement = (
       }
     }
 
-    const chapterFactsPrompt = withStoryReferenceContext([
+    const chapterFactsPrompt = withChapterProductionReferenceContext([
       `Материал главы:\n${material}`,
       `Сценарий главы:\n${scenario}`,
       ...detailResults.map((detail) => `${detail.label}:\n${detail.text}`),
@@ -3629,7 +3926,7 @@ export const useNodeManagement = (
       },
     }));
 
-    const chapterSummaryPrompt = withStoryReferenceContext([
+    const chapterSummaryPrompt = withChapterProductionReferenceContext([
       'Ниже входные материалы готовой главы. Не оценивай их качество и не комментируй, хорошо ли они написаны. Извлеки только факты истории для сезонной памяти.',
       `Материал главы:\n${material}`,
       `Сценарий главы:\n${scenario}`,

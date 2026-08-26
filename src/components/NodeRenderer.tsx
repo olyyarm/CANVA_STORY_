@@ -2,6 +2,7 @@ import React from 'react';
 import { DetailAssetImageProvider, ImageProvider } from '../api';
 import {
   extractRequiredCharacterTagGroups,
+  getCharacterDescriptions,
   getKnownCharacterTags,
   getNewCharacterDescriptions,
   isCharacterAssetNode,
@@ -604,10 +605,15 @@ const NodeRenderer: React.FC<NodeRendererProps> = ({
       || node.metadata?.sourceKind === 'system_prompt_snippet'
     );
   const detailRowCount = countDetailRows(node.inputValue);
-  const newCharacterCount = node.nodeType === 'script_detail' && node.label === 'Ð“ÐµÑ€Ð¾Ð¸'
+  const isHeroesDetail = node.nodeType === 'script_detail' && node.label === 'Герои';
+  const totalCharacterCount = isHeroesDetail
+    ? getCharacterDescriptions(node.inputValue ?? '').length
+    : 0;
+  const newCharacterCount = isHeroesDetail
     ? getNewCharacterDescriptions(node.inputValue ?? '', allNodes).length
     : 0;
-  const detailCharacterCount = node.nodeType === 'script_detail' && node.label === 'Ð“ÐµÑ€Ð¾Ð¸'
+  const reusedCharacterCount = Math.max(0, totalCharacterCount - newCharacterCount);
+  const detailCharacterCount = isHeroesDetail
     ? newCharacterCount
     : detailRowCount;
   const detailImagePipelineValue = isSystemInsertDetail
@@ -706,6 +712,25 @@ const NodeRenderer: React.FC<NodeRendererProps> = ({
         )).length;
     })()
     : 0;
+  const timelineFilteredCharacterCount = node.nodeType === 'chapter_timeline'
+    ? (() => {
+      const timelineScope = getTimelineScope(allNodes, node);
+      const heroesNode = Object.entries(allNodes).find(([nodeId, candidate]) =>
+        candidate.nodeType === 'script_detail'
+        && candidate.label === 'Герои'
+        && (
+          !timelineScope.hasScope
+          || timelineScope.scopedIds.has(nodeId)
+          || timelineScope.scopedIds.has(candidate.parentId ?? '')
+        ))?.[1];
+      const heroesText = heroesNode?.inputValue ?? '';
+      return Math.max(
+        0,
+        getCharacterDescriptions(heroesText).length
+          - getNewCharacterDescriptions(heroesText, allNodes).length,
+      );
+    })()
+    : 0;
   const timelineLocationReferenceCount = node.nodeType === 'chapter_timeline'
     ? (() => {
       const timelineScope = getTimelineScope(allNodes, node);
@@ -737,7 +762,7 @@ const NodeRenderer: React.FC<NodeRendererProps> = ({
   const timelineStats = {
     scenes: timelineScenes.length,
     locations: timelineLocationReferenceCount,
-    characters: timelineCharacterReferenceCount,
+    characters: Math.max(timelineCharacterReferenceCount, timelineFilteredCharacterCount),
     frames: timelineScenes.filter(({ frame }) => Boolean(frame?.imageUrl)).length,
     shots: timelineScenes.reduce((count, sceneEntry) => count + sceneEntry.shots.length, 0),
     audio: timelineScenes.filter(({ scene }) => Boolean(scene.audioUrl)).length,
@@ -1435,6 +1460,16 @@ const NodeRenderer: React.FC<NodeRendererProps> = ({
 
         {canGenerateDetailAsset && node.pollinationsApiError && (
           <div className="node-message node-message--error" role="alert">{node.pollinationsApiError}</div>
+        )}
+
+        {isHeroesDetail && totalCharacterCount > 0 && (
+          <div className="node-message node-message--info">
+            Фильтр персонажей: {reusedCharacterCount > 0
+              ? `${reusedCharacterCount} уже есть в проекте — используем повторно`
+              : 'готовых референсов пока нет'}; {newCharacterCount > 0
+              ? `${newCharacterCount} нужно создать`
+              : 'новых героев нет'}.
+          </div>
         )}
 
         {canGenerateDetailAsset && (

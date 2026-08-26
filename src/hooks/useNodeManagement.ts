@@ -150,7 +150,7 @@ interface UseNodeManagementReturn {
   handleBuildChapterKnowledge: (topicNodeId: string) => Promise<void>;
   handleBuildSeasonSkeleton: (knowledgeNodeId: string) => Promise<void>;
   handleBuildChapterMaterial: (knowledgeNodeId: string) => Promise<void>;
-  handleAutoBuildChapter: (chapterMaterialNodeId: string) => Promise<void>;
+  handleAutoBuildChapter: (chapterMaterialNodeId: string, modelOverride?: string) => Promise<void>;
   handleEnsureStoryReferenceNodes: () => void;
   handleEnsureChapterTimeline: (sourceNodeId?: string) => void;
   handleScenarioDetailClick: (sourceNodeId: string, detailType: DetailType, modelOverride?: string) => Promise<void>;
@@ -3830,7 +3830,7 @@ export const useNodeManagement = (
     showNotice('success', 'Материал главы готов.');
   }, [requestText, setNodes, showNotice, updateNode]);
 
-  const handleAutoBuildChapter = useCallback(async (chapterMaterialNodeId: string) => {
+  const handleAutoBuildChapter = useCallback(async (chapterMaterialNodeId: string, modelOverride?: string) => {
     const materialNode = nodesRef.current[chapterMaterialNodeId];
     const material = materialNode?.inputValue?.trim();
     if (!materialNode) {
@@ -3864,7 +3864,7 @@ export const useNodeManagement = (
       showNotice('info', statusMessage);
     };
     const sceneCount = clampSceneCount(materialNode.sceneCount ?? 8);
-    const model = materialNode.selectedModel || MISTRAL_MODELS[0];
+    const model = modelOverride?.trim() || materialNode.selectedModel || MISTRAL_MODELS[0];
     const scenarioSystemPrompt = getNodeSystemPrompt(materialNode, SCENARIO_SYSTEM_PROMPT);
     const rawScenario = await requestText(chapterMaterialNodeId, {
       operation: 'scenario',
@@ -3874,7 +3874,10 @@ export const useNodeManagement = (
       sceneCount,
     }, `Автосборка: пишем ${sceneCount} сцен главы...`);
     if (!rawScenario) {
-      updateNode(chapterMaterialNodeId, { error: 'Автосборка остановилась на создании сценария.' });
+      const providerError = nodesRef.current[chapterMaterialNodeId]?.error?.trim();
+      updateNode(chapterMaterialNodeId, {
+        error: providerError || 'Автосборка остановилась на создании сценария.',
+      });
       return;
     }
     const scenario = await ensureScenarioSceneCount(chapterMaterialNodeId, rawScenario, sceneCount, scenarioSystemPrompt, model);
@@ -6775,6 +6778,7 @@ export const useNodeManagement = (
     let sourceChapterId = '';
     let sceneEntries: Array<[string, NodeData]> = [];
     let detailSourceId: string | undefined;
+    let chapterTextWorkflowError = '';
     const refreshTimelineContext = () => {
       currentNodes = nodesRef.current;
       timelineNode = currentNodes[timelineNodeId] ?? timelineNode;
@@ -6803,9 +6807,13 @@ export const useNodeManagement = (
     const ensureChapterTextWorkflow = async () => {
       if (sceneEntries.length > 0) return true;
 
-      let chapterPlanEntry = sourceChapterId
-        && getSourceKind(nodesRef.current[sourceChapterId]) === 'chapter_plan'
-        ? [sourceChapterId, nodesRef.current[sourceChapterId]] as [string, NodeData]
+      const linkedChapterPlanId = getAncestorNodeId(
+        nodesRef.current,
+        sourceChapterId,
+        (candidate) => getSourceKind(candidate) === 'chapter_plan',
+      );
+      let chapterPlanEntry = linkedChapterPlanId
+        ? [linkedChapterPlanId, nodesRef.current[linkedChapterPlanId]] as [string, NodeData]
         : undefined;
       const plannerEntry = findNodeBySourceKind(nodesRef.current, 'chapter_planner');
 
@@ -6870,8 +6878,13 @@ export const useNodeManagement = (
       refreshTimelineContext();
       if (sceneEntries.length === 0) {
         updateNode(timelineNodeId, { statusMessage: `Автособираем сценарий и сцены: ${chapterPlanNode.label}...` });
-        await handleAutoBuildChapter(chapterMaterialEntry[0]);
+        if (timelineTextModel && chapterMaterialEntry[1].selectedModel !== timelineTextModel) {
+          updateNode(chapterMaterialEntry[0], { selectedModel: timelineTextModel });
+          await waitForState();
+        }
+        await handleAutoBuildChapter(chapterMaterialEntry[0], timelineTextModel);
         await waitForState();
+        chapterTextWorkflowError = nodesRef.current[chapterMaterialEntry[0]]?.error?.trim() ?? '';
       }
       if (isCancelled()) return false;
 
@@ -6949,9 +6962,9 @@ export const useNodeManagement = (
         if (!chapterReady) {
           const chapterPlanCount = Object.values(nodesRef.current).filter((node) =>
             node.nodeType === 'script_detail' && getSourceKind(node) === 'chapter_plan').length;
-          const message = chapterPlanCount > 1
+          const message = chapterTextWorkflowError || (chapterPlanCount > 1
             ? 'Таймлайн не привязан к конкретной главе. В пульте глав откройте нужную карточку и создайте её таймлайн.'
-            : 'Не удалось подготовить разбивку и сцены главы. Проверьте ноды «PDF / сырьё сезона» и «Планировщик глав».';
+            : 'Не удалось подготовить разбивку и сцены главы. Проверьте ноды «PDF / сырьё сезона» и «Планировщик глав».');
           updateNode(timelineNodeId, { pollinationsApiError: message });
           showNotice('error', message);
           return false;

@@ -74,7 +74,6 @@ interface NodeRendererProps {
   onGenerateTimelineMissingAssets: (nodeId: string) => Promise<boolean>;
   onCompleteChapter: (nodeId: string) => Promise<void>;
   onBuildChapterSceneClips: (nodeId: string) => Promise<void>;
-  onBuildChapterVideo: (nodeId: string, options?: { requireFfmpeg?: boolean }) => Promise<void>;
   onBuildSeasonVideo: (nodeId: string) => Promise<void>;
   onCopyToClipboard: (text: string) => void;
   onRegenerateImageNode: (nodeId: string) => Promise<void>;
@@ -540,7 +539,6 @@ const NodeRenderer: React.FC<NodeRendererProps> = ({
   onGenerateTimelineMissingAssets,
   onCompleteChapter,
   onBuildChapterSceneClips,
-  onBuildChapterVideo,
   onBuildSeasonVideo,
   onCopyToClipboard,
   onRegenerateImageNode,
@@ -1809,9 +1807,9 @@ const NodeRenderer: React.FC<NodeRendererProps> = ({
                   ? onCancelGeneration(id)
                   : void onCompleteChapter(id))}
                 disabled={Boolean(node.isLoading || node.isLoadingImage || node.isLoadingAudio)}
-                title="При необходимости создать разбивку и сценарий главы, затем добрать медиа и собрать общий MP4"
+                title="Одной кнопкой подготовить недостающее, собрать клипы с фоном и движением, затем создать общий MP4"
               >
-                {node.isLoadingVideo ? 'Остановить сборку' : 'Собрать главу целиком'}
+                {node.isLoadingVideo ? 'Остановить сборку' : 'Собрать ролик'}
               </button>
               <button
                 type="button"
@@ -1855,17 +1853,6 @@ const NodeRenderer: React.FC<NodeRendererProps> = ({
                   : timelineBackdrop?.imageUrl
                     ? timelineStats.clips > 0 ? 'Применить фон к клипам' : 'Собрать клипы с фоном'
                     : timelineStats.clips > 0 ? 'Пересобрать клипы' : 'Клипы по очереди'}
-              </button>
-              <button
-                type="button"
-                className={`node-secondary-button chapter-timeline__refresh${node.isLoadingVideo ? ' node-secondary-button--cancel' : ''}`}
-                onMouseDown={stopMouseDown}
-                onClick={(event) => runWithoutDrag(event, () => node.isLoadingVideo
-                  ? onCancelGeneration(id)
-                  : void onBuildChapterVideo(id))}
-                disabled={Boolean(node.isLoading || node.isLoadingImage || node.isLoadingAudio || timelineStats.scenes === 0)}
-              >
-                {node.isLoadingVideo ? 'Отменить ролик' : 'Собрать ролик'}
               </button>
               <button
                 type="button"

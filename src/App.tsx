@@ -473,7 +473,6 @@ const App = () => {
     handleGenerateTimelineMissingAssets,
     handleCompleteChapter,
     handleBuildChapterSceneClips,
-    handleBuildChapterVideo,
     handleEnsureChapterCollector,
     handleBuildSeasonVideo,
     handleCopyToClipboard,
@@ -2050,7 +2049,6 @@ const App = () => {
               onGenerateTimelineMissingAssets={handleGenerateTimelineMissingAssets}
               onCompleteChapter={handleCompleteChapter}
               onBuildChapterSceneClips={handleBuildChapterSceneClips}
-              onBuildChapterVideo={handleBuildChapterVideo}
               onBuildSeasonVideo={handleBuildSeasonVideo}
               onCopyToClipboard={handleCopyToClipboard}
               onRegenerateImageNode={handleRegenerateImageNode}

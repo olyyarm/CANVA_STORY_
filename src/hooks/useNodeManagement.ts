@@ -173,8 +173,14 @@ interface UseNodeManagementReturn {
   handleGenerateChapterBackdrop: (timelineNodeId: string) => Promise<void>;
   handleGenerateTimelineMissingAssets: (timelineNodeId: string) => Promise<boolean>;
   handleCompleteChapter: (timelineNodeId: string) => Promise<void>;
-  handleBuildChapterSceneClips: (timelineNodeId: string) => Promise<void>;
-  handleBuildChapterVideo: (timelineNodeId: string, options?: { requireFfmpeg?: boolean }) => Promise<void>;
+  handleBuildChapterSceneClips: (
+    timelineNodeId: string,
+    options?: { allowBusy?: boolean; requireFfmpeg?: boolean },
+  ) => Promise<void>;
+  handleBuildChapterVideo: (
+    timelineNodeId: string,
+    options?: { allowBusy?: boolean; requireFfmpeg?: boolean },
+  ) => Promise<void>;
   handleEnsureChapterCollector: () => void;
   handleBuildSeasonVideo: (collectorNodeId: string) => Promise<void>;
   handleCopyToClipboard: (textToCopy: string) => Promise<void>;
@@ -5789,10 +5795,17 @@ export const useNodeManagement = (
     }
   }, [setNodes, showNotice, updateNode]);
 
-  const handleBuildChapterSceneClips = useCallback(async (timelineNodeId: string) => {
+  const handleBuildChapterSceneClips = useCallback(async (
+    timelineNodeId: string,
+    options?: { allowBusy?: boolean; requireFfmpeg?: boolean },
+  ) => {
     const currentNodes = nodesRef.current;
     const timelineNode = currentNodes[timelineNodeId];
-    if (!timelineNode || timelineNode.nodeType !== 'chapter_timeline' || timelineNode.isLoadingVideo) return;
+    if (
+      !timelineNode
+      || timelineNode.nodeType !== 'chapter_timeline'
+      || (timelineNode.isLoadingVideo && !options?.allowBusy)
+    ) return;
 
     const sourceScenarioId = typeof timelineNode.metadata?.sourceScenarioId === 'string'
       ? timelineNode.metadata.sourceScenarioId
@@ -5894,6 +5907,7 @@ export const useNodeManagement = (
         const generatedVideo = await buildStillImagesVideoClip(imageUrls, plan.scene.audioUrl, {
           signal: controller.signal,
           backgroundImageUrl: chapterBackdropNode?.imageUrl,
+          requireFfmpeg: options?.requireFfmpeg,
         });
 
         setNodes((previousNodes) => {
@@ -5963,11 +5977,15 @@ export const useNodeManagement = (
 
   const handleBuildChapterVideo = useCallback(async (
     timelineNodeId: string,
-    options?: { requireFfmpeg?: boolean },
+    options?: { allowBusy?: boolean; requireFfmpeg?: boolean },
   ) => {
     const currentNodes = nodesRef.current;
     const timelineNode = currentNodes[timelineNodeId];
-    if (!timelineNode || timelineNode.nodeType !== 'chapter_timeline' || timelineNode.isLoadingVideo) return;
+    if (
+      !timelineNode
+      || timelineNode.nodeType !== 'chapter_timeline'
+      || (timelineNode.isLoadingVideo && !options?.allowBusy)
+    ) return;
 
     const sourceScenarioId = typeof timelineNode.metadata?.sourceScenarioId === 'string'
       ? timelineNode.metadata.sourceScenarioId
@@ -6855,7 +6873,11 @@ export const useNodeManagement = (
       updateNode(timelineNodeId, {
         statusMessage: 'Все элементы готовы. FFmpeg собирает клипы сцен...',
       });
-      await handleBuildChapterSceneClips(timelineNodeId);
+      await new Promise((resolve) => window.setTimeout(resolve, 40));
+      await handleBuildChapterSceneClips(timelineNodeId, {
+        allowBusy: true,
+        requireFfmpeg: true,
+      });
       if (controller.signal.aborted) return;
 
       const timelineAfterClips = nodesRef.current[timelineNodeId];
@@ -6891,7 +6913,11 @@ export const useNodeManagement = (
       updateNode(timelineNodeId, {
         statusMessage: 'Клипы сцен готовы. FFmpeg собирает общий ролик главы...',
       });
-      await handleBuildChapterVideo(timelineNodeId, { requireFfmpeg: true });
+      await new Promise((resolve) => window.setTimeout(resolve, 40));
+      await handleBuildChapterVideo(timelineNodeId, {
+        allowBusy: true,
+        requireFfmpeg: true,
+      });
       if (controller.signal.aborted) return;
 
       const completedVideo = Object.values(nodesRef.current).find((candidate) =>

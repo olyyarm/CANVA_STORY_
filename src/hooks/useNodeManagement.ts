@@ -209,7 +209,7 @@ const getExistingChild = (nodes: NodesState, parentId: string, predicate: (node:
 
 const referenceSourceKinds = new Set(['format_bible', 'knowledge_base', 'chapter_planner', 'chapter_plan', 'chapter_knowledge', 'season_skeleton', 'season_memory', 'character_memory']);
 const chapterProductionReferenceSourceKinds = new Set(['format_bible', 'knowledge_base', 'season_memory']);
-const CHAPTER_MATERIAL_PROMPT_VERSION = 2;
+const CHAPTER_MATERIAL_PROMPT_VERSION = 3;
 const promptSnippetSourceKind = 'system_prompt_snippet';
 const fantasyStyleSourceKind = 'fantasy_style_bible';
 
@@ -714,6 +714,42 @@ const buildChapterPrompt = (material: string, sceneCount: number, nodes: NodesSt
     'Держи одну техническую цепочку главы: один предмет, один дефект, один симптом, одна причина, одно решение. Протагонист может ошибиться или увидеть только часть причины до финальной проверки.',
     'Закадр потом будет озвучивать эти действия, поэтому заложи в сценарий видимые поступки: герой встаёт, прячет предмет, идёт к двери, встречает союзника или противника, отвечает на угрозу, делает сделку, ошибается, меняет план.',
   ].join('\n\n'), nodes);
+
+const getChapterMaterialCausalSteps = (material: string) =>
+  [...material.matchAll(
+    /(?:^|\n)\s*\**\s*Шаг\s+\d+\s*[.:\-–—]\**[\s\S]*?(?=\n\s*\**\s*Шаг\s+\d+\s*[.:\-–—]|\n\s*\**\s*Ритм сцен-кандидатов|$)/giu,
+  )].map((match) => match[0].replace(/[*_]/gu, '').toLocaleLowerCase('ru'));
+
+const hasChapterMaterialCausalContract = (material: string) => {
+  const normalized = material.toLocaleLowerCase('ru');
+  const steps = getChapterMaterialCausalSteps(material);
+  const hasCompleteSteps = steps.length >= 5 && steps.every((step) => (
+    step.includes('состояние до шага')
+    && step.includes('наблюдаемый факт')
+    && step.includes('цель и физическое действие героя')
+    && step.includes('сопротивление или ограничение')
+    && step.includes('непосредственный результат')
+    && step.includes('что герой теперь знает')
+    && step.includes('источник знания или доказательство')
+    && step.includes('состояние после шага')
+  ));
+  return normalized.includes('причинный каркас главы:')
+    && hasCompleteSteps;
+};
+
+const buildChapterMaterialRepairPrompt = (
+  chapterIdentity: string,
+  chapterPassport: string,
+  previousMaterial: string,
+) => [
+  `ЦЕЛЕВАЯ ГЛАВА: ${chapterIdentity}`,
+  `ПАСПОРТ ЦЕЛЕВОЙ ГЛАВЫ:\n${chapterPassport}`,
+  `ПРЕДЫДУЩИЙ МАТЕРИАЛ С НЕДОСТАТОЧНОЙ ПРИЧИННОСТЬЮ:\n${previousMaterial}`,
+  'Перепиши материал полностью по system prompt. Сохрани канон паспорта, но устрани скачки знания и решений.',
+  'Раздел «Причинный каркас главы» обязателен. Напиши не меньше пяти отдельных блоков «Шаг N:».',
+  'В каждом шаге явно заполни: состояние до, наблюдаемый факт, цель и физическое действие героя, сопротивление, непосредственный результат, что герой теперь знает, источник знания или доказательство, состояние после.',
+  'Не разрешай системному интерфейсу находить отсутствующие факты. Не превращай подозрение в доказанную истину. Покажи процедуру освобождения, назначения или другого изменения статуса и физическую причину финального осложнения.',
+].join('\n\n');
 
 const isEditorialReviewText = (text: string) =>
   /^(отлично|хорошо|замечательно|прекрасно|резюме получилось|получилось)/iu.test(text.trim())
@@ -3694,7 +3730,7 @@ export const useNodeManagement = (
         'Задача: собрать материал главы как техническое задание по шаблону. Возьми главу, указанную в скелете как "Глава для разворачивания сейчас". Не превращай в эссе и не начинай сразу с работы: сначала человек, боль, встреча, причина вмешаться, потом профессиональная проверка.',
       ].filter(Boolean).join('\n\n');
 
-    const result = await requestText(sourceNodeId, {
+    let result = await requestText(sourceNodeId, {
       operation: 'chapter_material',
       prompt: chapterMaterialPrompt,
       systemPrompt: sourceKind === 'chapter_plan'
@@ -3704,6 +3740,25 @@ export const useNodeManagement = (
       sceneCount: sourceNode.sceneCount,
     }, 'Собираем материал главы из скелета сезона...');
     if (!result) return;
+
+    if (sourceKind === 'chapter_plan' && !hasChapterMaterialCausalContract(result)) {
+      const repairedResult = await requestText(sourceNodeId, {
+        operation: 'chapter_material',
+        prompt: buildChapterMaterialRepairPrompt(chapterIdentity, sourceText, result),
+        systemPrompt: CHAPTER_MATERIAL_SYSTEM_PROMPT,
+        model: sourceNode.selectedModel || MISTRAL_MODELS[0],
+        sceneCount: sourceNode.sceneCount,
+      }, 'Материал получился без причинной цепочки. Исправляем улики, проверки и последствия...');
+      if (!repairedResult) return;
+      result = repairedResult;
+    }
+
+    if (sourceKind === 'chapter_plan' && !hasChapterMaterialCausalContract(result)) {
+      const message = 'Модель дважды вернула материал без пяти причинных шагов и источников знания. Материал главы не заменён — повторите запуск или выберите более сильную текстовую модель.';
+      updateNode(sourceNodeId, { error: message });
+      showNotice('error', message);
+      return;
+    }
 
     setNodes((previousNodes) => {
       const existing = findPipelineNode(previousNodes, 'chapter_material', sourceNodeId);

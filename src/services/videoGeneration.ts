@@ -16,6 +16,8 @@ const RECORDER_READY_TIMEOUT_MS = 15_000;
 const RECORDER_STATE_CHECK_MS = 100;
 const RECORDER_WARMUP_MS = 160;
 
+export const SCENE_VIDEO_LAYOUT_VERSION = 2;
+
 const abortError = () => new DOMException('Aborted', 'AbortError');
 
 const throwIfAborted = (signal?: AbortSignal) => {
@@ -99,7 +101,7 @@ const drawAnimatedStillFrame = (
   context.fillStyle = '#101318';
   context.fillRect(0, 0, width, height);
   if (backgroundImage) {
-    const backgroundScale = Math.min(
+    const backgroundScale = Math.max(
       width / backgroundImage.naturalWidth,
       height / backgroundImage.naturalHeight,
     );
@@ -131,8 +133,8 @@ const drawAnimatedStillFrame = (
   }
 
   const containScale = Math.min(width / image.naturalWidth, height / image.naturalHeight);
-  const foregroundScale = containScale * (0.78 - easedProgress * 0.08);
-  const foregroundY = centerY + (easedProgress - 0.5) * 18;
+  const foregroundScale = containScale * (0.9 - easedProgress * 0.06);
+  const foregroundY = centerY;
   const foregroundWidth = image.naturalWidth * foregroundScale;
   const foregroundHeight = image.naturalHeight * foregroundScale;
 

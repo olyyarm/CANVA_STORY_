@@ -155,6 +155,21 @@ const renderStillSegment = async ({ job, imagePath, backgroundPath, outputPath, 
   const width = 1280;
   const height = 720;
   const fps = 24;
+  const frameCount = Math.max(2, Math.round(duration * fps));
+  const lastFrame = frameCount - 1;
+  const foregroundStartWidth = Math.round((width * 0.9) / 2) * 2;
+  const foregroundStartHeight = Math.round((height * 0.9) / 2) * 2;
+  const foregroundEndWidth = Math.round((width * 0.84) / 2) * 2;
+  const foregroundEndHeight = Math.round((height * 0.84) / 2) * 2;
+  const foregroundWidthDelta = foregroundStartWidth - foregroundEndWidth;
+  const foregroundHeightDelta = foregroundStartHeight - foregroundEndHeight;
+  const animatedForegroundScale =
+    `scale=w='trunc((${foregroundStartWidth}-${foregroundWidthDelta}*n/${lastFrame})/2)*2':`+
+    `h='trunc((${foregroundStartHeight}-${foregroundHeightDelta}*n/${lastFrame})/2)*2':`+
+    'force_original_aspect_ratio=decrease:eval=frame,setsar=1[fg]';
+  const compositeFilter =
+    `[bg][fg]overlay=x='(W-w)/2':y='(H-h)/2':eval=frame:shortest=1,`+
+    'format=yuv420p[v]';
   const args = [
     '-hide_banner', '-loglevel', 'error', '-nostdin',
     '-loop', '1', '-framerate', String(fps), '-i', imagePath,
@@ -163,22 +178,18 @@ const renderStillSegment = async ({ job, imagePath, backgroundPath, outputPath, 
   if (backgroundPath) {
     args.push('-loop', '1', '-framerate', String(fps), '-i', backgroundPath);
     filter = [
-      `[1:v]scale=${width}:${height}:force_original_aspect_ratio=decrease,`+
-        `pad=${width}:${height}:(ow-iw)/2:(oh-ih)/2:color=0x101318[bg]`,
-      `[0:v]scale=${width}:${height}:force_original_aspect_ratio=decrease[fg]`,
-      `[bg][fg]overlay=(W-w)/2:(H-h)/2,`+
-        `zoompan=z='min(zoom+0.0005,1.08)':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':`+
-        `d=1:s=${width}x${height}:fps=${fps},format=yuv420p[v]`,
+      `[1:v]scale=${width}:${height}:force_original_aspect_ratio=increase,`+
+        `crop=${width}:${height},setsar=1[bg]`,
+      `[0:v]${animatedForegroundScale}`,
+      compositeFilter,
     ].join(';');
   } else {
     filter = [
       '[0:v]split=2[bgsrc][fgsrc]',
       `[bgsrc]scale=${width}:${height}:force_original_aspect_ratio=increase,`+
-        `crop=${width}:${height},gblur=sigma=24[bg]`,
-      `[fgsrc]scale=${width}:${height}:force_original_aspect_ratio=decrease[fg]`,
-      `[bg][fg]overlay=(W-w)/2:(H-h)/2,`+
-        `zoompan=z='min(zoom+0.0005,1.08)':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':`+
-        `d=1:s=${width}x${height}:fps=${fps},format=yuv420p[v]`,
+        `crop=${width}:${height},gblur=sigma=24,setsar=1[bg]`,
+      `[fgsrc]${animatedForegroundScale}`,
+      compositeFilter,
     ].join(';');
   }
   args.push(

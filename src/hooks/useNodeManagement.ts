@@ -78,7 +78,11 @@ import {
   NodesState,
 } from '../types';
 import { extractTextFromDocumentFile } from '../pdfImport';
-import { buildChapterVideoFromClips, buildStillImagesVideoClip } from '../services/videoGeneration';
+import {
+  buildChapterVideoFromClips,
+  buildStillImagesVideoClip,
+  SCENE_VIDEO_LAYOUT_VERSION,
+} from '../services/videoGeneration';
 import { isNativeVideoRendererAvailable } from '../services/nativeVideoRenderer';
 import { buildSceneShotGridPrompt, splitSceneShotGrid } from '../services/sceneShotGrid';
 import {
@@ -864,6 +868,7 @@ const videoMetadataKeys = [
   'videoFrameSource',
   'videoGeneratedAt',
   'videoRenderer',
+  'videoLayoutVersion',
   'videoVisualGenerationSignature',
   'systemInsertSource',
   'chapterBackdropSource',
@@ -6145,6 +6150,7 @@ export const useNodeManagement = (
               ...currentNode.metadata,
               videoFormat: generatedVideo.format,
               videoRenderer: generatedVideo.renderer,
+              videoLayoutVersion: SCENE_VIDEO_LAYOUT_VERSION,
               videoAspectRatio: '16:9',
               videoFrameSource: frameNode.label,
               sceneShotCountUsed: sceneShotUrls.length,
@@ -6309,6 +6315,7 @@ export const useNodeManagement = (
                 ...currentSceneNode.metadata,
                 videoFormat: generatedVideo.format,
                 videoRenderer: generatedVideo.renderer,
+                videoLayoutVersion: SCENE_VIDEO_LAYOUT_VERSION,
                 videoAspectRatio: '16:9',
                 videoFrameSource: plan.frameNode.label,
                 sceneShotCountUsed: shotUrls.length,
@@ -6418,12 +6425,14 @@ export const useNodeManagement = (
         options?.requireFfmpeg
         && scene.metadata?.videoRenderer !== 'ffmpeg',
       );
+      const layoutNeedsRefresh = scene.metadata?.videoLayoutVersion !== SCENE_VIDEO_LAYOUT_VERSION;
       const shouldBuildFromSources = canBuildFromSources && (
         Boolean(systemInsertNode?.imageUrl)
         || !scene.videoUrl
         || backdropNeedsRefresh
         || visualsNeedRefresh
         || rendererNeedsRefresh
+        || layoutNeedsRefresh
       );
       return {
         sceneId,
@@ -6441,7 +6450,7 @@ export const useNodeManagement = (
         const needsGeneratedClip = !plan.scene.videoUrl || Boolean(
           options?.requireFfmpeg
           && plan.scene.metadata?.videoRenderer !== 'ffmpeg',
-        );
+        ) || plan.scene.metadata?.videoLayoutVersion !== SCENE_VIDEO_LAYOUT_VERSION;
         return needsGeneratedClip && !plan.canBuildFromSources;
       })
       .map((plan) => plan.scene.label);
@@ -6504,6 +6513,7 @@ export const useNodeManagement = (
                   ...currentSceneNode.metadata,
                   videoFormat: generatedSceneClip.format,
                   videoRenderer: generatedSceneClip.renderer,
+                  videoLayoutVersion: SCENE_VIDEO_LAYOUT_VERSION,
                   videoAspectRatio: '16:9',
                   videoFrameSource: plan.frameNode.label,
                   sceneShotCountUsed: shotUrls.length,

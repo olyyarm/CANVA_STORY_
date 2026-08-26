@@ -5193,17 +5193,35 @@ export const useNodeManagement = (
     }, 'Редактируем закадр и усиливаем смысл...');
     if (!result) return;
 
-    updateNode(detailNodeId, {
-      inputValue: result,
-      error: undefined,
-      statusMessage: 'Закадр отредактирован.',
-      metadata: {
-        ...detailNode.metadata,
-        editedAt: new Date().toISOString(),
-      },
-    });
+    if (detailNode.parentId) {
+      setNodes((previousNodes) => {
+        const nextNodes = upsertScriptDetailNode(previousNodes, detailNode.parentId ?? '', 'Закадр', result, {
+          systemPrompt: NARRATION_DETAIL_SYSTEM_PROMPT,
+          selectedModel: detailNode.selectedModel || parentNode?.selectedModel || MISTRAL_MODELS[0],
+          metadata: {
+            editedAt: new Date().toISOString(),
+          },
+        });
+        const currentDetail = nextNodes[detailNodeId];
+        return currentDetail
+          ? {
+            ...nextNodes,
+            [detailNodeId]: {
+              ...currentDetail,
+              statusMessage: 'Закадр отредактирован. Озвучку и клипы нужно обновить.',
+            },
+          }
+          : nextNodes;
+      });
+    } else {
+      updateNode(detailNodeId, {
+        inputValue: result,
+        error: undefined,
+        statusMessage: 'Закадр отредактирован.',
+      });
+    }
     showNotice('success', 'Закадр отредактирован.');
-  }, [requestText, showNotice, updateNode]);
+  }, [requestText, setNodes, showNotice, updateNode]);
 
   const handleStoryStructureEdit = useCallback(async (detailNodeId: string) => {
     const currentNodes = nodesRef.current;
@@ -5293,17 +5311,20 @@ export const useNodeManagement = (
           delete nextNodes[nodeId];
         }
       });
+      nextNodes = upsertScriptDetailNode(nextNodes, detailNode.parentId ?? '', 'Закадр', structuredNarration, {
+        systemPrompt: NARRATION_DETAIL_SYSTEM_PROMPT,
+        selectedModel: model,
+        metadata: {
+          storyStructureEditedAt: new Date().toISOString(),
+        },
+      });
+      const updatedDetail = nextNodes[detailNodeId];
+      if (!updatedDetail) return nextNodes;
       return {
         ...nextNodes,
         [detailNodeId]: {
-          ...currentDetail,
-          inputValue: structuredNarration,
-          error: undefined,
-          statusMessage: 'Сюжетная редактура завершена.',
-          metadata: {
-            ...currentDetail.metadata,
-            storyStructureEditedAt: new Date().toISOString(),
-          },
+          ...updatedDetail,
+          statusMessage: 'Сюжетная редактура завершена. Озвучку и клипы нужно обновить.',
         },
       };
     });
@@ -5392,17 +5413,20 @@ export const useNodeManagement = (
         (node) => node.nodeType === 'script_detail' && node.label === 'Заявка · редактура',
       );
       const briefNodeId = existingBrief?.[0] ?? generateNodeId();
+      nextNodes = upsertScriptDetailNode(nextNodes, detailNode.parentId ?? '', 'Закадр', revisedNarration, {
+        systemPrompt: NARRATION_DETAIL_SYSTEM_PROMPT,
+        selectedModel: model,
+        metadata: {
+          editorialLoopAt: new Date().toISOString(),
+        },
+      });
+      const updatedDetail = nextNodes[detailNodeId];
+      if (!updatedDetail) return nextNodes;
       nextNodes = {
         ...nextNodes,
         [detailNodeId]: {
-          ...currentDetail,
-          inputValue: revisedNarration,
-          error: undefined,
-          statusMessage: 'Редакторский луп завершён.',
-          metadata: {
-            ...currentDetail.metadata,
-            editorialLoopAt: new Date().toISOString(),
-          },
+          ...updatedDetail,
+          statusMessage: 'Редакторский луп завершён. Озвучку и клипы нужно обновить.',
         },
         [briefNodeId]: {
           ...existingBrief?.[1],

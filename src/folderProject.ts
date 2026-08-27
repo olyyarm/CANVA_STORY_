@@ -141,6 +141,7 @@ const getAssetDirectory = (reference: AssetReference) => {
     scene_shot: 'images/frames',
     system_insert: 'images/inserts',
     chapter_backdrop: 'images/backdrops',
+    video_thumbnail: 'images/thumbnails',
   };
   return directories[reference.assetKind] ?? 'images/other';
 };

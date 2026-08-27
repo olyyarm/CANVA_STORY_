@@ -175,7 +175,10 @@ interface UseNodeManagementReturn {
   handleGenerateSceneShotGrid: (sceneNodeId: string) => Promise<void>;
   handleBuildSceneVideoClip: (sceneNodeId: string) => Promise<void>;
   handleGenerateChapterBackdrop: (timelineNodeId: string) => Promise<void>;
-  handleGenerateTimelineMissingAssets: (timelineNodeId: string) => Promise<boolean>;
+  handleGenerateTimelineMissingAssets: (
+    timelineNodeId: string,
+    options?: { allowBusy?: boolean; preserveBusyState?: boolean },
+  ) => Promise<boolean>;
   handleCompleteChapter: (timelineNodeId: string) => Promise<void>;
   handleBuildChapterSceneClips: (
     timelineNodeId: string,
@@ -187,6 +190,7 @@ interface UseNodeManagementReturn {
   ) => Promise<void>;
   handleEnsureChapterCollector: () => void;
   handleBuildSeasonVideo: (collectorNodeId: string) => Promise<void>;
+  handleGenerateVideoThumbnail: (collectorNodeId: string) => Promise<void>;
   handleCopyToClipboard: (textToCopy: string) => Promise<void>;
   handleGeneratePollinationsImage: (nodeId: string) => Promise<void>;
   handleRegenerateImageNode: (nodeId: string) => Promise<void>;
@@ -1451,6 +1455,7 @@ const imagePromptKinds = new Set<ImagePromptKind>([
   'location_asset',
   'system_insert',
   'chapter_backdrop',
+  'video_thumbnail',
 ]);
 
 const getImagePromptKind = (node: NodeData): ImagePromptKind => {
@@ -4373,6 +4378,7 @@ export const useNodeManagement = (
       const parentNode = previousNodes[parentNodeId];
       if (!parentNode) return previousNodes;
       const isCharacterAsset = assetKind.startsWith('character_asset');
+      const isVideoThumbnail = assetKind === 'video_thumbnail';
       const isWideImageAsset = !isCharacterAsset;
       const existing = getExistingChild(
         previousNodes,
@@ -4384,7 +4390,9 @@ export const useNodeManagement = (
       const parentWidth = parentNode.width ?? 320;
       const defaultImageSize = isCharacterAsset
         ? { width: 320, height: 520 }
-        : { width: 420, height: 300 };
+        : isVideoThumbnail
+          ? { width: 560, height: 400 }
+          : { width: 420, height: 300 };
       const shouldResizeExistingWideImage = isWideImageAsset
         && existing?.[1].width === 360
         && existing?.[1].height === 360;
@@ -6154,11 +6162,18 @@ export const useNodeManagement = (
         : undefined;
       const timelineEntry = Object.entries(currentNodes).find(([timelineId, candidate]) =>
         candidate.nodeType === 'chapter_timeline'
-        && getScopedNodeIds(currentNodes, [
-          typeof candidate.metadata?.sourceScenarioId === 'string' ? candidate.metadata.sourceScenarioId : candidate.parentId ?? '',
-          typeof candidate.metadata?.sourceChapterId === 'string' ? candidate.metadata.sourceChapterId : '',
-          timelineId,
-        ]).has(sceneNodeId));
+        && (() => {
+          const candidateChapterId = typeof candidate.metadata?.sourceChapterId === 'string'
+            ? candidate.metadata.sourceChapterId
+            : '';
+          const candidateScenarioId = typeof candidate.metadata?.sourceScenarioId === 'string'
+            ? candidate.metadata.sourceScenarioId
+            : candidate.parentId ?? '';
+          return getScopedNodeIds(
+            currentNodes,
+            [candidateChapterId || candidateScenarioId, timelineId],
+          ).has(sceneNodeId);
+        })());
       const chapterBackdropNode = timelineEntry
         ? findChapterBackdropImageNode(currentNodes, timelineEntry[0], timelineEntry[1])
         : undefined;
@@ -6251,7 +6266,10 @@ export const useNodeManagement = (
     const sourceChapterId = typeof timelineNode.metadata?.sourceChapterId === 'string'
       ? timelineNode.metadata.sourceChapterId
       : '';
-    const timelineScope = getScopedNodeIds(currentNodes, [sourceScenarioId ?? '', sourceChapterId]);
+    const timelineScope = getScopedNodeIds(
+      currentNodes,
+      sourceChapterId ? [sourceChapterId] : [sourceScenarioId ?? ''],
+    );
     const hasTimelineScope = timelineScope.size > 0;
     const sceneEntries = Object.entries(currentNodes)
       .filter(([, candidate]) =>
@@ -6445,7 +6463,10 @@ export const useNodeManagement = (
     const sourceChapterId = typeof timelineNode.metadata?.sourceChapterId === 'string'
       ? timelineNode.metadata.sourceChapterId
       : '';
-    const timelineScope = getScopedNodeIds(currentNodes, [sourceScenarioId ?? '', sourceChapterId]);
+    const timelineScope = getScopedNodeIds(
+      currentNodes,
+      sourceChapterId ? [sourceChapterId] : [sourceScenarioId ?? ''],
+    );
     const hasTimelineScope = timelineScope.size > 0;
     const sceneEntries = Object.entries(currentNodes)
       .filter(([, candidate]) =>
@@ -6634,7 +6655,10 @@ export const useNodeManagement = (
     const timelineTextModel = typeof timelineNode.selectedModel === 'string' && timelineNode.selectedModel.trim()
       ? timelineNode.selectedModel.trim()
       : MISTRAL_MODELS[0];
-    const timelineScope = getScopedNodeIds(currentNodes, [sourceScenarioId ?? '', sourceChapterId]);
+    const timelineScope = getScopedNodeIds(
+      currentNodes,
+      sourceChapterId ? [sourceChapterId] : [sourceScenarioId ?? ''],
+    );
     const hasTimelineScope = timelineScope.size > 0;
     const sceneEntries = Object.entries(currentNodes)
       .filter(([, candidate]) =>
@@ -6756,10 +6780,19 @@ export const useNodeManagement = (
     upsertImageNode,
   ]);
 
-  const handleGenerateTimelineMissingAssets = useCallback(async (timelineNodeId: string) => {
+  const handleGenerateTimelineMissingAssets = useCallback(async (
+    timelineNodeId: string,
+    options?: { allowBusy?: boolean; preserveBusyState?: boolean },
+  ) => {
     let currentNodes = nodesRef.current;
     let timelineNode = currentNodes[timelineNodeId];
-    if (!timelineNode || timelineNode.nodeType !== 'chapter_timeline' || timelineNode.isLoadingVideo) return false;
+    if (!timelineNode || timelineNode.nodeType !== 'chapter_timeline') return false;
+    if (timelineNode.isLoadingVideo && !options?.allowBusy) {
+      updateNode(timelineNodeId, {
+        pollinationsApiError: 'Таймлайн уже выполняет другую операцию. Дождитесь завершения или нажмите «Остановить».',
+      });
+      return false;
+    }
     const timelineTextModel = typeof timelineNode.selectedModel === 'string' && timelineNode.selectedModel.trim()
       ? timelineNode.selectedModel.trim()
       : undefined;
@@ -6805,6 +6838,16 @@ export const useNodeManagement = (
     activeRequests.current.set(requestId, controller);
 
     const waitForState = () => new Promise((resolve) => window.setTimeout(resolve, 40));
+    const waitForNodes = async (
+      predicate: (latestNodes: NodesState) => boolean,
+      timeoutMs = 2500,
+    ) => {
+      const startedAt = Date.now();
+      while (!predicate(nodesRef.current) && Date.now() - startedAt < timeoutMs) {
+        await new Promise((resolve) => window.setTimeout(resolve, 50));
+      }
+      return predicate(nodesRef.current);
+    };
     const isCancelled = () => controller.signal.aborted;
     let sourceScenarioId: string | undefined;
     let sourceChapterId = '';
@@ -6820,7 +6863,10 @@ export const useNodeManagement = (
       sourceChapterId = typeof timelineNode.metadata?.sourceChapterId === 'string'
         ? timelineNode.metadata.sourceChapterId
         : '';
-      const timelineScope = getScopedNodeIds(currentNodes, [sourceScenarioId ?? '', sourceChapterId]);
+      const timelineScope = getScopedNodeIds(
+        currentNodes,
+        sourceChapterId ? [sourceChapterId] : [sourceScenarioId ?? ''],
+      );
       const hasTimelineScope = timelineScope.size > 0;
       sceneEntries = Object.entries(currentNodes)
         .filter((entry): entry is [string, NodeData] => {
@@ -6839,15 +6885,120 @@ export const useNodeManagement = (
     const ensureChapterTextWorkflow = async () => {
       if (sceneEntries.length > 0) return true;
 
+      const latestNodes = nodesRef.current;
+      const splitChapterId = [sourceChapterId, timelineNode.parentId]
+        .find((candidateId): candidateId is string => Boolean(
+          candidateId && latestNodes[candidateId]?.nodeType === 'split_item',
+        ));
+
+      if (splitChapterId) {
+        const findSceneWriter = (candidateNodes: NodesState) => Object.entries(candidateNodes)
+          .find((entry): entry is [string, NodeData] =>
+            entry[1].nodeType === 'prompt_node'
+            && entry[1].parentId === splitChapterId
+            && entry[1].metadata?.promptPreset === 'scene_writer_split');
+
+        if (sourceChapterId !== splitChapterId) {
+          const splitChapter = latestNodes[splitChapterId];
+          updateNode(timelineNodeId, {
+            parentId: splitChapterId,
+            metadata: {
+              ...timelineNode.metadata,
+              sourceChapterId: splitChapterId,
+              sourceLabel: splitChapter.label,
+            },
+          });
+          await waitForNodes((candidateNodes) =>
+            candidateNodes[timelineNodeId]?.metadata?.sourceChapterId === splitChapterId);
+          refreshTimelineContext();
+        }
+
+        let sceneWriterEntry = findSceneWriter(nodesRef.current);
+        if (!sceneWriterEntry) {
+          updateNode(timelineNodeId, {
+            statusMessage: `Создаём Scene Writer для «${nodesRef.current[splitChapterId]?.label ?? 'главы'}»...`,
+          });
+          handleCreateSceneWriterPromptNode(splitChapterId);
+          await waitForNodes((candidateNodes) => Boolean(findSceneWriter(candidateNodes)), 5000);
+          sceneWriterEntry = findSceneWriter(nodesRef.current);
+        }
+
+        if (!sceneWriterEntry) {
+          chapterTextWorkflowError = 'Не удалось создать Scene Writer для этой главы.';
+          return false;
+        }
+
+        const [sceneWriterId, initialSceneWriter] = sceneWriterEntry;
+        if (timelineTextModel && initialSceneWriter.selectedModel !== timelineTextModel) {
+          updateNode(sceneWriterId, { selectedModel: timelineTextModel });
+          await waitForState();
+        }
+
+        let sceneWriter = nodesRef.current[sceneWriterId] ?? initialSceneWriter;
+        if (!sceneWriter.promptResultValue?.trim()) {
+          updateNode(timelineNodeId, {
+            statusMessage: `Scene Writer разбивает «${nodesRef.current[splitChapterId]?.label ?? 'главу'}» на сцены...`,
+          });
+          await handleRunPromptNode(sceneWriterId);
+          sceneWriter = nodesRef.current[sceneWriterId] ?? sceneWriter;
+        }
+        if (isCancelled()) return false;
+
+        if (!sceneWriter.promptResultValue?.trim()) {
+          chapterTextWorkflowError = sceneWriter.error?.trim()
+            || 'Scene Writer не вернул текст со сценами.';
+          return false;
+        }
+
+        updateNode(timelineNodeId, {
+          statusMessage: 'Scene Writer готов. Автоматически собираем рабочие ноды сцен...',
+        });
+        await handleAssemblePromptResultScenario(sceneWriterId);
+        await waitForNodes((candidateNodes) => {
+          const chapterScope = getScopedNodeIds(candidateNodes, [splitChapterId]);
+          return Object.values(candidateNodes).some((candidate) =>
+            candidate.nodeType === 'scene' && chapterScope.has(candidate.parentId ?? ''));
+        }, 5000);
+        if (isCancelled()) return false;
+
+        refreshTimelineContext();
+        if (sceneEntries.length === 0) {
+          const latestSceneWriter = nodesRef.current[sceneWriterId];
+          chapterTextWorkflowError = latestSceneWriter?.error?.trim()
+            || 'Автосбор Scene Writer не создал рабочие ноды сцен.';
+          return false;
+        }
+
+        handleEnsureChapterTimeline(timelineNodeId);
+        await waitForState();
+        refreshTimelineContext();
+        return sceneEntries.length > 0;
+      }
+
       const linkedChapterPlanId = getAncestorNodeId(
-        nodesRef.current,
+        latestNodes,
         sourceChapterId,
         (candidate) => getSourceKind(candidate) === 'chapter_plan',
       );
       let chapterPlanEntry = linkedChapterPlanId
-        ? [linkedChapterPlanId, nodesRef.current[linkedChapterPlanId]] as [string, NodeData]
+        ? [linkedChapterPlanId, latestNodes[linkedChapterPlanId]] as [string, NodeData]
         : undefined;
-      const plannerEntry = findNodeBySourceKind(nodesRef.current, 'chapter_planner');
+      const targetChapterNumber = getChapterNumber(timelineNode);
+      const findMatchingChapterPlan = (candidateNodes: NodesState) => {
+        const entries = Object.entries(candidateNodes)
+          .filter((entry): entry is [string, NodeData] =>
+            entry[1].nodeType === 'script_detail'
+            && getSourceKind(entry[1]) === 'chapter_plan');
+        return entries.find(([, node]) =>
+          targetChapterNumber !== null
+          && (
+            Number(node.metadata?.chapterNumber) === targetChapterNumber
+            || getChapterNumber(node) === targetChapterNumber
+          ))
+          ?? (entries.length === 1 ? entries[0] : undefined);
+      };
+      chapterPlanEntry ??= findMatchingChapterPlan(latestNodes);
+      const plannerEntry = findNodeBySourceKind(latestNodes, 'chapter_planner');
 
       if (!chapterPlanEntry && plannerEntry) {
         let plannerHasJson = true;
@@ -6868,19 +7019,12 @@ export const useNodeManagement = (
           parseChapterPlanDocument(latestPlanner?.inputValue ?? '');
           updateNode(timelineNodeId, { statusMessage: 'Создаём карточки глав по плану...' });
           handleCreateChapterPlanNodes(plannerEntry[0]);
-          await waitForState();
+          await waitForNodes((candidateNodes) => Boolean(findMatchingChapterPlan(candidateNodes)));
         } catch {
           return false;
         }
 
-        const chapterPlanEntries = Object.entries(nodesRef.current)
-          .filter((entry): entry is [string, NodeData] =>
-            entry[1].nodeType === 'script_detail'
-            && getSourceKind(entry[1]) === 'chapter_plan');
-        const targetChapterNumber = getChapterNumber(timelineNode);
-        chapterPlanEntry = chapterPlanEntries.find(([, node]) =>
-          targetChapterNumber !== null && Number(node.metadata?.chapterNumber) === targetChapterNumber)
-          ?? (chapterPlanEntries.length === 1 ? chapterPlanEntries[0] : undefined);
+        chapterPlanEntry = findMatchingChapterPlan(nodesRef.current);
       }
 
       if (!chapterPlanEntry) return false;
@@ -6894,6 +7038,8 @@ export const useNodeManagement = (
             sourceLabel: chapterPlanNode.label,
           },
         });
+        await waitForNodes((candidateNodes) =>
+          candidateNodes[timelineNodeId]?.metadata?.sourceChapterId === chapterPlanId);
         refreshTimelineContext();
       }
 
@@ -6902,10 +7048,18 @@ export const useNodeManagement = (
       if (!preparedMaterial || preparedMaterial === DEFAULT_CHAPTER_MATERIAL.trim()) {
         updateNode(timelineNodeId, { statusMessage: `Разворачиваем материал: ${chapterPlanNode.label}...` });
         await handleBuildChapterMaterial(chapterPlanId);
-        await waitForState();
+        await waitForNodes((candidateNodes) => {
+          const materialEntry = findPipelineNode(candidateNodes, 'chapter_material', chapterPlanId);
+          return Boolean(materialEntry?.[1].inputValue?.trim());
+        });
         chapterMaterialEntry = findPipelineNode(nodesRef.current, 'chapter_material', chapterPlanId);
       }
-      if (isCancelled() || !chapterMaterialEntry?.[1].inputValue?.trim()) return false;
+      if (isCancelled()) return false;
+      if (!chapterMaterialEntry?.[1].inputValue?.trim()) {
+        chapterTextWorkflowError = nodesRef.current[chapterPlanId]?.error?.trim()
+          || 'Не удалось развернуть материал выбранной главы.';
+        return false;
+      }
 
       refreshTimelineContext();
       if (sceneEntries.length === 0) {
@@ -6915,7 +7069,11 @@ export const useNodeManagement = (
           await waitForState();
         }
         await handleAutoBuildChapter(chapterMaterialEntry[0], timelineTextModel);
-        await waitForState();
+        await waitForNodes((candidateNodes) => {
+          const chapterScope = getScopedNodeIds(candidateNodes, [chapterPlanId]);
+          return Object.values(candidateNodes).some((candidate) =>
+            candidate.nodeType === 'scene' && chapterScope.has(candidate.parentId ?? ''));
+        }, 5000);
         chapterTextWorkflowError = nodesRef.current[chapterMaterialEntry[0]]?.error?.trim() ?? '';
       }
       if (isCancelled()) return false;
@@ -7226,32 +7384,39 @@ export const useNodeManagement = (
       }
 
       updateNode(timelineNodeId, {
-        isLoadingVideo: false,
+        isLoadingVideo: options?.preserveBusyState ? true : false,
         statusMessage: 'Недостающие элементы таймлайна добраны.',
       });
       showNotice('success', 'Таймлайн проверен: недостающие элементы добраны по очереди.');
       return true;
     } catch (error) {
-      if (isAbortError(error)) {
+      if (isAbortError(error) && controller.signal.aborted) {
         showNotice('info', 'Автодобор таймлайна остановлен.');
       } else {
-        const message = errorMessage(error);
+        const stage = nodesRef.current[timelineNodeId]?.statusMessage?.trim();
+        const message = isAbortError(error)
+          ? `Автодобор прервался по таймауту${stage ? ` на этапе «${stage}»` : ''}. Повторный запуск продолжит с уже готовых элементов.`
+          : errorMessage(error);
         updateNode(timelineNodeId, { pollinationsApiError: message });
         showNotice('error', message);
       }
       return false;
     } finally {
       activeRequests.current.delete(requestId);
-      updateNode(timelineNodeId, {
-        isLoadingVideo: false,
-        statusMessage: undefined,
-      });
+      if (!options?.preserveBusyState) {
+        updateNode(timelineNodeId, {
+          isLoadingVideo: false,
+          statusMessage: undefined,
+        });
+      }
     }
   }, [
+    handleAssemblePromptResultScenario,
     handleAutoBuildChapter,
     handleBuildChapterMaterial,
     handleComposeSceneFlux2,
     handleCreateChapterPlanNodes,
+    handleCreateSceneWriterPromptNode,
     handleEnsureChapterTimeline,
     handleGenerateChapterBackdrop,
     handleGenerateDetailAsset,
@@ -7259,6 +7424,7 @@ export const useNodeManagement = (
     handleGenerateSceneShotGrid,
     handlePlanChapters,
     handlePrepareNarrationTts,
+    handleRunPromptNode,
     handleScenarioDetailClick,
     narrationSettings,
     showNotice,
@@ -7275,6 +7441,7 @@ export const useNodeManagement = (
 
     try {
       updateNode(timelineNodeId, {
+        isLoadingVideo: true,
         pollinationsApiError: undefined,
         statusMessage: 'Проверяем локальный FFmpeg renderer...',
       });
@@ -7290,7 +7457,10 @@ export const useNodeManagement = (
         pollinationsApiError: undefined,
         statusMessage: 'Полная сборка главы: проверяем недостающие элементы...',
       });
-      const assetsReady = await handleGenerateTimelineMissingAssets(timelineNodeId);
+      const assetsReady = await handleGenerateTimelineMissingAssets(timelineNodeId, {
+        allowBusy: true,
+        preserveBusyState: true,
+      });
       if (controller.signal.aborted) return;
 
       const timelineAfterAssets = nodesRef.current[timelineNodeId];
@@ -7310,6 +7480,7 @@ export const useNodeManagement = (
       }
 
       updateNode(timelineNodeId, {
+        isLoadingVideo: true,
         statusMessage: 'Все элементы готовы. FFmpeg собирает клипы сцен...',
       });
       await new Promise((resolve) => window.setTimeout(resolve, 40));
@@ -7332,7 +7503,10 @@ export const useNodeManagement = (
       const sourceChapterId = typeof timelineAfterClips.metadata?.sourceChapterId === 'string'
         ? timelineAfterClips.metadata.sourceChapterId
         : '';
-      const timelineScope = getScopedNodeIds(nodesRef.current, [sourceScenarioId ?? '', sourceChapterId]);
+      const timelineScope = getScopedNodeIds(
+        nodesRef.current,
+        sourceChapterId ? [sourceChapterId] : [sourceScenarioId ?? ''],
+      );
       const hasTimelineScope = timelineScope.size > 0;
       const chapterScenes = Object.values(nodesRef.current).filter((candidate) =>
         candidate.nodeType === 'scene'
@@ -7350,6 +7524,7 @@ export const useNodeManagement = (
       }
 
       updateNode(timelineNodeId, {
+        isLoadingVideo: true,
         statusMessage: 'Клипы сцен готовы. FFmpeg собирает общий ролик главы...',
       });
       await new Promise((resolve) => window.setTimeout(resolve, 40));
@@ -7369,6 +7544,10 @@ export const useNodeManagement = (
       }
     } finally {
       activeRequests.current.delete(requestId);
+      updateNode(timelineNodeId, {
+        isLoadingVideo: false,
+        statusMessage: undefined,
+      });
     }
   }, [
     handleBuildChapterSceneClips,
@@ -7378,40 +7557,183 @@ export const useNodeManagement = (
     updateNode,
   ]);
 
+  const handleGenerateVideoThumbnail = useCallback(async (collectorNodeId: string) => {
+    const currentNodes = nodesRef.current;
+    const collectorNode = currentNodes[collectorNodeId];
+    if (!collectorNode || collectorNode.nodeType !== 'chapter_collector') return;
+    if (collectorNode.isLoadingImage) return;
+
+    const timelines = Object.entries(currentNodes)
+      .filter((entry): entry is [string, NodeData] => entry[1].nodeType === 'chapter_timeline')
+      .sort(([, first], [, second]) =>
+        (getChapterNumber(first) ?? Number.MAX_SAFE_INTEGER) - (getChapterNumber(second) ?? Number.MAX_SAFE_INTEGER)
+        || first.label.localeCompare(second.label, 'ru', { numeric: true }));
+    if (timelines.length === 0) {
+      updateNode(collectorNodeId, { pollinationsApiError: 'Сначала создайте таймлайны глав: без сюжета обложку собрать нельзя.' });
+      return;
+    }
+
+    const requestId = `video-thumbnail:${collectorNodeId}`;
+    if (activeRequests.current.has(requestId)) return;
+    const controller = new AbortController();
+    activeRequests.current.set(requestId, controller);
+
+    const pipeline: Extract<ImagePipeline, 'sdxl' | 'z_image_turbo' | 'ernie_image_turbo' | 'nano_banana_2_lite_compose'> =
+      collectorNode.imagePipeline === 'sdxl'
+      || collectorNode.imagePipeline === 'ernie_image_turbo'
+      || collectorNode.imagePipeline === 'z_image_turbo'
+      || collectorNode.imagePipeline === 'nano_banana_2_lite_compose'
+        ? collectorNode.imagePipeline
+        : 'z_image_turbo';
+    const chapterDigest = timelines.map(([, timeline], index) => {
+      const sourceChapterId = typeof timeline.metadata?.sourceChapterId === 'string'
+        ? timeline.metadata.sourceChapterId
+        : '';
+      const sourceChapter = sourceChapterId ? currentNodes[sourceChapterId] : undefined;
+      const chapterText = sourceChapter?.inputValue
+        || sourceChapter?.promptResultValue
+        || timeline.inputValue
+        || timeline.sceneText
+        || '';
+      return `${index + 1}. ${timeline.label.replace(/^Таймлайн\s*·\s*/iu, '')}\n${chapterText.slice(0, 1600)}`;
+    }).join('\n\n');
+    const characterContext = Object.values(currentNodes)
+      .filter((candidate) =>
+        (candidate.nodeType === 'script_detail' && candidate.label === 'Герои')
+        || candidate.nodeType === 'character_registry')
+      .map((candidate) => candidate.inputValue || candidate.promptResultValue || '')
+      .filter(Boolean)
+      .join('\n\n')
+      .slice(0, 5000);
+    const projectTitle = Object.values(currentNodes)
+      .find((candidate) => candidate.nodeType === 'script_input')?.label
+      || 'CANVA STORY';
+    const prompt = [
+      'Create a high-click-through 16:9 thumbnail for a fantasy manhwa story video.',
+      `Project: ${projectTitle}.`,
+      'First identify the single strongest conflict, danger, revelation or impossible choice across the chapter summaries below.',
+      'Infer the protagonist\'s defining profession, craft or special skill from the story. Let that profession shape every decorative design choice in the thumbnail.',
+      'Build one bold cinematic composition around that conflict: one clearly readable protagonist in the foreground, one powerful threat or coveted reward, strong emotional expression, dramatic rim light, depth, and immediate visual stakes.',
+      'The image must remain readable at small YouTube thumbnail size. Use a large face or strong half-body silhouette, clear foreground/midground/background separation, controlled contrast, and one unified scene.',
+      'Add exactly one very short Russian headline of 2-5 words, derived from the central conflict. Render it as large, highly readable fantasy display lettering whose construction reflects the protagonist\'s profession: for example stitched and thread-bound letter details for a tailor, engraved metal and ledger geometry for a merchant, runic glass and alchemical filigree for an alchemist. Use bright ivory, pale gold or luminous warm-white lettering with a substantial dark outline, soft dark drop shadow and a subtly darkened area behind the title. Maintain strong light-dark separation from every part of the background. Keep the Cyrillic spelling clean and unmistakable.',
+      'Include one elegant translucent fantasy system window as a supporting story element. It may show one concise skill, rank, warning, percentage or progress indicator connected to the central conflict. Give it a magical game-interface language with luminous edges and one clear icon; keep it secondary to the protagonist and headline. Render its short text in a bright light tone over a sufficiently dark glass panel with a crisp outline so it remains readable at thumbnail size.',
+      'Create a restrained ornamental frame around parts of the image using a few recognisable objects from the protagonist\'s activity: tools, materials, symbols or resources that actually belong to this story. Integrate them into corners and edges like a modernised illuminated fantasy manuscript or premium game interface, leaving the face, conflict and headline unobstructed.',
+      'Keep the hierarchy clean: protagonist and danger first, headline second, system window third, professional frame details last. Use only the short headline and the single concise system-window message as visible text.',
+      'Preserve the project character identity and visual style when the supplied character context is sufficient. Do not invent a different protagonist.',
+      `CHARACTER CONTEXT:\n${characterContext || 'Use the protagonist described in the chapter summaries.'}`,
+      `CHAPTER SUMMARIES:\n${chapterDigest}`,
+    ].join('\n\n');
+    const styledPrompt = appendProjectVisualStyleToImagePrompt(prompt, currentNodes);
+
+    updateNode(collectorNodeId, {
+      isLoadingImage: true,
+      loadingProvider: pipeline === 'nano_banana_2_lite_compose'
+        ? 'comfy_nano_banana'
+        : imageGenerationSettings.provider,
+      pollinationsApiError: undefined,
+      statusMessage: pipeline === 'nano_banana_2_lite_compose'
+        ? 'Nano Banana создаёт кликбейтную обложку через ComfyUI...'
+        : 'Генерируем кликбейтную обложку ролика...',
+    });
+
+    try {
+      const imageUrl = pipeline === 'nano_banana_2_lite_compose'
+        ? await generateComfyNanoBanana2LiteImage(
+          styledPrompt,
+          imageGenerationSettings,
+          controller.signal,
+        )
+        : await generateImage(
+          styledPrompt,
+          pipeline,
+          imageGenerationSettings,
+          'video_thumbnail',
+          controller.signal,
+        );
+      upsertImageNode(
+        collectorNodeId,
+        imageUrl,
+        'Обложка ролика',
+        'video_thumbnail',
+        0,
+        styledPrompt,
+        chapterDigest,
+        {
+          imagePipeline: pipeline,
+          sourceKind: 'video_thumbnail',
+          thumbnailGeneratedAt: new Date().toISOString(),
+        },
+      );
+      updateNode(collectorNodeId, {
+        statusMessage: 'Кликбейтная обложка готова.',
+        metadata: {
+          ...collectorNode.metadata,
+          thumbnailPipeline: pipeline,
+          thumbnailGeneratedAt: new Date().toISOString(),
+        },
+      });
+      showNotice('success', 'Обложка ролика готова. Она появилась отдельной нодой рядом с собирателем глав.');
+    } catch (error) {
+      if (isAbortError(error)) {
+        showNotice('info', 'Генерация обложки отменена.');
+      } else {
+        const message = errorMessage(error);
+        updateNode(collectorNodeId, { pollinationsApiError: message });
+        showNotice('error', message);
+      }
+    } finally {
+      activeRequests.current.delete(requestId);
+      updateNode(collectorNodeId, {
+        isLoadingImage: false,
+        loadingProvider: undefined,
+        statusMessage: undefined,
+      });
+    }
+  }, [imageGenerationSettings, showNotice, updateNode, upsertImageNode]);
+
   const handleBuildSeasonVideo = useCallback(async (collectorNodeId: string) => {
     const currentNodes = nodesRef.current;
     const collectorNode = currentNodes[collectorNodeId];
-    if (!collectorNode || collectorNode.nodeType !== 'chapter_collector' || collectorNode.isLoadingVideo) return;
+    if (!collectorNode || collectorNode.nodeType !== 'chapter_collector') return;
+    if (collectorNode.isLoadingVideo) {
+      updateNode(collectorNodeId, {
+        pollinationsApiError: 'Сборка финального ролика уже запущена. Дождитесь завершения или нажмите «Отменить финал».',
+      });
+      return;
+    }
 
-    const chapterPlans = Object.entries(currentNodes)
-      .filter(([, candidate]) => candidate.nodeType === 'chapter_timeline')
-      .map(([timelineId, timeline]) => {
-        const videoNode = Object.values(currentNodes).find((candidate) =>
-          candidate.nodeType === 'video_output'
-          && candidate.parentId === timelineId
-          && Boolean(candidate.videoUrl));
-        return {
-          timelineId,
-          timeline,
-          chapterNumber: getChapterNumber(timeline),
-          videoNode,
-        };
-      })
-      .sort((first, second) =>
-        (first.chapterNumber ?? Number.MAX_SAFE_INTEGER) - (second.chapterNumber ?? Number.MAX_SAFE_INTEGER)
-        || first.timeline.label.localeCompare(second.timeline.label, 'ru', { numeric: true }));
+    const getChapterPlans = () => {
+      const latestNodes = nodesRef.current;
+      return Object.entries(latestNodes)
+        .filter(([, candidate]) => candidate.nodeType === 'chapter_timeline')
+        .map(([timelineId, timeline]) => {
+          const videoNode = Object.values(latestNodes).find((candidate) =>
+            candidate.nodeType === 'video_output'
+            && candidate.parentId === timelineId
+            && Boolean(candidate.videoUrl));
+          return {
+            timelineId,
+            timeline,
+            chapterNumber: getChapterNumber(timeline),
+            videoNode,
+          };
+        })
+        .sort((first, second) =>
+          (first.chapterNumber ?? Number.MAX_SAFE_INTEGER) - (second.chapterNumber ?? Number.MAX_SAFE_INTEGER)
+          || first.timeline.label.localeCompare(second.timeline.label, 'ru', { numeric: true }));
+    };
+
+    const chapterPlans = getChapterPlans();
 
     if (chapterPlans.length === 0) {
       updateNode(collectorNodeId, { pollinationsApiError: 'Сначала создайте таймлайны глав.' });
       return;
     }
 
-    const missingLabels = chapterPlans
-      .filter((plan) => !plan.videoNode?.videoUrl)
-      .map((plan) => plan.timeline.label);
-    if (missingLabels.length > 0) {
+    const rendererReady = await isNativeVideoRendererAvailable();
+    if (!rendererReady) {
       updateNode(collectorNodeId, {
-        pollinationsApiError: `Сначала соберите ролики всех глав. Не хватает: ${missingLabels.join(', ')}.`,
+        pollinationsApiError: 'Локальный FFmpeg-сервис недоступен. Запустите общий bat-файл CANVA STORY и повторите сборку.',
       });
       return;
     }
@@ -7425,13 +7747,54 @@ export const useNodeManagement = (
       updateNode(collectorNodeId, {
         isLoadingVideo: true,
         pollinationsApiError: undefined,
-        statusMessage: `Склеиваем финальный ролик из ${chapterPlans.length} глав...`,
+        statusMessage: `Проверяем ролики ${chapterPlans.length} глав...`,
       });
 
-      const videoUrls = chapterPlans
+      const missingChapterPlans = chapterPlans.filter((plan) => !plan.videoNode?.videoUrl);
+      for (let index = 0; index < missingChapterPlans.length; index += 1) {
+        if (controller.signal.aborted) throw new DOMException('Aborted', 'AbortError');
+        const plan = missingChapterPlans[index];
+        updateNode(collectorNodeId, {
+          statusMessage: `Собираем ролик главы ${index + 1}/${missingChapterPlans.length}: ${plan.timeline.label}`,
+        });
+        await handleBuildChapterVideo(plan.timelineId, {
+          allowBusy: true,
+          requireFfmpeg: true,
+        });
+        await new Promise((resolve) => window.setTimeout(resolve, 80));
+
+        const latestTimeline = nodesRef.current[plan.timelineId];
+        const completedVideo = Object.values(nodesRef.current).find((candidate) =>
+          candidate.nodeType === 'video_output'
+          && candidate.parentId === plan.timelineId
+          && Boolean(candidate.videoUrl));
+        if (!completedVideo?.videoUrl) {
+          const chapterError = latestTimeline?.pollinationsApiError?.trim();
+          throw new Error(chapterError
+            ? `${plan.timeline.label}: ${chapterError}`
+            : `${plan.timeline.label}: ролик главы не появился после сборки. Проверьте наличие клипов всех сцен.`);
+        }
+      }
+
+      const completedChapterPlans = getChapterPlans();
+      const missingLabels = completedChapterPlans
+        .filter((plan) => !plan.videoNode?.videoUrl)
+        .map((plan) => plan.timeline.label);
+      if (missingLabels.length > 0) {
+        throw new Error(`Не удалось собрать ролики глав: ${missingLabels.join(', ')}.`);
+      }
+
+      updateNode(collectorNodeId, {
+        statusMessage: `FFmpeg склеивает финальный ролик из ${completedChapterPlans.length} глав...`,
+      });
+      const videoUrls = completedChapterPlans
         .map((plan) => plan.videoNode?.videoUrl)
         .filter((videoUrl): videoUrl is string => Boolean(videoUrl));
-      const generatedSeasonVideo = await buildChapterVideoFromClips(videoUrls, controller.signal);
+      const generatedSeasonVideo = await buildChapterVideoFromClips(
+        videoUrls,
+        controller.signal,
+        { requireFfmpeg: true },
+      );
 
       setNodes((previousNodes) => {
         const currentNode = previousNodes[collectorNodeId];
@@ -7452,15 +7815,15 @@ export const useNodeManagement = (
             statusMessage: 'Финальный ролик сезона готов.',
             metadata: {
               ...currentNode.metadata,
-              chapterCount: chapterPlans.length,
-              readyChapterVideoCount: chapterPlans.length,
+              chapterCount: completedChapterPlans.length,
+              readyChapterVideoCount: completedChapterPlans.length,
               videoRenderer: generatedSeasonVideo.renderer,
               videoGeneratedAt: new Date().toISOString(),
             },
           },
         };
       });
-      showNotice('success', `Финальный ролик собран из ${chapterPlans.length} глав.`);
+      showNotice('success', `Финальный ролик собран из ${completedChapterPlans.length} глав.`);
     } catch (error) {
       if (isAbortError(error)) {
         showNotice('info', 'Сборка финального ролика отменена.');
@@ -7476,7 +7839,7 @@ export const useNodeManagement = (
         statusMessage: undefined,
       });
     }
-  }, [setNodes, showNotice, updateNode]);
+  }, [handleBuildChapterVideo, setNodes, showNotice, updateNode]);
 
   const handleGeneratePollinationsImage = useCallback(async (parentNodeId: string) => {
     const parentNode = nodesRef.current[parentNodeId];
@@ -7533,12 +7896,14 @@ export const useNodeManagement = (
       : savedDetailAssetProvider;
     const useGptImage = detailAssetProvider === 'comfy_openai_gpt_image_2_low';
     const useNanoBanana = detailAssetProvider === 'comfy_nano_banana_2_lite';
+    const useNanoBananaThumbnail = assetKind === 'video_thumbnail'
+      && getNodeImagePipeline(node) === 'nano_banana_2_lite_compose';
 
     updateNode(nodeId, {
       isLoadingImage: true,
       loadingProvider: useGptImage
         ? 'comfy_openai_image'
-        : useNanoBanana
+        : useNanoBanana || useNanoBananaThumbnail
           ? 'comfy_nano_banana'
           : imageGenerationSettings.provider,
       pollinationsApiError: undefined,
@@ -7548,7 +7913,7 @@ export const useNodeManagement = (
     try {
       const styledPrompt = appendProjectVisualStyleToImagePrompt(prompt, nodesRef.current);
       let imageUrl: string;
-      if (useNanoBanana) {
+      if (useNanoBanana || useNanoBananaThumbnail) {
         imageUrl = await generateComfyNanoBanana2LiteImage(styledPrompt, imageGenerationSettings, controller.signal);
       } else if (useGptImage && isCloudDetailPromptKind(promptKind)) {
         imageUrl = await generateComfyOpenAiGptImage2LowImage(styledPrompt, promptKind, imageGenerationSettings, controller.signal);
@@ -7761,6 +8126,7 @@ export const useNodeManagement = (
     activeRequests.current.get(`complete-chapter:${nodeId}`)?.abort();
     activeRequests.current.get(`chapter-scene-clips:${nodeId}`)?.abort();
     activeRequests.current.get(`chapter-video:${nodeId}`)?.abort();
+    activeRequests.current.get(`video-thumbnail:${nodeId}`)?.abort();
     if (speakingNodeIdRef.current === nodeId) {
       window.speechSynthesis.cancel();
       speechUtteranceRef.current = null;
@@ -7849,6 +8215,7 @@ export const useNodeManagement = (
     handleBuildChapterVideo,
     handleEnsureChapterCollector,
     handleBuildSeasonVideo,
+    handleGenerateVideoThumbnail,
     handleCopyToClipboard,
     handleGeneratePollinationsImage,
     handleRegenerateImageNode,

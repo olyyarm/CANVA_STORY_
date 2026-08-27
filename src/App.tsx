@@ -475,6 +475,7 @@ const App = () => {
     handleBuildChapterSceneClips,
     handleEnsureChapterCollector,
     handleBuildSeasonVideo,
+    handleGenerateVideoThumbnail,
     handleCopyToClipboard,
     handleRegenerateImageNode,
     handleToggleReferenceImage,
@@ -686,6 +687,29 @@ const App = () => {
       (first.chapterNumber ?? Number.MAX_SAFE_INTEGER) - (second.chapterNumber ?? Number.MAX_SAFE_INTEGER)
       || first.title.localeCompare(second.title, 'ru', { numeric: true }));
   }, [nodeEntries, nodes]);
+  const chapterCollectorNavigatorState = useMemo(() => {
+    const collectorEntry = nodeEntries.find(([, node]) => node.nodeType === 'chapter_collector');
+    const timelineEntries = nodeEntries.filter(([, node]) => node.nodeType === 'chapter_timeline');
+    const readyChapterVideos = timelineEntries.filter(([timelineId]) =>
+      nodeEntries.some(([, candidate]) =>
+        candidate.nodeType === 'video_output'
+        && candidate.parentId === timelineId
+        && Boolean(candidate.videoUrl))).length;
+    const videoEntry = collectorEntry
+      ? nodeEntries.find(([, candidate]) =>
+        candidate.nodeType === 'video_output'
+        && candidate.parentId === collectorEntry[0]
+        && Boolean(candidate.videoUrl))
+      : undefined;
+
+    return {
+      nodeId: collectorEntry?.[0],
+      videoNodeId: videoEntry?.[0],
+      chapters: timelineEntries.length,
+      readyChapterVideos,
+      isBuilding: Boolean(collectorEntry?.[1].isLoadingVideo),
+    };
+  }, [nodeEntries]);
   const activeChapterWorkspaceItem = useMemo(
     () => chapterNavigatorItems.find((item) =>
       item.id === activeChapterWorkspaceId || item.timelineId === activeChapterWorkspaceId),
@@ -1889,7 +1913,13 @@ const App = () => {
           <button type="button" onClick={handleEnsureStoryReferenceNodes}>Базы</button>
           <button type="button" onClick={handleEnsureCharacterRegistry}>Реестр персонажей</button>
           <button type="button" onClick={() => handleEnsureChapterTimeline(selectedNodeId ?? undefined)}>Таймлайн</button>
-          <button type="button" onClick={handleEnsureChapterCollector}>Собиратель глав</button>
+          <button
+            type="button"
+            onClick={handleEnsureChapterCollector}
+            title="Создать или обновить ноду сборщика. Сам запуск сборки находится внутри неё."
+          >
+            Создать собиратель
+          </button>
           {!activeChapterWorkspaceId && (
             <button
               type="button"
@@ -2055,6 +2085,7 @@ const App = () => {
               onCompleteChapter={handleCompleteChapter}
               onBuildChapterSceneClips={handleBuildChapterSceneClips}
               onBuildSeasonVideo={handleBuildSeasonVideo}
+              onGenerateVideoThumbnail={handleGenerateVideoThumbnail}
               onCopyToClipboard={handleCopyToClipboard}
               onRegenerateImageNode={handleRegenerateImageNode}
               onToggleReferenceImage={handleToggleReferenceImage}
@@ -2084,9 +2115,11 @@ const App = () => {
         {!activeChapterWorkspaceId && (
           <ChapterNavigator
             items={chapterNavigatorItems}
+            collector={chapterCollectorNavigatorState}
             open={chapterNavigatorOpen}
             onOpenChange={setChapterNavigatorOpen}
             onFocusNode={handleFocusChapterNode}
+            onEnsureCollector={handleEnsureChapterCollector}
             onCreateTimeline={handleEnsureChapterTimeline}
             onOpenChapter={handleOpenChapterWorkspace}
           />

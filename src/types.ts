@@ -33,7 +33,8 @@ export type ImagePromptKind =
   | 'character_asset'
   | 'location_asset'
   | 'system_insert'
-  | 'chapter_backdrop';
+  | 'chapter_backdrop'
+  | 'video_thumbnail';
 export type SplitMode = 'lines' | 'separator' | 'json_path';
 
 export type AssetMediaKind = 'image' | 'audio' | 'video';
@@ -45,6 +46,7 @@ export type AssetKind =
   | 'scene_shot'
   | 'system_insert'
   | 'chapter_backdrop'
+  | 'video_thumbnail'
   | 'voice_reference'
   | 'narration_audio'
   | 'scene_clip'

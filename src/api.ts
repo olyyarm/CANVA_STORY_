@@ -562,6 +562,16 @@ const SDXL_NEGATIVE_PROMPTS: Record<ImagePromptKind, string> = {
     'foreground character',
     'portrait',
   ].join(', '),
+  video_thumbnail: [
+    'watermark',
+    'logo',
+    'blurry',
+    'low quality',
+    'messy layout',
+    'tiny illegible text',
+    'multiple competing headlines',
+    'empty composition',
+  ].join(', '),
 };
 
 const normalizeImagePromptKind = (promptKind: ImagePromptKind | string): ImagePromptKind => {
@@ -573,6 +583,7 @@ const normalizeImagePromptKind = (promptKind: ImagePromptKind | string): ImagePr
     || normalized === 'location_asset'
     || normalized === 'system_insert'
     || normalized === 'chapter_backdrop'
+    || normalized === 'video_thumbnail'
     || normalized === 'default'
   ) {
     return normalized;
@@ -2603,16 +2614,16 @@ export const generateComfyNanoBanana2LiteImage = async (
     }));
     if (!promptResponse.ok) {
       throw new Error(getComfyError(
-        'ComfyUI не принял Nano Banana workflow для системной вставки',
+        'ComfyUI не принял workflow самостоятельного изображения Nano Banana',
         promptResponse,
         await readResponseDetails(promptResponse),
       ));
     }
     const promptData: ComfyPromptResponse = await promptResponse.json();
-    if (!promptData.prompt_id) throw new Error('ComfyUI не вернул prompt_id для Nano Banana системной вставки.');
+    if (!promptData.prompt_id) throw new Error('ComfyUI не вернул prompt_id для изображения Nano Banana.');
 
     const image = await waitForComfyImage(baseUrl, promptData.prompt_id, COMFY_NANO_BANANA_TIMEOUT_MS, signal);
-    if (!image) throw new Error('Nano Banana не вернул системную вставку за 45 минут. Проверьте очередь ComfyUI и output.');
+    if (!image) throw new Error('Nano Banana не вернул изображение за 45 минут. Проверьте очередь ComfyUI и output.');
 
     const params = new URLSearchParams({
       filename: image.filename,
@@ -2622,7 +2633,7 @@ export const generateComfyNanoBanana2LiteImage = async (
     const viewResponse = await fetch(`${baseUrl}/view?${params.toString()}`, getComfyFetchOptions({ signal }));
     if (!viewResponse.ok) {
       throw new Error(getComfyError(
-        'ComfyUI не отдал готовую системную вставку Nano Banana',
+        'ComfyUI не отдал готовое изображение Nano Banana',
         viewResponse,
         await readResponseDetails(viewResponse),
       ));

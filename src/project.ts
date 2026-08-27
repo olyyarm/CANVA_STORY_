@@ -114,6 +114,7 @@ const assetKinds = new Set<AssetKind>([
   'scene_shot',
   'system_insert',
   'chapter_backdrop',
+  'video_thumbnail',
   'voice_reference',
   'narration_audio',
   'scene_clip',
@@ -184,6 +185,7 @@ const inferLegacyAssetKind = (
   if (legacyKind.startsWith('scene_shot')) return 'scene_shot';
   if (legacyKind.startsWith('system_insert')) return 'system_insert';
   if (legacyKind === 'chapter_backdrop') return 'chapter_backdrop';
+  if (legacyKind === 'video_thumbnail') return 'video_thumbnail';
   if (legacyKind.includes('frame')) return 'scene_frame';
   return 'other';
 };

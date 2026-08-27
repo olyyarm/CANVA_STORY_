@@ -1,4 +1,6 @@
 import { useState } from 'react';
+import { faEye } from '@fortawesome/free-solid-svg-icons';
+import { FontAwesomeIcon } from '@fortawesome/react-fontawesome';
 
 export interface ChapterNavigatorItem {
   id: string;
@@ -17,9 +19,17 @@ export interface ChapterNavigatorItem {
 
 interface ChapterNavigatorProps {
   items: ChapterNavigatorItem[];
+  collector: {
+    nodeId?: string;
+    videoNodeId?: string;
+    chapters: number;
+    readyChapterVideos: number;
+    isBuilding: boolean;
+  };
   open: boolean;
   onOpenChange: (open: boolean) => void;
   onFocusNode: (nodeId: string) => void;
+  onEnsureCollector: () => void;
   onCreateTimeline: (chapterId: string) => void;
   onOpenChapter: (chapterId: string) => void;
 }
@@ -52,9 +62,11 @@ const formatStageCount = (count: number) => {
 
 export default function ChapterNavigator({
   items,
+  collector,
   open,
   onOpenChange,
   onFocusNode,
+  onEnsureCollector,
   onCreateTimeline,
   onOpenChapter,
 }: ChapterNavigatorProps) {
@@ -205,6 +217,39 @@ export default function ChapterNavigator({
           );
         })}
       </div>
+
+      <footer className={`chapter-navigator__collector${collector.videoNodeId ? ' chapter-navigator__collector--ready' : ''}`}>
+        <button
+          type="button"
+          className="chapter-navigator__collector-title"
+          onClick={() => collector.nodeId ? onFocusNode(collector.nodeId) : onEnsureCollector()}
+          title={collector.nodeId ? 'Перейти к собирателю глав' : 'Создать собиратель глав'}
+        >
+          <strong>Собиратель глав</strong>
+          <span>
+            {collector.videoNodeId
+              ? 'Финальный ролик готов'
+              : collector.isBuilding
+                ? 'Сборка идёт...'
+                : collector.chapters > 0
+                  ? `${collector.readyChapterVideos}/${collector.chapters} роликов глав готовы`
+                  : 'Сначала создайте таймлайны глав'}
+          </span>
+        </button>
+        <button
+          type="button"
+          className="chapter-navigator__collector-locate"
+          onClick={() => {
+            const targetNodeId = collector.videoNodeId ?? collector.nodeId;
+            if (targetNodeId) onFocusNode(targetNodeId);
+            else onEnsureCollector();
+          }}
+          aria-label={collector.videoNodeId ? 'Показать финальный ролик на канвасе' : 'Показать собиратель глав на канвасе'}
+          title={collector.videoNodeId ? 'Перейти к финальному видео' : 'Перейти к собирателю глав'}
+        >
+          <FontAwesomeIcon icon={faEye} />
+        </button>
+      </footer>
     </aside>
   );
 }

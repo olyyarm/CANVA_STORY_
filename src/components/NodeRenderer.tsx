@@ -75,6 +75,7 @@ interface NodeRendererProps {
   onCompleteChapter: (nodeId: string) => Promise<void>;
   onBuildChapterSceneClips: (nodeId: string) => Promise<void>;
   onBuildSeasonVideo: (nodeId: string) => Promise<void>;
+  onGenerateVideoThumbnail: (nodeId: string) => Promise<void>;
   onCopyToClipboard: (text: string) => void;
   onRegenerateImageNode: (nodeId: string) => Promise<void>;
   onToggleReferenceImage: (nodeId: string) => void;
@@ -224,7 +225,7 @@ const getTimelineScope = (nodes: NodesState, timelineNode: NodeData) => {
   const sourceChapterId = typeof timelineNode.metadata?.sourceChapterId === 'string'
     ? timelineNode.metadata.sourceChapterId
     : '';
-  const rootIds = [sourceScenarioId, sourceChapterId].filter((nodeId, index, ids) =>
+  const rootIds = (sourceChapterId ? [sourceChapterId] : [sourceScenarioId]).filter((nodeId, index, ids) =>
     Boolean(nodeId) && ids.indexOf(nodeId) === index);
   const scopedIds = new Set(rootIds);
   rootIds.forEach((rootId) => {
@@ -540,6 +541,7 @@ const NodeRenderer: React.FC<NodeRendererProps> = ({
   onCompleteChapter,
   onBuildChapterSceneClips,
   onBuildSeasonVideo,
+  onGenerateVideoThumbnail,
   onCopyToClipboard,
   onRegenerateImageNode,
   onToggleReferenceImage,
@@ -681,6 +683,7 @@ const NodeRenderer: React.FC<NodeRendererProps> = ({
   ].filter(Boolean).join('\n');
   const isReferenceImage = node.nodeType === 'pollinations_image' && isDefaultReferenceImage(node);
   const isCharacterAsset = node.nodeType === 'pollinations_image' && getAssetKind(node).startsWith('character_asset');
+  const isVideoThumbnail = node.nodeType === 'pollinations_image' && getAssetKind(node) === 'video_thumbnail';
   const isCanonicalCharacterAsset = node.nodeType === 'pollinations_image' && node.metadata?.canonicalCharacter === true;
   const characterAssetPipelineValue = node.nodeType === 'pollinations_image'
     && (node.imagePipeline === 'z_image_turbo' || node.imagePipeline === 'ernie_image_turbo')
@@ -688,6 +691,7 @@ const NodeRenderer: React.FC<NodeRendererProps> = ({
     : 'sdxl';
   const videoFormat = node.metadata?.videoFormat === 'mp4' ? 'mp4' : 'webm';
   const safeDownloadName = `${node.label.replace(/[^\p{L}\p{N}_-]+/gu, '-').replace(/^-+|-+$/gu, '') || 'scene'}.${videoFormat}`;
+  const safeImageDownloadName = `${node.label.replace(/[^\p{L}\p{N}_-]+/gu, '-').replace(/^-+|-+$/gu, '') || 'canva-story-image'}.png`;
   const sceneShotNodes = node.nodeType === 'scene' ? findSceneShotImageNodes(allNodes, id) : [];
   const sceneTimelineNode = node.nodeType === 'scene'
     ? Object.values(allNodes).find((candidate) =>
@@ -804,6 +808,18 @@ const NodeRenderer: React.FC<NodeRendererProps> = ({
     ? getChapterCollectorEntries(allNodes)
     : [];
   const chapterCollectorReadyCount = chapterCollectorEntries.filter((entry) => Boolean(entry.videoNode?.videoUrl)).length;
+  const chapterCollectorThumbnail = node.nodeType === 'chapter_collector'
+    ? Object.values(allNodes).find((candidate) =>
+      candidate.nodeType === 'pollinations_image'
+      && candidate.parentId === id
+      && getAssetKind(candidate) === 'video_thumbnail')
+    : undefined;
+  const chapterCollectorThumbnailPipeline = node.imagePipeline === 'sdxl'
+    || node.imagePipeline === 'ernie_image_turbo'
+    || node.imagePipeline === 'z_image_turbo'
+    || node.imagePipeline === 'nano_banana_2_lite_compose'
+      ? node.imagePipeline
+      : 'z_image_turbo';
   const renderedNodeSize = getRenderedNodeSize(node);
   const isPendingOutput = pendingOutputNodeId === id;
   const canAcceptPendingOutput = Boolean(pendingOutputNodeId && pendingOutputNodeId !== id);
@@ -2027,6 +2043,39 @@ const NodeRenderer: React.FC<NodeRendererProps> = ({
 
         {node.nodeType === 'chapter_collector' && (
           <div className="chapter-collector">
+            <div className="chapter-collector__thumbnail-controls" onMouseDown={stopMouseDown}>
+              <label className="node-field node-field--inline">
+                <span>Обложка</span>
+                <select
+                  value={chapterCollectorThumbnailPipeline}
+                  onChange={(event) => onImagePipelineChange(event, id)}
+                  disabled={node.isLoadingImage}
+                >
+                  <option value="z_image_turbo">Z-Image Turbo</option>
+                  <option value="nano_banana_2_lite_compose">Nano Banana 2 Lite</option>
+                  <option value="ernie_image_turbo">ERNIE Image Turbo</option>
+                  <option value="sdxl">SDXL</option>
+                </select>
+              </label>
+              <button
+                type="button"
+                className={`node-secondary-button${node.isLoadingImage ? ' node-secondary-button--cancel' : ''}`}
+                onMouseDown={stopMouseDown}
+                onClick={(event) => runWithoutDrag(event, () => node.isLoadingImage
+                  ? onCancelGeneration(id)
+                  : void onGenerateVideoThumbnail(id))}
+                disabled={Boolean(node.isLoading || node.isLoadingVideo || chapterCollectorEntries.length === 0)}
+              >
+                {node.isLoadingImage
+                  ? 'Отменить обложку'
+                  : chapterCollectorThumbnail?.imageUrl
+                    ? 'Перегенерировать обложку'
+                    : 'Создать кликбейтную обложку'}
+              </button>
+              <span className={`chapter-collector__thumbnail-state${chapterCollectorThumbnail?.imageUrl ? ' chapter-collector__thumbnail-state--ready' : ''}`}>
+                {chapterCollectorThumbnail?.imageUrl ? 'Обложка готова ✓' : 'Обложки пока нет'}
+              </span>
+            </div>
             <div className="chapter-timeline__summary">
               <span><strong>{chapterCollectorEntries.length}</strong> глав</span>
               <span><strong>{chapterCollectorReadyCount}</strong> роликов</span>
@@ -2040,7 +2089,7 @@ const NodeRenderer: React.FC<NodeRendererProps> = ({
                   : void onBuildSeasonVideo(id))}
                 disabled={Boolean(node.isLoading || node.isLoadingImage || node.isLoadingAudio || chapterCollectorEntries.length === 0)}
               >
-                {node.isLoadingVideo ? 'Отменить финал' : 'Собрать финальный ролик'}
+                {node.isLoadingVideo ? 'Отменить финал' : 'Собрать главы и финал'}
               </button>
             </div>
             {node.pollinationsApiError && (
@@ -2098,6 +2147,16 @@ const NodeRenderer: React.FC<NodeRendererProps> = ({
                 )
                 : <span>Кадр недоступен после перезагрузки. Создайте его снова из сцены.</span>}
             </div>
+            {node.imageUrl && (
+              <a
+                className="node-download-link generated-image-download"
+                href={node.imageUrl}
+                download={safeImageDownloadName}
+                onMouseDown={stopMouseDown}
+              >
+                Скачать PNG
+              </a>
+            )}
             {imagePrompt && (
               <div className="generated-prompt-tools">
                 <button
@@ -2122,14 +2181,16 @@ const NodeRenderer: React.FC<NodeRendererProps> = ({
             )}
             {imagePrompt && (
               <div className="generated-image-actions">
-                <button
-                  type="button"
-                  className={`node-secondary-button generated-reference-button${isReferenceImage ? ' generated-reference-button--active' : ''}`}
-                  onMouseDown={stopMouseDown}
-                  onClick={(event) => runWithoutDrag(event, () => onToggleReferenceImage(id))}
-                >
-                  {isReferenceImage ? 'Референс ✓' : 'Референс'}
-                </button>
+                {!isVideoThumbnail && (
+                  <button
+                    type="button"
+                    className={`node-secondary-button generated-reference-button${isReferenceImage ? ' generated-reference-button--active' : ''}`}
+                    onMouseDown={stopMouseDown}
+                    onClick={(event) => runWithoutDrag(event, () => onToggleReferenceImage(id))}
+                  >
+                    {isReferenceImage ? 'Референс ✓' : 'Референс'}
+                  </button>
+                )}
                 {isCharacterAsset && (
                   <button
                     type="button"

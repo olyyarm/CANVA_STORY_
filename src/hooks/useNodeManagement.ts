@@ -2211,6 +2211,19 @@ export const useNodeManagement = (
     });
   }, [setNodes]);
 
+  const waitForCommittedNodes = useCallback(async (
+    predicate: (latestNodes: NodesState) => boolean,
+    signal: AbortSignal,
+    timeoutMs = 2500,
+  ) => {
+    const startedAt = Date.now();
+    while (!signal.aborted && Date.now() - startedAt < timeoutMs) {
+      if (predicate(nodesRef.current)) return true;
+      await new Promise((resolve) => window.setTimeout(resolve, 40));
+    }
+    return !signal.aborted && predicate(nodesRef.current);
+  }, []);
+
   const setNodeActiveOperation = useCallback((nodeId: string, activeOperation?: string) => {
     setNodes((previousNodes) => {
       const node = previousNodes[nodeId];
@@ -7506,6 +7519,27 @@ export const useNodeManagement = (
       });
       if (controller.signal.aborted) return;
 
+      await waitForCommittedNodes((latestNodes) => {
+        const latestTimeline = latestNodes[timelineNodeId];
+        if (latestTimeline?.pollinationsApiError) return true;
+        const latestSourceScenarioId = typeof latestTimeline?.metadata?.sourceScenarioId === 'string'
+          ? latestTimeline.metadata.sourceScenarioId
+          : latestTimeline?.parentId;
+        const latestSourceChapterId = typeof latestTimeline?.metadata?.sourceChapterId === 'string'
+          ? latestTimeline.metadata.sourceChapterId
+          : '';
+        const latestScope = getScopedNodeIds(
+          latestNodes,
+          latestSourceChapterId ? [latestSourceChapterId] : [latestSourceScenarioId ?? ''],
+        );
+        const hasLatestScope = latestScope.size > 0;
+        const latestScenes = Object.values(latestNodes).filter((candidate) =>
+          candidate.nodeType === 'scene'
+          && (!hasLatestScope || latestScope.has(candidate.parentId ?? '')));
+        return latestScenes.length > 0 && latestScenes.every((scene) => Boolean(scene.videoUrl));
+      }, controller.signal);
+      if (controller.signal.aborted) return;
+
       const timelineAfterClips = nodesRef.current[timelineNodeId];
       if (!timelineAfterClips || timelineAfterClips.nodeType !== 'chapter_timeline') return;
       if (timelineAfterClips.pollinationsApiError) {
@@ -7550,6 +7584,15 @@ export const useNodeManagement = (
       });
       if (controller.signal.aborted) return;
 
+      await waitForCommittedNodes((latestNodes) => Boolean(
+        latestNodes[timelineNodeId]?.pollinationsApiError
+        || Object.values(latestNodes).some((candidate) =>
+          candidate.nodeType === 'video_output'
+          && candidate.parentId === timelineNodeId
+          && Boolean(candidate.videoUrl)),
+      ), controller.signal);
+      if (controller.signal.aborted) return;
+
       const completedVideo = Object.values(nodesRef.current).find((candidate) =>
         candidate.nodeType === 'video_output'
         && candidate.parentId === timelineNodeId
@@ -7557,6 +7600,10 @@ export const useNodeManagement = (
       const timelineAfterVideo = nodesRef.current[timelineNodeId];
       if (completedVideo?.videoUrl && !timelineAfterVideo?.pollinationsApiError) {
         showNotice('success', 'Глава полностью собрана: ассеты, озвучка, клипы и общий MP4 готовы.');
+      } else if (!timelineAfterVideo?.pollinationsApiError) {
+        const message = 'Полная сборка остановлена: FFmpeg завершился, но общий ролик главы не записался в проект.';
+        updateNode(timelineNodeId, { pollinationsApiError: message });
+        showNotice('error', message);
       }
     } finally {
       activeRequests.current.delete(requestId);
@@ -7571,6 +7618,7 @@ export const useNodeManagement = (
     handleGenerateTimelineMissingAssets,
     showNotice,
     updateNode,
+    waitForCommittedNodes,
   ]);
 
   const handleGenerateVideoThumbnail = useCallback(async (collectorNodeId: string) => {

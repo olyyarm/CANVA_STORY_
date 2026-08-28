@@ -116,14 +116,13 @@ const drawAnimatedStillFrame = (
   } else {
     const coverScale = Math.max(width / image.naturalWidth, height / image.naturalHeight);
     const fallbackScale = coverScale * 1.5;
-    const fallbackDrift = (easedProgress - 0.5) * 28;
     context.save();
     context.filter = 'blur(28px)';
     drawCenteredImage(
       context,
       image,
-      centerX + fallbackDrift,
-      centerY - fallbackDrift * 0.35,
+      centerX,
+      centerY,
       image.naturalWidth * fallbackScale,
       image.naturalHeight * fallbackScale,
     );

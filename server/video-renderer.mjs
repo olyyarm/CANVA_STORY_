@@ -157,16 +157,13 @@ const renderStillSegment = async ({ job, imagePath, backgroundPath, outputPath, 
   const fps = 24;
   const frameCount = Math.max(2, Math.round(duration * fps));
   const lastFrame = frameCount - 1;
-  const foregroundStartWidth = Math.round((width * 0.9) / 2) * 2;
-  const foregroundStartHeight = Math.round((height * 0.9) / 2) * 2;
-  const foregroundEndWidth = Math.round((width * 0.84) / 2) * 2;
-  const foregroundEndHeight = Math.round((height * 0.84) / 2) * 2;
-  const foregroundWidthDelta = foregroundStartWidth - foregroundEndWidth;
-  const foregroundHeightDelta = foregroundStartHeight - foregroundEndHeight;
+  const foregroundStartScale = 0.9;
+  const foregroundEndScale = 0.84;
+  const foregroundScaleDelta = foregroundStartScale - foregroundEndScale;
   const animatedForegroundScale =
-    `scale=w='trunc((${foregroundStartWidth}-${foregroundWidthDelta}*n/${lastFrame})/2)*2':`+
-    `h='trunc((${foregroundStartHeight}-${foregroundHeightDelta}*n/${lastFrame})/2)*2':`+
-    'force_original_aspect_ratio=decrease:eval=frame,setsar=1[fg]';
+    `scale=w='trunc(iw*min(${width}/iw\\,${height}/ih)*`+
+    `(${foregroundStartScale}-${foregroundScaleDelta}*n/${lastFrame})/2)*2':`+
+    'h=-2:eval=frame,setsar=1[fg]';
   const compositeFilter =
     `[bg][fg]overlay=x='(W-w)/2':y='(H-h)/2':eval=frame:shortest=1,`+
     'format=yuv420p[v]';

@@ -406,6 +406,8 @@ const App = () => {
   );
   const [timelineFocusMode, setTimelineFocusMode] = useState(false);
   const [chapterNavigatorOpen, setChapterNavigatorOpen] = useState(true);
+  const [pendingChapterRenderId, setPendingChapterRenderId] = useState<string | null>(null);
+  const [pendingAllChapterRender, setPendingAllChapterRender] = useState(false);
   const pendingWorkspaceFitRef = useRef(false);
   const pendingRootFocusNodeRef = useRef<string | null>(null);
   const handleNarrationSeedChange = useCallback((seed: number) => {
@@ -475,6 +477,7 @@ const App = () => {
     handleBuildChapterSceneClips,
     handleEnsureChapterCollector,
     handleBuildSeasonVideo,
+    handleCompleteSeason,
     handleGenerateVideoThumbnail,
     handleCopyToClipboard,
     handleRegenerateImageNode,
@@ -630,6 +633,7 @@ const App = () => {
         title: getChapterTitle(node),
         chapterNumber,
         timelineId: timeline?.id,
+        isRendering: Boolean(timeline?.node.isLoadingVideo) || pendingChapterRenderId === id,
         scenes: sceneEntries.length,
         locations,
         characterAssets,
@@ -668,6 +672,7 @@ const App = () => {
           title: getChapterTitle(timeline.node).replace(/^Таймлайн\s*·\s*/iu, ''),
           chapterNumber: timeline.chapterNumber,
           timelineId: timeline.id,
+          isRendering: Boolean(timeline.node.isLoadingVideo),
           scenes: sceneEntries.length,
           locations: sceneEntries.filter(([sceneId]) => imageEntries.some(([, image]) =>
             image.parentId === sceneId && getNodeAssetKind(image) === 'scene_location')).length,
@@ -686,7 +691,26 @@ const App = () => {
     return items.sort((first, second) =>
       (first.chapterNumber ?? Number.MAX_SAFE_INTEGER) - (second.chapterNumber ?? Number.MAX_SAFE_INTEGER)
       || first.title.localeCompare(second.title, 'ru', { numeric: true }));
-  }, [nodeEntries, nodes]);
+  }, [nodeEntries, nodes, pendingChapterRenderId]);
+
+  const handleRenderChapterFromNavigator = useCallback((chapterId: string, timelineId?: string) => {
+    if (timelineId) {
+      void handleCompleteChapter(timelineId);
+      return;
+    }
+
+    setPendingChapterRenderId(chapterId);
+    handleEnsureChapterTimeline(chapterId);
+  }, [handleCompleteChapter, handleEnsureChapterTimeline]);
+
+  useEffect(() => {
+    if (!pendingChapterRenderId) return;
+    const pendingItem = chapterNavigatorItems.find((item) => item.id === pendingChapterRenderId);
+    if (!pendingItem?.timelineId) return;
+
+    setPendingChapterRenderId(null);
+    void handleCompleteChapter(pendingItem.timelineId);
+  }, [chapterNavigatorItems, handleCompleteChapter, pendingChapterRenderId]);
   const chapterCollectorNavigatorState = useMemo(() => {
     const collectorEntry = nodeEntries.find(([, node]) => node.nodeType === 'chapter_collector');
     const timelineEntries = nodeEntries.filter(([, node]) => node.nodeType === 'chapter_timeline');
@@ -707,9 +731,37 @@ const App = () => {
       videoNodeId: videoEntry?.[0],
       chapters: timelineEntries.length,
       readyChapterVideos,
-      isBuilding: Boolean(collectorEntry?.[1].isLoadingVideo),
+      isBuilding: Boolean(collectorEntry?.[1].isLoadingVideo) || pendingAllChapterRender,
     };
-  }, [nodeEntries]);
+  }, [nodeEntries, pendingAllChapterRender]);
+  const handleRenderAllChapters = useCallback(() => {
+    if (chapterNavigatorItems.length === 0 || pendingAllChapterRender) return;
+    setPendingAllChapterRender(true);
+    chapterNavigatorItems.forEach((item) => {
+      if (!item.timelineId) handleEnsureChapterTimeline(item.id);
+    });
+    if (!chapterCollectorNavigatorState.nodeId) handleEnsureChapterCollector();
+  }, [
+    chapterCollectorNavigatorState.nodeId,
+    chapterNavigatorItems,
+    handleEnsureChapterCollector,
+    handleEnsureChapterTimeline,
+    pendingAllChapterRender,
+  ]);
+  useEffect(() => {
+    if (!pendingAllChapterRender) return;
+    if (chapterNavigatorItems.some((item) => !item.timelineId)) return;
+    const collectorNodeId = chapterCollectorNavigatorState.nodeId;
+    if (!collectorNodeId) return;
+
+    setPendingAllChapterRender(false);
+    void handleCompleteSeason(collectorNodeId);
+  }, [
+    chapterCollectorNavigatorState.nodeId,
+    chapterNavigatorItems,
+    handleCompleteSeason,
+    pendingAllChapterRender,
+  ]);
   const activeChapterWorkspaceItem = useMemo(
     () => chapterNavigatorItems.find((item) =>
       item.id === activeChapterWorkspaceId || item.timelineId === activeChapterWorkspaceId),
@@ -2085,6 +2137,7 @@ const App = () => {
               onCompleteChapter={handleCompleteChapter}
               onBuildChapterSceneClips={handleBuildChapterSceneClips}
               onBuildSeasonVideo={handleBuildSeasonVideo}
+              onCompleteSeason={handleRenderAllChapters}
               onGenerateVideoThumbnail={handleGenerateVideoThumbnail}
               onCopyToClipboard={handleCopyToClipboard}
               onRegenerateImageNode={handleRegenerateImageNode}
@@ -2121,6 +2174,8 @@ const App = () => {
             onFocusNode={handleFocusChapterNode}
             onEnsureCollector={handleEnsureChapterCollector}
             onCreateTimeline={handleEnsureChapterTimeline}
+            onRenderChapter={handleRenderChapterFromNavigator}
+            onRenderAllChapters={handleRenderAllChapters}
             onOpenChapter={handleOpenChapterWorkspace}
           />
         )}

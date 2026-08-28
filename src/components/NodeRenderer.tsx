@@ -75,6 +75,7 @@ interface NodeRendererProps {
   onCompleteChapter: (nodeId: string) => Promise<void>;
   onBuildChapterSceneClips: (nodeId: string) => Promise<void>;
   onBuildSeasonVideo: (nodeId: string) => Promise<void>;
+  onCompleteSeason: () => void;
   onGenerateVideoThumbnail: (nodeId: string) => Promise<void>;
   onCopyToClipboard: (text: string) => void;
   onRegenerateImageNode: (nodeId: string) => Promise<void>;
@@ -541,6 +542,7 @@ const NodeRenderer: React.FC<NodeRendererProps> = ({
   onCompleteChapter,
   onBuildChapterSceneClips,
   onBuildSeasonVideo,
+  onCompleteSeason,
   onGenerateVideoThumbnail,
   onCopyToClipboard,
   onRegenerateImageNode,
@@ -2082,6 +2084,22 @@ const NodeRenderer: React.FC<NodeRendererProps> = ({
               <span><strong>{Math.max(0, chapterCollectorEntries.length - chapterCollectorReadyCount)}</strong> не готово</span>
               <button
                 type="button"
+                className="node-primary-button chapter-timeline__refresh"
+                onMouseDown={stopMouseDown}
+                onClick={(event) => runWithoutDrag(event, onCompleteSeason)}
+                disabled={Boolean(
+                  node.isLoading
+                  || node.isLoadingImage
+                  || node.isLoadingAudio
+                  || node.isLoadingVideo
+                  || chapterCollectorEntries.length === 0
+                )}
+                title="По очереди подготовить все главы и собрать финальный ролик"
+              >
+                Рендер всех глав
+              </button>
+              <button
+                type="button"
                 className={`node-secondary-button chapter-timeline__refresh${node.isLoadingVideo ? ' node-secondary-button--cancel' : ''}`}
                 onMouseDown={stopMouseDown}
                 onClick={(event) => runWithoutDrag(event, () => node.isLoadingVideo
@@ -2089,7 +2107,7 @@ const NodeRenderer: React.FC<NodeRendererProps> = ({
                   : void onBuildSeasonVideo(id))}
                 disabled={Boolean(node.isLoading || node.isLoadingImage || node.isLoadingAudio || chapterCollectorEntries.length === 0)}
               >
-                {node.isLoadingVideo ? 'Отменить финал' : 'Собрать главы и финал'}
+                {node.isLoadingVideo ? 'Отменить сборку' : 'Собрать готовые главы'}
               </button>
             </div>
             {node.pollinationsApiError && (

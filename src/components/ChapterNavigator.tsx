@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { faEye } from '@fortawesome/free-solid-svg-icons';
+import { faEye, faPlay, faSpinner } from '@fortawesome/free-solid-svg-icons';
 import { FontAwesomeIcon } from '@fortawesome/react-fontawesome';
 
 export interface ChapterNavigatorItem {
@@ -7,6 +7,7 @@ export interface ChapterNavigatorItem {
   title: string;
   chapterNumber: number | null;
   timelineId?: string;
+  isRendering: boolean;
   scenes: number;
   locations: number;
   characterAssets: number;
@@ -31,6 +32,8 @@ interface ChapterNavigatorProps {
   onFocusNode: (nodeId: string) => void;
   onEnsureCollector: () => void;
   onCreateTimeline: (chapterId: string) => void;
+  onRenderChapter: (chapterId: string, timelineId?: string) => void;
+  onRenderAllChapters: () => void;
   onOpenChapter: (chapterId: string) => void;
 }
 
@@ -68,6 +71,8 @@ export default function ChapterNavigator({
   onFocusNode,
   onEnsureCollector,
   onCreateTimeline,
+  onRenderChapter,
+  onRenderAllChapters,
   onOpenChapter,
 }: ChapterNavigatorProps) {
   const [expandedIds, setExpandedIds] = useState<Set<string>>(() => new Set());
@@ -153,6 +158,19 @@ export default function ChapterNavigator({
                 </button>
                 <button
                   type="button"
+                  className="chapter-navigator__render"
+                  onClick={() => onRenderChapter(item.id, item.timelineId)}
+                  disabled={item.isRendering}
+                  aria-label={item.isRendering ? `Рендерится: ${item.title}` : `Рендер главы: ${item.title}`}
+                  title={item.timelineId
+                    ? 'Запустить полную сборку главы'
+                    : 'Создать таймлайн и запустить полную сборку главы'}
+                >
+                  <FontAwesomeIcon icon={item.isRendering ? faSpinner : faPlay} spin={item.isRendering} />
+                  <span>{item.isRendering ? 'Рендер...' : 'Рендер'}</span>
+                </button>
+                <button
+                  type="button"
                   className="chapter-navigator__expand"
                   onClick={() => toggleExpanded(item.id)}
                   aria-expanded={expanded}
@@ -235,6 +253,17 @@ export default function ChapterNavigator({
                   ? `${collector.readyChapterVideos}/${collector.chapters} роликов глав готовы`
                   : 'Сначала создайте таймлайны глав'}
           </span>
+        </button>
+        <button
+          type="button"
+          className="chapter-navigator__collector-render"
+          onClick={onRenderAllChapters}
+          disabled={collector.isBuilding || items.length === 0}
+          aria-label={collector.isBuilding ? 'Рендер всех глав выполняется' : 'Запустить рендер всех глав'}
+          title="По очереди подготовить все главы и собрать финальный ролик"
+        >
+          <FontAwesomeIcon icon={collector.isBuilding ? faSpinner : faPlay} spin={collector.isBuilding} />
+          <span>{collector.isBuilding ? 'Рендер...' : 'Все главы'}</span>
         </button>
         <button
           type="button"

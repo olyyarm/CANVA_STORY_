@@ -189,7 +189,11 @@ interface UseNodeManagementReturn {
     options?: { allowBusy?: boolean; requireFfmpeg?: boolean },
   ) => Promise<void>;
   handleEnsureChapterCollector: () => void;
-  handleBuildSeasonVideo: (collectorNodeId: string) => Promise<void>;
+  handleBuildSeasonVideo: (
+    collectorNodeId: string,
+    options?: { allowBusy?: boolean; preserveBusyState?: boolean },
+  ) => Promise<void>;
+  handleCompleteSeason: (collectorNodeId: string) => Promise<void>;
   handleGenerateVideoThumbnail: (collectorNodeId: string) => Promise<void>;
   handleCopyToClipboard: (textToCopy: string) => Promise<void>;
   handleGeneratePollinationsImage: (nodeId: string) => Promise<void>;
@@ -1642,14 +1646,14 @@ const getSceneClipRefreshState = (
   };
 };
 
-const findSystemInsertImageNodeForScene = (nodes: NodesState, sceneNumber: number, sourceScenarioId = '') =>
-  Object.entries(nodes)
+const findSystemInsertImageNodeForScene = (nodes: NodesState, sceneNumber: number, scopeRootId = '') => {
+  const scopedIds = scopeRootId
+    ? getScopedNodeIds(nodes, [scopeRootId])
+    : undefined;
+  return Object.entries(nodes)
     .filter(([nodeId, node]) => {
       if (node.nodeType !== 'pollinations_image' || !node.imageUrl) return false;
-      if (sourceScenarioId) {
-        const descendants = getDescendantNodeIds(nodes, sourceScenarioId);
-        if (nodeId !== sourceScenarioId && !descendants.has(nodeId)) return false;
-      }
+      if (scopedIds && !scopedIds.has(nodeId)) return false;
       const assetKind = getAssetKind(node);
       const labelSceneMatch = node.label.match(/Системная вставка\s+(\d+)(?:[.,]\d+)?/iu);
       const labelSceneNumber = labelSceneMatch ? Number(labelSceneMatch[1]) : null;
@@ -1657,6 +1661,7 @@ const findSystemInsertImageNodeForScene = (nodes: NodesState, sceneNumber: numbe
     })
     .map(([, node]) => node)
     .sort((first, second) => first.label.localeCompare(second.label, 'ru', { numeric: true }))[0];
+};
 
 const findChapterBackdropImageNode = (
   nodes: NodesState,
@@ -6157,9 +6162,6 @@ export const useNodeManagement = (
       });
 
       const sceneNumber = getSceneNumber(sceneNode.label);
-      const systemInsertNode = sceneNumber
-        ? findSystemInsertImageNodeForScene(currentNodes, sceneNumber, sceneNode.parentId ?? '')
-        : undefined;
       const timelineEntry = Object.entries(currentNodes).find(([timelineId, candidate]) =>
         candidate.nodeType === 'chapter_timeline'
         && (() => {
@@ -6174,6 +6176,18 @@ export const useNodeManagement = (
             [candidateChapterId || candidateScenarioId, timelineId],
           ).has(sceneNodeId);
         })());
+      const systemInsertScopeRootId = timelineEntry
+        ? (
+          typeof timelineEntry[1].metadata?.sourceChapterId === 'string'
+            ? timelineEntry[1].metadata.sourceChapterId
+            : typeof timelineEntry[1].metadata?.sourceScenarioId === 'string'
+              ? timelineEntry[1].metadata.sourceScenarioId
+              : timelineEntry[1].parentId ?? ''
+        )
+        : sceneNode.parentId ?? '';
+      const systemInsertNode = sceneNumber
+        ? findSystemInsertImageNodeForScene(currentNodes, sceneNumber, systemInsertScopeRootId)
+        : undefined;
       const chapterBackdropNode = timelineEntry
         ? findChapterBackdropImageNode(currentNodes, timelineEntry[0], timelineEntry[1])
         : undefined;
@@ -6266,6 +6280,7 @@ export const useNodeManagement = (
     const sourceChapterId = typeof timelineNode.metadata?.sourceChapterId === 'string'
       ? timelineNode.metadata.sourceChapterId
       : '';
+    const chapterScopeRootId = sourceChapterId || sourceScenarioId || '';
     const timelineScope = getScopedNodeIds(
       currentNodes,
       sourceChapterId ? [sourceChapterId] : [sourceScenarioId ?? ''],
@@ -6289,7 +6304,7 @@ export const useNodeManagement = (
     const scenePlans = sceneEntries.map(([sceneId, scene], sceneIndex) => {
       const sceneNumber = getSceneNumber(scene.label) ?? 0;
       const systemInsertNode = sceneNumber
-        ? findSystemInsertImageNodeForScene(currentNodes, sceneNumber, sourceScenarioId ?? '')
+        ? findSystemInsertImageNodeForScene(currentNodes, sceneNumber, chapterScopeRootId)
         : undefined;
       const frameNode = findBestSceneFrameNode(currentNodes, sceneId);
       const shotNodes = findSceneShotNodes(currentNodes, sceneId);
@@ -6463,6 +6478,7 @@ export const useNodeManagement = (
     const sourceChapterId = typeof timelineNode.metadata?.sourceChapterId === 'string'
       ? timelineNode.metadata.sourceChapterId
       : '';
+    const chapterScopeRootId = sourceChapterId || sourceScenarioId || '';
     const timelineScope = getScopedNodeIds(
       currentNodes,
       sourceChapterId ? [sourceChapterId] : [sourceScenarioId ?? ''],
@@ -6481,7 +6497,7 @@ export const useNodeManagement = (
     const scenePlans = sceneEntries.map(([sceneId, scene]) => {
       const sceneNumber = getSceneNumber(scene.label) ?? 0;
       const systemInsertNode = sceneNumber
-        ? findSystemInsertImageNodeForScene(currentNodes, sceneNumber, sourceScenarioId ?? '')
+        ? findSystemInsertImageNodeForScene(currentNodes, sceneNumber, chapterScopeRootId)
         : undefined;
       const frameNode = findBestSceneFrameNode(currentNodes, sceneId);
       const shotNodes = findSceneShotNodes(currentNodes, sceneId);
@@ -7691,11 +7707,14 @@ export const useNodeManagement = (
     }
   }, [imageGenerationSettings, showNotice, updateNode, upsertImageNode]);
 
-  const handleBuildSeasonVideo = useCallback(async (collectorNodeId: string) => {
+  const handleBuildSeasonVideo = useCallback(async (
+    collectorNodeId: string,
+    options: { allowBusy?: boolean; preserveBusyState?: boolean } = {},
+  ) => {
     const currentNodes = nodesRef.current;
     const collectorNode = currentNodes[collectorNodeId];
     if (!collectorNode || collectorNode.nodeType !== 'chapter_collector') return;
-    if (collectorNode.isLoadingVideo) {
+    if (collectorNode.isLoadingVideo && !options.allowBusy) {
       updateNode(collectorNodeId, {
         pollinationsApiError: 'Сборка финального ролика уже запущена. Дождитесь завершения или нажмите «Отменить финал».',
       });
@@ -7810,7 +7829,7 @@ export const useNodeManagement = (
           ...withVideoNode,
           [collectorNodeId]: {
             ...currentNode,
-            isLoadingVideo: false,
+            isLoadingVideo: options.preserveBusyState ? true : false,
             productionStatus: 'done',
             statusMessage: 'Финальный ролик сезона готов.',
             metadata: {
@@ -7834,12 +7853,113 @@ export const useNodeManagement = (
       }
     } finally {
       activeRequests.current.delete(requestId);
+      if (!options.preserveBusyState) {
+        updateNode(collectorNodeId, {
+          isLoadingVideo: false,
+          statusMessage: undefined,
+        });
+      }
+    }
+  }, [handleBuildChapterVideo, setNodes, showNotice, updateNode]);
+
+  const handleCompleteSeason = useCallback(async (collectorNodeId: string) => {
+    const collectorNode = nodesRef.current[collectorNodeId];
+    if (!collectorNode || collectorNode.nodeType !== 'chapter_collector' || collectorNode.isLoadingVideo) return;
+
+    const timelines = Object.entries(nodesRef.current)
+      .filter((entry): entry is [string, NodeData] => entry[1].nodeType === 'chapter_timeline')
+      .sort(([, first], [, second]) =>
+        (getChapterNumber(first) ?? Number.MAX_SAFE_INTEGER) - (getChapterNumber(second) ?? Number.MAX_SAFE_INTEGER)
+        || first.label.localeCompare(second.label, 'ru', { numeric: true }));
+    if (timelines.length === 0) {
+      updateNode(collectorNodeId, { pollinationsApiError: 'Сначала создайте таймлайны глав.' });
+      return;
+    }
+
+    const requestId = `complete-season:${collectorNodeId}`;
+    if (activeRequests.current.has(requestId)) return;
+    const controller = new AbortController();
+    activeRequests.current.set(requestId, controller);
+    let activeTimelineId: string | null = null;
+    const abortActiveChapter = () => {
+      if (activeTimelineId) {
+        activeRequests.current.get(`complete-chapter:${activeTimelineId}`)?.abort();
+      }
+    };
+    controller.signal.addEventListener('abort', abortActiveChapter);
+
+    try {
+      updateNode(collectorNodeId, {
+        isLoadingVideo: true,
+        pollinationsApiError: undefined,
+        statusMessage: `Полный конвейер: готовим ${timelines.length} глав по очереди...`,
+      });
+
+      for (let index = 0; index < timelines.length; index += 1) {
+        if (controller.signal.aborted) throw new DOMException('Aborted', 'AbortError');
+        const [timelineId, timeline] = timelines[index];
+        if (nodesRef.current[timelineId]?.isLoadingVideo) {
+          throw new Error(`${timeline.label}: глава уже обрабатывается другим конвейером.`);
+        }
+
+        activeTimelineId = timelineId;
+        updateNode(collectorNodeId, {
+          statusMessage: `Глава ${index + 1}/${timelines.length}: ${timeline.label.replace(/^Таймлайн\s*·\s*/iu, '')}`,
+        });
+        await handleCompleteChapter(timelineId);
+        activeTimelineId = null;
+        if (controller.signal.aborted) throw new DOMException('Aborted', 'AbortError');
+
+        const latestTimeline = nodesRef.current[timelineId];
+        const completedVideo = Object.values(nodesRef.current).find((candidate) =>
+          candidate.nodeType === 'video_output'
+          && candidate.parentId === timelineId
+          && Boolean(candidate.videoUrl));
+        if (latestTimeline?.pollinationsApiError || !completedVideo?.videoUrl) {
+          throw new Error(latestTimeline?.pollinationsApiError?.trim()
+            ? `${timeline.label}: ${latestTimeline.pollinationsApiError}`
+            : `${timeline.label}: полный конвейер завершился без ролика главы.`);
+        }
+      }
+
+      updateNode(collectorNodeId, {
+        statusMessage: 'Все главы готовы. FFmpeg собирает финальный ролик...',
+      });
+      await handleBuildSeasonVideo(collectorNodeId, {
+        allowBusy: true,
+        preserveBusyState: true,
+      });
+
+      const collectorError = nodesRef.current[collectorNodeId]?.pollinationsApiError?.trim();
+      if (collectorError) {
+        throw new Error(collectorError);
+      }
+
+      const seasonVideo = Object.values(nodesRef.current).find((candidate) =>
+        candidate.nodeType === 'video_output'
+        && candidate.parentId === collectorNodeId
+        && Boolean(candidate.videoUrl));
+      if (!seasonVideo?.videoUrl) {
+        throw new Error(nodesRef.current[collectorNodeId]?.pollinationsApiError?.trim()
+          || 'Финальный ролик не появился после сборки глав.');
+      }
+    } catch (error) {
+      if (isAbortError(error)) {
+        showNotice('info', 'Полный конвейер глав отменён. Уже готовые результаты сохранены.');
+      } else {
+        const message = errorMessage(error);
+        updateNode(collectorNodeId, { pollinationsApiError: message });
+        showNotice('error', message);
+      }
+    } finally {
+      controller.signal.removeEventListener('abort', abortActiveChapter);
+      activeRequests.current.delete(requestId);
       updateNode(collectorNodeId, {
         isLoadingVideo: false,
         statusMessage: undefined,
       });
     }
-  }, [handleBuildChapterVideo, setNodes, showNotice, updateNode]);
+  }, [handleBuildSeasonVideo, handleCompleteChapter, showNotice, updateNode]);
 
   const handleGeneratePollinationsImage = useCallback(async (parentNodeId: string) => {
     const parentNode = nodesRef.current[parentNodeId];
@@ -8127,6 +8247,8 @@ export const useNodeManagement = (
     activeRequests.current.get(`chapter-scene-clips:${nodeId}`)?.abort();
     activeRequests.current.get(`chapter-video:${nodeId}`)?.abort();
     activeRequests.current.get(`video-thumbnail:${nodeId}`)?.abort();
+    activeRequests.current.get(`complete-season:${nodeId}`)?.abort();
+    activeRequests.current.get(`season-video:${nodeId}`)?.abort();
     if (speakingNodeIdRef.current === nodeId) {
       window.speechSynthesis.cancel();
       speechUtteranceRef.current = null;
@@ -8215,6 +8337,7 @@ export const useNodeManagement = (
     handleBuildChapterVideo,
     handleEnsureChapterCollector,
     handleBuildSeasonVideo,
+    handleCompleteSeason,
     handleGenerateVideoThumbnail,
     handleCopyToClipboard,
     handleGeneratePollinationsImage,

@@ -155,17 +155,12 @@ const renderStillSegment = async ({ job, imagePath, backgroundPath, outputPath, 
   const width = 1280;
   const height = 720;
   const fps = 24;
-  const frameCount = Math.max(2, Math.round(duration * fps));
-  const lastFrame = frameCount - 1;
-  const foregroundStartScale = 0.9;
-  const foregroundEndScale = 0.84;
-  const foregroundScaleDelta = foregroundStartScale - foregroundEndScale;
-  const animatedForegroundScale =
+  const foregroundScale = 0.87;
+  const centeredForegroundScale =
     `scale=w='trunc(iw*min(${width}/iw\\,${height}/ih)*`+
-    `(${foregroundStartScale}-${foregroundScaleDelta}*n/${lastFrame})/2)*2':`+
-    'h=-2:eval=frame,setsar=1[fg]';
+    `${foregroundScale}/2)*2':h=-2,setsar=1[fg]`;
   const compositeFilter =
-    `[bg][fg]overlay=x='(W-w)/2':y='(H-h)/2':eval=frame:shortest=1,`+
+    `[bg][fg]overlay=x='(W-w)/2':y='(H-h)/2':shortest=1,`+
     'format=yuv420p[v]';
   const args = [
     '-hide_banner', '-loglevel', 'error', '-nostdin',
@@ -177,7 +172,7 @@ const renderStillSegment = async ({ job, imagePath, backgroundPath, outputPath, 
     filter = [
       `[1:v]scale=${width}:${height}:force_original_aspect_ratio=increase,`+
         `crop=${width}:${height},setsar=1[bg]`,
-      `[0:v]${animatedForegroundScale}`,
+      `[0:v]${centeredForegroundScale}`,
       compositeFilter,
     ].join(';');
   } else {
@@ -185,7 +180,7 @@ const renderStillSegment = async ({ job, imagePath, backgroundPath, outputPath, 
       '[0:v]split=2[bgsrc][fgsrc]',
       `[bgsrc]scale=${width}:${height}:force_original_aspect_ratio=increase,`+
         `crop=${width}:${height},gblur=sigma=24,setsar=1[bg]`,
-      `[fgsrc]${animatedForegroundScale}`,
+      `[fgsrc]${centeredForegroundScale}`,
       compositeFilter,
     ].join(';');
   }

@@ -16,7 +16,7 @@ const RECORDER_READY_TIMEOUT_MS = 15_000;
 const RECORDER_STATE_CHECK_MS = 100;
 const RECORDER_WARMUP_MS = 160;
 
-export const SCENE_VIDEO_LAYOUT_VERSION = 2;
+export const SCENE_VIDEO_LAYOUT_VERSION = 3;
 
 const abortError = () => new DOMException('Aborted', 'AbortError');
 
@@ -86,15 +86,13 @@ const drawCenteredImage = (
   context.drawImage(image, x - drawWidth / 2, y - drawHeight / 2, drawWidth, drawHeight);
 };
 
-const drawAnimatedStillFrame = (
+const drawStillFrame = (
   context: CanvasRenderingContext2D,
   image: HTMLImageElement,
   width: number,
   height: number,
-  progress: number,
   backgroundImage?: HTMLImageElement,
 ) => {
-  const easedProgress = Math.min(1, Math.max(0, progress));
   const centerX = width / 2;
   const centerY = height / 2;
 
@@ -132,7 +130,7 @@ const drawAnimatedStillFrame = (
   }
 
   const containScale = Math.min(width / image.naturalWidth, height / image.naturalHeight);
-  const foregroundScale = containScale * (0.9 - easedProgress * 0.06);
+  const foregroundScale = containScale * 0.87;
   const foregroundY = centerY;
   const foregroundWidth = image.naturalWidth * foregroundScale;
   const foregroundHeight = image.naturalHeight * foregroundScale;
@@ -295,7 +293,7 @@ export const buildStillImagesVideoClip = async (
     const audioDestination = audioContext.createMediaStreamDestination();
     audioSource.connect(audioDestination);
 
-    drawAnimatedStillFrame(context, images[0], canvas.width, canvas.height, 0, backgroundImage);
+    drawStillFrame(context, images[0], canvas.width, canvas.height, backgroundImage);
     const canvasStream = canvas.captureStream(VIDEO_FPS);
     stream = new MediaStream([
       ...canvasStream.getVideoTracks(),
@@ -313,13 +311,11 @@ export const buildStillImagesVideoClip = async (
       const progress = decodedAudio.duration > 0 ? elapsed / decodedAudio.duration : 0;
       const imageProgress = Math.min(0.999999, Math.max(0, progress));
       const segmentIndex = Math.min(images.length - 1, Math.floor(imageProgress * images.length));
-      const segmentProgress = (imageProgress * images.length) - segmentIndex;
-      drawAnimatedStillFrame(
+      drawStillFrame(
         context,
         images[segmentIndex],
         canvas.width,
         canvas.height,
-        segmentProgress,
         backgroundImage,
       );
     };

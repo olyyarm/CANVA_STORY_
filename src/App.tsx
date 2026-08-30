@@ -106,6 +106,25 @@ const getDescendantNodeIds = (nodes: NodesState, rootIds: string[]) => {
   return descendants;
 };
 
+const includeChapterExpansionNodes = (
+  nodes: NodesState,
+  scopedIds: Set<string>,
+  sourceChapterId: string,
+) => {
+  if (!sourceChapterId) return scopedIds;
+  const expandedScope = new Set(scopedIds);
+  Object.entries(nodes).forEach(([nodeId, node]) => {
+    if (
+      node.nodeType !== 'scene'
+      || node.metadata?.sourceKind !== 'story_expansion_scene'
+      || node.metadata?.sourceChapterId !== sourceChapterId
+    ) return;
+    expandedScope.add(nodeId);
+    getDescendantNodeIds(nodes, [nodeId]).forEach((descendantId) => expandedScope.add(descendantId));
+  });
+  return expandedScope;
+};
+
 const ROOT_WORKSPACE_ID = 'root';
 
 const getChapterTimelineEntry = (nodes: NodesState, chapterId: string) => {
@@ -169,7 +188,11 @@ const getChapterWorkspaceNodeIds = (nodes: NodesState, chapterId: string) => {
   if (sourceScenarioId) roots.push(sourceScenarioId);
   if (sourceChapterId) roots.push(sourceChapterId);
   if (timelineEntry) roots.push(timelineEntry[0]);
-  return getDescendantNodeIds(nodes, roots);
+  return includeChapterExpansionNodes(
+    nodes,
+    getDescendantNodeIds(nodes, roots),
+    sourceChapterId || chapterId,
+  );
 };
 
 const getNodeAssetKind = (node: NodeData) =>
@@ -427,6 +450,8 @@ const App = () => {
     handlePromptTemplateChange,
     handleCreatePromptNode,
     handleCreateSceneWriterPromptNode,
+    handleCreateStoryExpansionPromptNode,
+    handleCreateStoryExpansionSceneWriterPromptNode,
     handleRunPromptNode,
     handleAssemblePromptResultScenario,
     handleCreateSplitNode,
@@ -604,7 +629,11 @@ const App = () => {
         if (typeof sourceScenarioId === 'string') scopeRoots.push(sourceScenarioId);
         if (typeof sourceChapterId === 'string') scopeRoots.push(sourceChapterId);
       }
-      const scopedIds = getDescendantNodeIds(nodes, scopeRoots);
+      const scopedIds = includeChapterExpansionNodes(
+        nodes,
+        getDescendantNodeIds(nodes, scopeRoots),
+        id,
+      );
       const sceneEntries = nodeEntries.filter(([sceneId, candidate]) =>
         candidate.nodeType === 'scene' && scopedIds.has(sceneId));
       const imageEntries = nodeEntries.filter(([imageId, candidate]) =>
@@ -653,7 +682,11 @@ const App = () => {
         const sourceChapterId = timeline.node.metadata?.sourceChapterId;
         if (typeof sourceScenarioId === 'string') scopeRoots.push(sourceScenarioId);
         if (typeof sourceChapterId === 'string') scopeRoots.push(sourceChapterId);
-        const scopedIds = getDescendantNodeIds(nodes, scopeRoots);
+        const scopedIds = includeChapterExpansionNodes(
+          nodes,
+          getDescendantNodeIds(nodes, scopeRoots),
+          typeof sourceChapterId === 'string' ? sourceChapterId : '',
+        );
         const sceneEntries = nodeEntries.filter(([sceneId, candidate]) =>
           candidate.nodeType === 'scene' && scopedIds.has(sceneId));
         const imageEntries = nodeEntries.filter(([imageId, candidate]) =>
@@ -2091,6 +2124,8 @@ const App = () => {
               onRunPromptNode={handleRunPromptNode}
               onCreatePromptNode={handleCreatePromptNode}
               onCreateSceneWriterPromptNode={handleCreateSceneWriterPromptNode}
+              onCreateStoryExpansionPromptNode={handleCreateStoryExpansionPromptNode}
+              onCreateStoryExpansionSceneWriterPromptNode={handleCreateStoryExpansionSceneWriterPromptNode}
               onCreateSplitNode={handleCreateSplitNode}
               onAssemblePromptResultScenario={handleAssemblePromptResultScenario}
               onSplitModeChange={handleSplitModeChange}

@@ -1,7 +1,7 @@
 import { NodeData, NodesState } from './types';
 
 const stripSceneCharacterRolePrefix = (value: string) => {
-  const stripped = value.replace(/^(?:\u043f\u0440\u0430\u0447\u043a\u0430|\u0448\u0430\u0445\u0442\u0435\u0440|\u043c\u0430\u0441\u0442\u0435\u0440|\u043f\u043e\u0440\u0442\u043d\u0438\u043a|\u0433\u0435\u0440\u043e\u0439|\u043f\u0440\u043e\u0442\u0430\u0433\u043e\u043d\u0438\u0441\u0442|miner|washer|master|tailor|hero|protagonist)\s+/iu, '').trim();
+  const stripped = value.replace(/^(?:\u043f\u0440\u0430\u0447\u043a\u0430|\u0448\u0430\u0445\u0442\u0435\u0440|\u043c\u0430\u0441\u0442\u0435\u0440|\u043f\u043e\u0440\u0442\u043d\u0438\u043a|\u043c\u0435\u043d\u0435\u0434\u0436\u0435\u0440|\u0443\u043f\u0440\u0430\u0432\u043b\u044f\u044e\u0449\u0438\u0439|\u0433\u0435\u0440\u043e\u0439|\u043f\u0440\u043e\u0442\u0430\u0433\u043e\u043d\u0438\u0441\u0442|miner|washer|master|tailor|manager|hero|protagonist)\s+/iu, '').trim();
   if (!stripped || /^(?:\u0448\u0430\u0445\u0442\u044b|\u0440\u044b\u043d\u043a\u0430|\u0433\u0438\u043b\u044c\u0434\u0438\u0438|mine|market|guild)$/iu.test(stripped)) {
     return value;
   }
@@ -111,7 +111,9 @@ export const createCharacterTagVariants = (name: string, fallback = 'CHARACTER')
   const candidates = getCharacterAliasCandidates(name)
     .flatMap((candidate) => [
       candidate,
+      candidate.replace(/^@/u, '').replace(/_/gu, ' '),
       transliterateRuToLatin(candidate),
+      transliterateRuToLatin(candidate.replace(/^@/u, '').replace(/_/gu, ' ')),
       ...splitCharacterAliasParts(candidate),
       ...splitCharacterAliasParts(transliterateRuToLatin(candidate)),
     ])
@@ -190,8 +192,12 @@ const extractExplicitCharacterTagSection = (text: string) => {
 export const extractRequiredCharacterTagGroups = (text: string) => {
   const explicitTags = extractExplicitCharacterTagSection(text);
   if (explicitTags.length > 0) {
+    const sceneNames = extractSceneCharacterNames(text);
     return explicitTags
-      .map((tag) => createCharacterTagVariants(tag))
+      .map((tag, index) => [
+        ...createCharacterTagVariants(tag),
+        ...(sceneNames[index] ? createCharacterTagVariants(sceneNames[index]) : []),
+      ])
       .map((group) => [...new Set(group.filter(Boolean))])
       .filter((group) => group.length > 0);
   }

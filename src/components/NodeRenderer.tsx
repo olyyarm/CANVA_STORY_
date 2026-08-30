@@ -31,6 +31,8 @@ interface NodeRendererProps {
   onRunSplitNode: (nodeId: string) => void;
   onCreatePromptNode: (sourceNodeId?: string) => void;
   onCreateSceneWriterPromptNode: (sourceNodeId?: string) => void;
+  onCreateStoryExpansionPromptNode: (sourceNodeId: string) => void;
+  onCreateStoryExpansionSceneWriterPromptNode: (sourceNodeId: string) => void;
   onCreateSplitNode: (sourceNodeId?: string) => void;
   onAssemblePromptResultScenario: (nodeId: string) => Promise<void>;
   onStartOutputConnection: (nodeId: string) => void;
@@ -123,6 +125,10 @@ const getSceneNumberFromLabel = (label: string) => {
   const match = label.match(/\d+/u);
   return match ? Number(match[0]) : 0;
 };
+
+const isStoryExpansionTimelineScene = (scene: NodeData) =>
+  scene.metadata?.sourceKind === 'story_expansion_scene'
+  || /\d+\s*[A-ZА-Я]\s*\.\s*\d+/iu.test(scene.label);
 
 const getChapterNumberFromNode = (node: NodeData) => {
   const sourceLabel = typeof node.metadata?.sourceLabel === 'string' ? node.metadata.sourceLabel : '';
@@ -381,9 +387,17 @@ const findTimelineLocationNode = (nodes: NodesState, sceneId: string, scene: Nod
 const getTimelineScenes = (nodes: NodesState, timelineNode: NodeData) => {
   const timelineScope = getTimelineScope(nodes, timelineNode);
   const sceneEntries = Object.entries(nodes)
-    .filter(([, candidate]) =>
-      candidate.nodeType === 'scene'
-      && (!timelineScope.hasScope || timelineScope.scopedIds.has(candidate.parentId ?? '')));
+    .filter(([, candidate]) => {
+      const isExpansionSceneForChapter = candidate.metadata?.sourceKind === 'story_expansion_scene'
+        && Boolean(timelineScope.sourceChapterId)
+        && candidate.metadata?.sourceChapterId === timelineScope.sourceChapterId;
+      return candidate.nodeType === 'scene'
+        && (
+          !timelineScope.hasScope
+          || timelineScope.scopedIds.has(candidate.parentId ?? '')
+          || isExpansionSceneForChapter
+        );
+    });
 
   return sceneEntries.length > 0 || timelineScope.hasScope
     ? sceneEntries
@@ -410,7 +424,9 @@ const getSortedTimelineScenes = (nodes: NodesState, timelineNode: NodeData) => {
         frame: findSceneImageNode(nodes, sceneId, ['scene_flux2_frame', 'scene_frame']),
         shots: findSceneShotImageNodes(nodes, sceneId),
         shotSheet: findSceneImageNode(nodes, sceneId, ['scene_contact_sheet']),
-        systemFrame: findSystemInsertImageNode(nodes, getSceneNumberFromLabel(scene.label), timelineScope.scopedIds),
+        systemFrame: isStoryExpansionTimelineScene(scene)
+          ? undefined
+          : findSystemInsertImageNode(nodes, getSceneNumberFromLabel(scene.label), timelineScope.scopedIds),
       };
     });
 };
@@ -498,6 +514,8 @@ const NodeRenderer: React.FC<NodeRendererProps> = ({
   onRunSplitNode,
   onCreatePromptNode,
   onCreateSceneWriterPromptNode,
+  onCreateStoryExpansionPromptNode,
+  onCreateStoryExpansionSceneWriterPromptNode,
   onCreateSplitNode,
   onAssemblePromptResultScenario,
   onStartOutputConnection,
@@ -585,6 +603,19 @@ const NodeRenderer: React.FC<NodeRendererProps> = ({
   const canBuildSeasonSkeleton = node.nodeType === 'script_detail' && sourceKind === 'chapter_knowledge';
   const canBuildChapterMaterial = node.nodeType === 'script_detail' && (sourceKind === 'season_skeleton' || sourceKind === 'chapter_plan');
   const isChapterPlanNode = sourceKind === 'chapter_plan';
+  const splitSourcePreset = typeof node.metadata?.splitSourcePreset === 'string'
+    ? node.metadata.splitSourcePreset
+    : '';
+  const isStoryExpansionCard = node.nodeType === 'split_item'
+    && splitSourcePreset === 'story_expansion_planner';
+  const isStoryExpansionScene = node.nodeType === 'split_item'
+    && splitSourcePreset === 'story_expansion_scene_writer';
+  const splitItemHeading = (node.inputValue ?? '')
+    .split(/\r?\n/u)[0]
+    ?.replace(/^<<<SPLIT>>>\s*/u, '')
+    .trim() ?? '';
+  const isSplitChapterNode = node.nodeType === 'split_item'
+    && /^(?:ГЛАВА|CHAPTER)\s*0*\d+\b/iu.test(splitItemHeading);
   const isPromptSnippetNode = sourceKind === 'system_prompt_snippet';
   const canAutoBuildChapter = node.nodeType === 'script_detail' && node.metadata?.sourceKind === 'chapter_material';
   const canSpeakNarration = node.nodeType === 'script_detail'
@@ -1117,7 +1148,7 @@ const NodeRenderer: React.FC<NodeRendererProps> = ({
                 placeholder="Результат появится здесь и пойдёт в следующую Prompt Node..."
               />
             </label>
-            {Boolean(node.promptResultValue?.trim()) && (
+            {Boolean(node.promptResultValue?.trim()) && node.metadata?.promptPreset === 'scene_writer_split' && (
               <button
                 type="button"
                 className="node-secondary-button"
@@ -1198,7 +1229,11 @@ const NodeRenderer: React.FC<NodeRendererProps> = ({
               onMouseDown={stopMouseDown}
               onClick={(event) => runWithoutDrag(event, () => onRunSplitNode(id))}
             >
-              Разделить массив
+              {node.metadata?.splitPurpose === 'story_expansion_cards'
+                ? 'Разделить карточки'
+                : node.metadata?.splitPurpose === 'story_expansion_scenes'
+                  ? 'Разделить сцены'
+                  : 'Разделить результат'}
             </button>
           </>
         )}
@@ -1214,14 +1249,25 @@ const NodeRenderer: React.FC<NodeRendererProps> = ({
               />
             </label>
             <div className="split-item-actions">
-              <button
-                type="button"
-                className="node-primary-button split-item-actions__wide"
-                onMouseDown={stopMouseDown}
-                onClick={(event) => runWithoutDrag(event, () => onCreateSceneWriterPromptNode(id))}
-              >
-                Scene Writer
-              </button>
+              {isStoryExpansionCard ? (
+                <button
+                  type="button"
+                  className="node-primary-button split-item-actions__wide"
+                  onMouseDown={stopMouseDown}
+                  onClick={(event) => runWithoutDrag(event, () => onCreateStoryExpansionSceneWriterPromptNode(id))}
+                >
+                  Развернуть вставку
+                </button>
+              ) : !isStoryExpansionScene && (
+                <button
+                  type="button"
+                  className="node-primary-button split-item-actions__wide"
+                  onMouseDown={stopMouseDown}
+                  onClick={(event) => runWithoutDrag(event, () => onCreateSceneWriterPromptNode(id))}
+                >
+                  Scene Writer
+                </button>
+              )}
               <button
                 type="button"
                 className="node-secondary-button"
@@ -1238,14 +1284,26 @@ const NodeRenderer: React.FC<NodeRendererProps> = ({
               >
                 Split Node
               </button>
-              <button
-                type="button"
-                className="node-secondary-button"
-                onMouseDown={stopMouseDown}
-                onClick={(event) => runWithoutDrag(event, () => onEnsureChapterTimeline(id))}
-              >
-                Таймлайн
-              </button>
+              {isSplitChapterNode && (
+                <>
+                  <button
+                    type="button"
+                    className="node-secondary-button"
+                    onMouseDown={stopMouseDown}
+                    onClick={(event) => runWithoutDrag(event, () => onEnsureChapterTimeline(id))}
+                  >
+                    Таймлайн
+                  </button>
+                  <button
+                    type="button"
+                    className="node-secondary-button split-item-actions__wide"
+                    onMouseDown={stopMouseDown}
+                    onClick={(event) => runWithoutDrag(event, () => onCreateStoryExpansionPromptNode(id))}
+                  >
+                    Сюжетные расширения
+                  </button>
+                </>
+              )}
               {onOpenChapterWorkspace && /(?:ГЛАВА|CHAPTER)\s*0*\d+/iu.test(`${node.label}\n${node.inputValue ?? ''}`) && (
                 <button
                   type="button"
@@ -1419,6 +1477,18 @@ const NodeRenderer: React.FC<NodeRendererProps> = ({
             disabled={Boolean(node.isLoadingImage)}
           >
             {node.isLoading ? 'Отменить материал' : sourceKind === 'chapter_plan' ? 'Развернуть главу' : 'Собрать материал главы'}
+          </button>
+        )}
+
+        {isChapterPlanNode && (
+          <button
+            type="button"
+            className="node-secondary-button"
+            onMouseDown={stopMouseDown}
+            onClick={(event) => runWithoutDrag(event, () => onCreateStoryExpansionPromptNode(id))}
+            disabled={isBusy}
+          >
+            Сюжетные расширения
           </button>
         )}
 
@@ -1904,7 +1974,9 @@ const NodeRenderer: React.FC<NodeRendererProps> = ({
                 {timelineScenes.map(({ sceneId, scene, location, charactersReady, frame, shots, shotSheet, systemFrame }) => {
                   const sceneText = scene.sceneText || scene.inputValue || '';
                   const sceneNumber = getSceneNumberFromLabel(scene.label);
-                  const systemInsert = timelineSystemInserts.get(sceneNumber);
+                  const systemInsert = isStoryExpansionTimelineScene(scene)
+                    ? undefined
+                    : timelineSystemInserts.get(sceneNumber);
                   const qaStatus = typeof frame?.metadata?.visionStatus === 'string'
                     ? frame.metadata.visionStatus
                     : 'ожидает';

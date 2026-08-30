@@ -65,7 +65,13 @@ import {
   TTS_CLEANUP_SYSTEM_PROMPT,
 } from '../constants';
 import { getNextNarrationSeed, getOmniVoiceSteps } from '../narrationSettings';
-import { SCENE_WRITER_CHARACTER_TAG_CONTRACT, SCENE_WRITER_SHOT_SCALE_CONTRACT, SCENE_WRITER_SPLIT_SYSTEM_PROMPT } from '../promptPresets';
+import {
+  SCENE_WRITER_CHARACTER_TAG_CONTRACT,
+  SCENE_WRITER_SHOT_SCALE_CONTRACT,
+  SCENE_WRITER_SPLIT_SYSTEM_PROMPT,
+  STORY_EXPANSION_PLANNER_SYSTEM_PROMPT,
+  STORY_EXPANSION_SCENE_WRITER_SYSTEM_PROMPT,
+} from '../promptPresets';
 import {
   AppNotice,
   DetailType,
@@ -87,6 +93,7 @@ import { isNativeVideoRendererAvailable } from '../services/nativeVideoRenderer'
 import { buildSceneShotGridPrompt, splitSceneShotGrid } from '../services/sceneShotGrid';
 import {
   CHARACTER_REGISTRY_SOURCE_KIND,
+  type CharacterRegistryEntry,
   createCharacterTag,
   createCharacterTagVariants,
   extractRequiredCharacterTagGroups,
@@ -124,6 +131,8 @@ interface UseNodeManagementReturn {
   handlePromptTemplateChange: (event: React.ChangeEvent<HTMLTextAreaElement>, nodeId: string) => void;
   handleCreatePromptNode: (sourceNodeId?: string) => void;
   handleCreateSceneWriterPromptNode: (sourceNodeId?: string) => void;
+  handleCreateStoryExpansionPromptNode: (sourceNodeId: string) => void;
+  handleCreateStoryExpansionSceneWriterPromptNode: (sourceNodeId: string) => void;
   handleRunPromptNode: (nodeId: string) => Promise<void>;
   handleAssemblePromptResultScenario: (nodeId: string) => Promise<void>;
   handleCreateSplitNode: (sourceNodeId?: string) => void;
@@ -779,6 +788,11 @@ const cleanupBrowserSpeechText = (text: string) =>
     .replace(/\s+/g, ' ')
     .trim();
 
+const extractStoryExpansionNarration = (sceneText: string) => {
+  const match = /(?:^|\n)\s*(?:Закадр\s*\/\s*реплика|Закадр|Реплика)\s*:\s*([\s\S]*?)(?=\n\s*(?:Переход|СЦЕНА\s+[\dA-ZА-Я.]+)\s*:|$)/iu.exec(sceneText);
+  return match?.[1] ? cleanupBrowserSpeechText(match[1]) : '';
+};
+
 const splitSpeechText = (text: string) => {
   const sentences = text.match(/[^.!?…]+[.!?…]?/gu) ?? [text];
   const chunks: string[] = [];
@@ -1028,6 +1042,23 @@ const getScopedNodeIds = (nodes: NodesState, rootIds: string[]) => {
   });
   return scopedIds;
 };
+
+const isSceneInTimelineScope = (
+  scene: NodeData,
+  timelineScope: Set<string>,
+  hasTimelineScope: boolean,
+  sourceChapterId: string,
+) => !hasTimelineScope
+  || timelineScope.has(scene.parentId ?? '')
+  || (
+    scene.metadata?.sourceKind === 'story_expansion_scene'
+    && Boolean(sourceChapterId)
+    && scene.metadata?.sourceChapterId === sourceChapterId
+  );
+
+const isStoryExpansionSceneNode = (scene: NodeData) =>
+  scene.metadata?.sourceKind === 'story_expansion_scene'
+  || /\d+\s*[A-ZА-Я]\s*\.\s*\d+/iu.test(scene.label);
 
 const findScopedProjectDetail = (
   nodes: NodesState,
@@ -1380,7 +1411,47 @@ interface PreparedAssetPromptRecord {
   key: string;
   heading: string;
   prompt: string;
+  sourceFingerprint?: string;
 }
+
+const createPromptFingerprint = (...parts: Array<string | number | undefined>) => {
+  const source = parts.map((part) => String(part ?? '')).join('\u241f');
+  let hash = 2166136261;
+  for (let index = 0; index < source.length; index += 1) {
+    hash ^= source.charCodeAt(index);
+    hash = Math.imul(hash, 16777619);
+  }
+  return `prompt-v1-${(hash >>> 0).toString(16)}`;
+};
+
+const getReusableNodePrompt = (
+  node: NodeData,
+  promptMetadataKey: string,
+  fingerprintMetadataKey: string,
+  sourceFingerprint: string,
+  legacyPrompt = '',
+) => {
+  const preparedPrompt = node.metadata?.[promptMetadataKey];
+  const preparedFingerprint = node.metadata?.[fingerprintMetadataKey];
+  if (
+    typeof preparedPrompt === 'string'
+    && preparedPrompt.trim()
+    && preparedFingerprint === sourceFingerprint
+  ) {
+    return preparedPrompt.trim();
+  }
+
+  // Prompts saved before fingerprints were introduced are still valuable paid work.
+  if (typeof preparedPrompt === 'string' && preparedPrompt.trim() && preparedFingerprint == null) {
+    return preparedPrompt.trim();
+  }
+  if (preparedFingerprint != null) return '';
+  return legacyPrompt.trim();
+};
+
+const withSavedImagePromptHint = (message: string, preparedPrompt: string) => preparedPrompt.trim()
+  ? `${message} Подготовленный image prompt сохранён. При повторном запуске LLM не вызывается — повторится только рендер картинки.`
+  : message;
 
 const getPreparedAssetPromptRecords = (node?: NodeData) => {
   const value = node?.metadata?.preparedAssetPromptsJson;
@@ -1425,8 +1496,14 @@ const getReusablePreparedAssetPrompt = (
   key: string,
   heading: string,
   allHeadings: string[],
-) => getPreparedAssetPromptRecords(node).find((entry) => entry.key === key)?.prompt.trim()
-  || getLegacyPreparedAssetPrompt(node.assetPrompt, heading, allHeadings);
+  sourceFingerprint: string,
+) => {
+  const record = getPreparedAssetPromptRecords(node).find((entry) => entry.key === key);
+  if (record?.prompt.trim() && (!record.sourceFingerprint || record.sourceFingerprint === sourceFingerprint)) {
+    return record.prompt.trim();
+  }
+  return record ? '' : getLegacyPreparedAssetPrompt(node.assetPrompt, heading, allHeadings);
+};
 
 const getLocationName = (description: string, index: number) => {
   const firstLine = description.split(/\n/)[0]?.trim() || '';
@@ -1499,9 +1576,8 @@ const isImagePipeline = (value: unknown): value is ImagePipeline =>
   || value === 'nano_banana_2_lite_compose';
 
 const getNodeImagePipeline = (node: NodeData, fallback: ImagePipeline = 'sdxl') => {
-  if (node.nodeType === 'pollinations_image' && isImagePipeline(node.metadata?.imagePipeline)) {
-    return node.metadata.imagePipeline;
-  }
+  // The top-level field is the editable source of truth. Older projects may
+  // only have the metadata copy, so keep it as a compatibility fallback.
   if (isImagePipeline(node.imagePipeline)) return node.imagePipeline;
   if (isImagePipeline(node.metadata?.imagePipeline)) return node.metadata.imagePipeline;
   return fallback;
@@ -1661,6 +1737,60 @@ const findSystemInsertImageNodeForScene = (nodes: NodesState, sceneNumber: numbe
     })
     .map(([, node]) => node)
     .sort((first, second) => first.label.localeCompare(second.label, 'ru', { numeric: true }))[0];
+};
+
+const chapterNodePattern = /(?:глава|chapter)\s*0*\d+/iu;
+
+const findChapterAncestorEntry = (nodes: NodesState, sourceNodeId: string) => {
+  let currentId: string | undefined = sourceNodeId;
+  const visited = new Set<string>();
+  while (currentId && !visited.has(currentId)) {
+    visited.add(currentId);
+    const current: NodeData | undefined = nodes[currentId];
+    if (!current) return undefined;
+    const sourceKind = typeof current.metadata?.sourceKind === 'string' ? current.metadata.sourceKind : '';
+    if (
+      (current.nodeType === 'split_item' && chapterNodePattern.test(`${current.label}\n${current.inputValue ?? ''}`))
+      || (current.nodeType === 'script_detail' && sourceKind === 'chapter_plan')
+    ) {
+      return [currentId, current] as const;
+    }
+    currentId = current.parentId;
+  }
+  return undefined;
+};
+
+const getChapterExpansionContext = (nodes: NodesState, sourceNodeId: string) => {
+  const chapterEntry = findChapterAncestorEntry(nodes, sourceNodeId);
+  if (!chapterEntry) return { chapterId: '', chapterText: '', chapterNode: undefined };
+  const [chapterId, chapterNode] = chapterEntry;
+  const sceneWriter = Object.values(nodes).find((candidate) =>
+    candidate.nodeType === 'prompt_node'
+    && candidate.parentId === chapterId
+    && candidate.metadata?.promptPreset === 'scene_writer_split'
+    && Boolean(candidate.promptResultValue?.trim()));
+  const chapterText = [
+    chapterNode.inputValue?.trim() || chapterNode.sceneText?.trim() || chapterNode.label,
+    sceneWriter?.promptResultValue?.trim()
+      ? `УЖЕ СОЗДАННЫЕ СЦЕНЫ ГЛАВЫ:\n${sceneWriter.promptResultValue.trim()}`
+      : '',
+  ].filter(Boolean).join('\n\n');
+  return { chapterId, chapterText, chapterNode };
+};
+
+const getCanonicalCharacterPromptContext = (nodes: NodesState) => {
+  const uniqueEntries = new Map<string, CharacterRegistryEntry>();
+  getCombinedCharacterRegistryEntryMap(nodes).forEach((entry) => {
+    if (!uniqueEntries.has(entry.assetNodeId)) uniqueEntries.set(entry.assetNodeId, entry);
+  });
+  if (uniqueEntries.size === 0) return '';
+  return [
+    'КАНОНИЧЕСКИЙ РЕЕСТР ПЕРСОНАЖЕЙ. Для существующих героев копируй эти @TAG буквально:',
+    ...[...uniqueEntries.values()].map((entry) => {
+      const aliases = entry.aliases?.filter(Boolean).slice(0, 6).join(', ');
+      return `${entry.tag} — ${entry.name}${aliases ? `; варианты имени: ${aliases}` : ''}`;
+    }),
+  ].join('\n');
 };
 
 const findChapterBackdropImageNode = (
@@ -1960,6 +2090,7 @@ const buildMissingCharacterAssetPrompt = (
     'The character must face forward, stand upright, and be centered vertically in the frame.',
     'Use a clean simple studio background with useful margins around the full body.',
     'Make it a reusable identity reference for future scene composition.',
+    'If the source identifies this character as the protagonist, main hero, regressor, reincarnated lead, or other-world lead and does not explicitly require an older body, depict a visibly young adult around 20-28 years old with a youthful face and energetic manhwa-lead silhouette. Express experience, fatigue, and trauma through the eyes, posture, scars, and worn clothing while preserving the young physical age.',
     characterDescription ? `Character description:\n${characterDescription}` : '',
     `Scene/source context:\n${sceneDescription}`,
   ].filter(Boolean).join('\n\n'), nodes);
@@ -2013,6 +2144,83 @@ const createMissingCharacterAssetNode = (
   return nodeId;
 };
 
+const registerCanonicalCharacterAsset = (previousNodes: NodesState, nodeId: string) => {
+  const node = previousNodes[nodeId];
+  if (!isCharacterAssetNode(node) || !node.imageUrl) return previousNodes;
+
+  const existingRegistry = findCharacterRegistryNodeEntry(previousNodes);
+  const existingRegistryId = existingRegistry?.[0] ?? generateNodeId();
+  const existingRegistryNode = existingRegistry?.[1];
+  const characterName = getCanonicalCharacterName(node);
+  const existingTag = typeof node.metadata?.characterTag === 'string'
+    ? normalizeCharacterTag(node.metadata.characterTag)
+    : '';
+  const tag = existingTag || createCharacterTag(characterName, `CHARACTER_${Date.now()}`);
+  const entries = parseCharacterRegistryEntries(existingRegistryNode);
+  const now = new Date().toISOString();
+  const referenceDescription = typeof node.metadata?.referenceContext === 'string'
+    ? node.metadata.referenceContext
+    : typeof node.metadata?.promptContext === 'string' ? node.metadata.promptContext : '';
+  const aliases = [...new Set([
+    characterName,
+    getReferenceLabel(node),
+    tag,
+    ...(typeof node.metadata?.characterTag === 'string' ? [node.metadata.characterTag] : []),
+    ...getCharacterAliasCandidatesFromDescription(referenceDescription),
+    ...createCharacterTagVariants(characterName),
+  ].map((alias) => alias.trim()).filter(Boolean))];
+  const nextEntry = {
+    tag,
+    name: characterName,
+    assetNodeId: nodeId,
+    aliases,
+    description: referenceDescription,
+    updatedAt: now,
+  };
+  const nextEntries = [
+    ...entries.filter((entry) => entry.tag !== tag && entry.assetNodeId !== nodeId),
+    nextEntry,
+  ].sort((left, right) => left.tag.localeCompare(right.tag, 'ru', { numeric: true }));
+  const nextRegistryNode: NodeData = {
+    ...(existingRegistryNode ?? {
+      nodeType: 'character_registry',
+      x: node.x + Math.max(node.width ?? 320, 320) + 40,
+      y: node.y,
+      label: 'Реестр персонажей',
+      width: 440,
+      height: 420,
+      level: (node.level ?? 0) + 1,
+      parentId: node.parentId,
+    }),
+    nodeType: 'character_registry',
+    inputValue: formatCharacterRegistryText(nextEntries),
+    statusMessage: `${tag} закреплён как канонический референс.`,
+    metadata: {
+      ...existingRegistryNode?.metadata,
+      sourceKind: CHARACTER_REGISTRY_SOURCE_KIND,
+      characterRegistryJson: serializeCharacterRegistryEntries(nextEntries),
+    },
+  };
+
+  return {
+    ...previousNodes,
+    [nodeId]: {
+      ...node,
+      productionStatus: 'ready' as const,
+      metadata: {
+        ...node.metadata,
+        isReference: true,
+        canonicalCharacter: true,
+        characterTag: tag,
+        referencePrompt: node.masterPrompt ?? '',
+        referenceContext: referenceDescription,
+        canonicalRegisteredAt: now,
+      },
+    },
+    [existingRegistryId]: nextRegistryNode,
+  };
+};
+
 const resolveCanonicalCharacterReferences = (
   nodes: NodesState,
   sceneNode: NodeData,
@@ -2034,9 +2242,42 @@ const resolveCanonicalCharacterReferences = (
   const referenceNodes: NodeData[] = [];
   const missingTags: string[] = [];
 
+  const resolveChapterProtagonist = () => {
+    const heroesText = findChapterHeroesNode(nodes, sceneNode)?.inputValue ?? '';
+    const protagonistDescription = getCharacterDescriptions(heroesText).find((description) =>
+      /(?:\u043f\u0440\u043e\u0442\u0430\u0433\u043e\u043d\u0438\u0441\u0442|\u0433\u043b\u0430\u0432\u043d(?:\u044b\u0439|\u0430\u044f)\s+\u0433\u0435\u0440\u043e\u0439|main\s+(?:character|hero)|protagonist)/iu.test(description));
+    if (protagonistDescription) {
+      const directEntry = getCharacterTagVariantsFromDescription(protagonistDescription)
+        .map((tag) => registryEntries.get(tag))
+        .find(Boolean);
+      if (directEntry) return directEntry;
+    }
+
+    const occurrenceCount = new Map<string, { entry: CharacterRegistryEntry; count: number }>();
+    Object.values(nodes)
+      .filter((candidate) =>
+        candidate.nodeType === 'scene'
+        && candidate.parentId === sceneNode.parentId
+        && candidate.metadata?.sourceKind !== 'story_expansion_scene')
+      .forEach((candidate) => {
+        const text = candidate.sceneText || candidate.inputValue || candidate.label;
+        extractRequiredCharacterTagGroups(text).forEach((group) => {
+          const entry = group.map((tag) => registryEntries.get(tag)).find(Boolean);
+          if (!entry) return;
+          const current = occurrenceCount.get(entry.assetNodeId);
+          occurrenceCount.set(entry.assetNodeId, { entry, count: (current?.count ?? 0) + 1 });
+        });
+      });
+    return [...occurrenceCount.values()]
+      .sort((left, right) => right.count - left.count)[0]?.entry;
+  };
+
   requiredTagGroups.forEach((tagGroup) => {
     const tag = tagGroup[0];
-    const entry = tagGroup.map((candidateTag) => registryEntries.get(candidateTag)).find(Boolean);
+    const isGenericProtagonist = tagGroup.some((candidateTag) =>
+      /^@(?:\u041f\u0420\u041e\u0422\u0410\u0413\u041e\u041d\u0418\u0421\u0422|\u0413\u041b\u0410\u0412\u041d\u042b\u0419_?\u0413\u0415\u0420\u041e\u0419|PROTAGONIST|MAIN_?CHARACTER|MAIN_?HERO)$/u.test(candidateTag));
+    const entry = tagGroup.map((candidateTag) => registryEntries.get(candidateTag)).find(Boolean)
+      ?? (isGenericProtagonist ? resolveChapterProtagonist() : undefined);
     const fallbackEntry = !entry
       ? Object.entries(nodes).find(([, node]) => {
         if (!isCharacterAssetNode(node) || !node.imageUrl) return false;
@@ -2111,7 +2352,10 @@ const upsertScenarioGraph = (
   const nextNodes: NodesState = { ...previousNodes, [outputNodeId]: outputNode };
   if (outputContentChanged) resetLinkedChapterRenders(nextNodes, outputNodeId, true);
   const existingScenes = Object.entries(previousNodes)
-    .filter(([, node]) => node.parentId === outputNodeId && node.nodeType === 'scene')
+    .filter(([, node]) =>
+      node.parentId === outputNodeId
+      && node.nodeType === 'scene'
+      && node.metadata?.sourceKind !== 'story_expansion_scene')
     .sort(([, first], [, second]) => first.label.localeCompare(second.label, 'ru', { numeric: true }));
   const keptSceneIds = new Set<string>();
   const sceneNodeWidth = 400;
@@ -2410,6 +2654,202 @@ export const useNodeManagement = (
     });
   }, [setNodes]);
 
+  const handleCreateStoryExpansionPromptNode = useCallback((sourceNodeId: string) => {
+    setNodes((previousNodes) => {
+      const sourceNode = previousNodes[sourceNodeId];
+      if (!sourceNode) return previousNodes;
+      const { chapterId, chapterText, chapterNode } = getChapterExpansionContext(previousNodes, sourceNodeId);
+      if (!chapterId || !chapterNode) {
+        return {
+          ...previousNodes,
+          [sourceNodeId]: {
+            ...sourceNode,
+            error: 'Сюжетные расширения можно создать только из ноды главы.',
+          },
+        };
+      }
+      const expansionPromptContext = [
+        chapterText,
+        getCanonicalCharacterPromptContext(previousNodes),
+      ].filter(Boolean).join('\n\n');
+
+      const existingPrompt = Object.entries(previousNodes).find(([, candidate]) =>
+        candidate.nodeType === 'prompt_node'
+        && candidate.parentId === chapterId
+        && candidate.metadata?.promptPreset === 'story_expansion_planner');
+      if (existingPrompt) {
+        const [existingId, existingNode] = existingPrompt;
+        return {
+          ...previousNodes,
+          [existingId]: {
+            ...existingNode,
+            promptContextValue: expansionPromptContext,
+            statusMessage: 'Планировщик уже создан. Контекст главы обновлён.',
+            error: undefined,
+          },
+        };
+      }
+
+      const promptNodeCount = Object.values(previousNodes).filter((node) => node.nodeType === 'prompt_node').length;
+      const promptId = generateNodeId();
+      const splitId = generateNodeId();
+      const promptWidth = 560;
+      const promptHeight = 900;
+      const x = chapterNode.x + Math.max(chapterNode.width ?? 420, 420) + 90;
+      const y = chapterNode.y;
+      const selectedModel = chapterNode.selectedModel ?? MISTRAL_MODELS[0];
+      const promptNode: NodeData = {
+          nodeType: 'prompt_node',
+          x,
+          y,
+          label: `Архитектор расширений · ${chapterNode.label}`,
+          width: promptWidth,
+          height: promptHeight,
+          parentId: chapterId,
+          level: (chapterNode.level ?? 0) + 1,
+          inputValue: '',
+          promptContextValue: expansionPromptContext,
+          promptKnowledgeValue: '',
+          promptMemoryValue: '',
+          promptTemplateValue: 'Проанализируй главу и предложи 2-3 оправданные сюжетные мини-арки. Верни карточки строго через <<<SPLIT>>>.\n\n{{CONTEXT}}',
+          promptResultValue: '',
+          systemPrompt: STORY_EXPANSION_PLANNER_SYSTEM_PROMPT,
+          selectedModel,
+          statusMessage: 'Сначала запустите планировщик. Затем Split Node разложит варианты по карточкам.',
+          metadata: {
+            sourceKind: 'prompt_node',
+            promptPreset: 'story_expansion_planner',
+            outputKind: 'split_text',
+            sourceChapterId: chapterId,
+            promptOrdinal: promptNodeCount + 1,
+          },
+        };
+      const splitNode: NodeData = {
+          nodeType: 'split_node',
+          x: x + promptWidth + 70,
+          y: y + 40,
+          label: 'Варианты сюжетных расширений',
+          width: 430,
+          height: 350,
+          parentId: promptId,
+          level: (chapterNode.level ?? 0) + 2,
+          splitMode: 'separator',
+          splitSeparator: '<<<SPLIT>>>',
+          arrayPath: 'story_expansions',
+          inputValue: '',
+          statusMessage: 'После ответа планировщика нажмите «Разделить карточки».',
+          metadata: {
+            sourceKind: 'split_node',
+            splitPurpose: 'story_expansion_cards',
+            sourceChapterId: chapterId,
+          },
+        };
+      return {
+        ...previousNodes,
+        [sourceNodeId]: { ...sourceNode, error: undefined },
+        [promptId]: promptNode,
+        [splitId]: splitNode,
+      };
+    });
+  }, [setNodes]);
+
+  const handleCreateStoryExpansionSceneWriterPromptNode = useCallback((sourceNodeId: string) => {
+    setNodes((previousNodes) => {
+      const sourceNode = previousNodes[sourceNodeId];
+      if (!sourceNode || sourceNode.nodeType !== 'split_item') return previousNodes;
+      const sourceChapterId = typeof sourceNode.metadata?.sourceChapterId === 'string'
+        ? sourceNode.metadata.sourceChapterId
+        : findChapterAncestorEntry(previousNodes, sourceNodeId)?.[0] ?? '';
+      const chapterNode = previousNodes[sourceChapterId];
+      const existingPrompt = Object.entries(previousNodes).find(([, candidate]) =>
+        candidate.nodeType === 'prompt_node'
+        && candidate.parentId === sourceNodeId
+        && candidate.metadata?.promptPreset === 'story_expansion_scene_writer');
+      if (existingPrompt) {
+        const [existingId, existingNode] = existingPrompt;
+        return {
+          ...previousNodes,
+          [existingId]: {
+            ...existingNode,
+            promptContextValue: [
+              chapterNode?.inputValue?.trim() || chapterNode?.sceneText?.trim() || chapterNode?.label || '',
+              getCanonicalCharacterPromptContext(previousNodes),
+            ].filter(Boolean).join('\n\n'),
+            statusMessage: 'Разворачиватель этой вставки уже создан.',
+            error: undefined,
+          },
+        };
+      }
+
+      const promptId = generateNodeId();
+      const splitId = generateNodeId();
+      const promptWidth = 560;
+      const promptHeight = 900;
+      const x = sourceNode.x + Math.max(sourceNode.width ?? 420, 420) + 70;
+      const y = sourceNode.y;
+      const chapterText = chapterNode
+        ? chapterNode.inputValue?.trim() || chapterNode.sceneText?.trim() || chapterNode.label
+        : '';
+      const expansionPromptContext = [
+        chapterText,
+        getCanonicalCharacterPromptContext(previousNodes),
+      ].filter(Boolean).join('\n\n');
+      const selectedModel = sourceNode.selectedModel ?? chapterNode?.selectedModel ?? MISTRAL_MODELS[0];
+      const promptNode: NodeData = {
+          nodeType: 'prompt_node',
+          x,
+          y,
+          label: `Разворачиватель · ${sourceNode.label}`,
+          width: promptWidth,
+          height: promptHeight,
+          parentId: sourceNodeId,
+          level: (sourceNode.level ?? 0) + 1,
+          inputValue: '',
+          promptContextValue: expansionPromptContext,
+          promptKnowledgeValue: '',
+          promptMemoryValue: '',
+          promptTemplateValue: 'Разверни выбранную карточку в 2-6 сцен. Сохрани идентификатор вставки и верни сцены строго через <<<SPLIT>>>.\n\nКАРТОЧКА ВСТАВКИ:\n{{TEXT}}\n\nКОНТЕКСТ ИСХОДНОЙ ГЛАВЫ:\n{{CONTEXT}}',
+          promptResultValue: '',
+          systemPrompt: STORY_EXPANSION_SCENE_WRITER_SYSTEM_PROMPT,
+          selectedModel,
+          statusMessage: 'Запустите Prompt Node, затем разделите полученные сцены соседним Split Node.',
+          metadata: {
+            sourceKind: 'prompt_node',
+            promptPreset: 'story_expansion_scene_writer',
+            outputKind: 'split_text',
+            sourceChapterId,
+            sourceExpansionId: sourceNodeId,
+          },
+        };
+      const splitNode: NodeData = {
+          nodeType: 'split_node',
+          x: x + promptWidth + 70,
+          y: y + 40,
+          label: `Сцены · ${sourceNode.label}`,
+          width: 430,
+          height: 350,
+          parentId: promptId,
+          level: (sourceNode.level ?? 0) + 2,
+          splitMode: 'separator',
+          splitSeparator: '<<<SPLIT>>>',
+          arrayPath: 'story_expansion_scenes',
+          inputValue: '',
+          statusMessage: 'После ответа нажмите «Разделить сцены».',
+          metadata: {
+            sourceKind: 'split_node',
+            splitPurpose: 'story_expansion_scenes',
+            sourceChapterId,
+            sourceExpansionId: sourceNodeId,
+          },
+        };
+      return {
+        ...previousNodes,
+        [promptId]: promptNode,
+        [splitId]: splitNode,
+      };
+    });
+  }, [setNodes]);
+
   const handleRunPromptNode = useCallback(async (nodeId: string) => {
     const node = nodesRef.current[nodeId];
     if (!node || node.nodeType !== 'prompt_node') return;
@@ -2656,6 +3096,23 @@ export const useNodeManagement = (
       const columns = 3;
       const itemWidth = 420;
       const itemHeight = 430;
+      const isStoryExpansionSceneSplit = splitNode.metadata?.splitPurpose === 'story_expansion_scenes';
+      const sourceChapterId = typeof splitNode.metadata?.sourceChapterId === 'string'
+        ? splitNode.metadata.sourceChapterId
+        : typeof parentNode?.metadata?.sourceChapterId === 'string'
+          ? parentNode.metadata.sourceChapterId
+          : '';
+      const chapterDescendantIds = sourceChapterId
+        ? getDescendantNodeIds(previousNodes, sourceChapterId)
+        : new Set<string>();
+      const sourceScenarioEntry = Object.entries(previousNodes).find(([candidateId, candidate]) =>
+        candidate.nodeType === 'script_output'
+        && (
+          candidateId === sourceChapterId
+          || chapterDescendantIds.has(candidateId)
+        ));
+      const productionParentId = sourceScenarioEntry?.[0] || sourceChapterId || nodeId;
+      const productionParent = previousNodes[productionParentId] ?? splitNode;
 
       arrayValue.forEach((item, index) => {
         const itemKey = getSplitItemStableKey(item, index);
@@ -2684,16 +3141,128 @@ export const useNodeManagement = (
             splitArrayPath: arrayPath,
             splitItemKey: itemKey,
             splitIndex: index,
+            splitSourcePreset: typeof parentNode?.metadata?.promptPreset === 'string'
+              ? parentNode.metadata.promptPreset
+              : '',
+            sourceChapterId: typeof splitNode.metadata?.sourceChapterId === 'string'
+              ? splitNode.metadata.sourceChapterId
+              : typeof parentNode?.metadata?.sourceChapterId === 'string'
+                ? parentNode.metadata.sourceChapterId
+                : '',
           },
         };
-        nextNodes[existing?.id ?? `${nodeId}__${normalizeSplitKey(arrayPath)}__${itemKey}`] = itemNode;
+        const itemNodeId = existing?.id ?? `${nodeId}__${normalizeSplitKey(arrayPath)}__${itemKey}`;
+        nextNodes[itemNodeId] = itemNode;
+
+        if (isStoryExpansionSceneSplit) {
+          const productionSceneId = `${nodeId}__production_scene__${index + 1}`;
+          const existingProductionScene = previousNodes[productionSceneId];
+          const sceneTextChanged = Boolean(
+            existingProductionScene
+            && normalizeGeneratedText(existingProductionScene.sceneText || existingProductionScene.inputValue)
+              !== normalizeGeneratedText(itemText),
+          );
+          const reusableScene = sceneTextChanged && existingProductionScene
+            ? resetSceneAfterTextChange(existingProductionScene)
+            : existingProductionScene;
+          const narrationText = extractStoryExpansionNarration(itemText);
+          const narrationChanged = Boolean(
+            reusableScene
+            && narrationText
+            && normalizeGeneratedText(String(reusableScene.metadata?.preparedTtsText ?? ''))
+              !== normalizeGeneratedText(narrationText),
+          );
+          const sceneWithFreshNarration = narrationChanged
+            ? resetSceneNarrationMedia(reusableScene)
+            : reusableScene;
+          const productionColumn = index % 3;
+          const productionRow = Math.floor(index / 3);
+          const productionX = splitNode.x + productionColumn * (itemWidth + 28);
+          const productionY = splitNode.y
+            + (splitNode.height ?? 340)
+            + 90
+            + (Math.ceil(arrayValue.length / 3) + productionRow) * (itemHeight + 34);
+
+          nextNodes[productionSceneId] = {
+            ...sceneWithFreshNarration,
+            nodeType: 'scene',
+            x: sceneWithFreshNarration?.x ?? productionX,
+            y: sceneWithFreshNarration?.y ?? productionY,
+            width: Math.max(sceneWithFreshNarration?.width ?? 400, 400),
+            height: Math.max(sceneWithFreshNarration?.height ?? 520, 520),
+            label: itemLabel,
+            parentId: productionParentId,
+            level: (productionParent.level ?? splitNode.level ?? 0) + 1,
+            inputValue: itemText,
+            sceneText: itemText,
+            isGenerated: true,
+            hasGenerationButton: true,
+            selectedModel: sceneWithFreshNarration?.selectedModel
+              || parentNode?.selectedModel
+              || productionParent.selectedModel,
+            systemPrompt: sceneWithFreshNarration?.systemPrompt ?? SCENE_DIALOGUE_SYSTEM_PROMPT,
+            entityRef: sceneWithFreshNarration?.entityRef ?? { type: 'scene', id: productionSceneId },
+            productionStatus: sceneWithFreshNarration?.productionStatus ?? 'draft',
+            error: undefined,
+            statusMessage: narrationText
+              ? 'Сюжетная вставка добавлена в таймлайн. Закадр подготовлен для TTS.'
+              : 'Сюжетная вставка добавлена в таймлайн. Для озвучки заполните «Закадр/реплика».',
+            metadata: {
+              ...sceneWithFreshNarration?.metadata,
+              sourceKind: 'story_expansion_scene',
+              sourceChapterId,
+              sourceExpansionSceneNodeId: itemNodeId,
+              sourceExpansionSceneKey: itemKey,
+              sourceExpansionSplitNodeId: nodeId,
+              expansionSceneIndex: index,
+              ...(narrationText ? {
+                preparedTtsText: narrationText,
+                sceneNarrationText: narrationText,
+                narrationPreparedAt: new Date().toISOString(),
+              } : {}),
+            },
+          };
+
+          nextNodes[itemNodeId] = {
+            ...itemNode,
+            statusMessage: `Добавлено в таймлайн как «${itemLabel}».`,
+            metadata: {
+              ...itemNode.metadata,
+              productionSceneId,
+            },
+          };
+        }
       });
 
       nextNodes[nodeId] = {
         ...splitNode,
         error: undefined,
-        statusMessage: `Готово: ${arrayValue.length} элементов из ${arrayPath}. Существующие дочерние ноды обновлены, лишние не удалялись.`,
+        statusMessage: isStoryExpansionSceneSplit
+          ? `Готово: ${arrayValue.length} сцен вставки добавлены в таймлайн. Для них доступны закадр, TTS, изображения и клипы.`
+          : `Готово: ${arrayValue.length} элементов из ${arrayPath}. Существующие дочерние ноды обновлены, лишние не удалялись.`,
       };
+
+      if (isStoryExpansionSceneSplit) {
+        Object.entries(nextNodes).forEach(([timelineId, timelineNode]) => {
+          if (timelineNode.nodeType !== 'chapter_timeline') return;
+          const timelineChapterId = typeof timelineNode.metadata?.sourceChapterId === 'string'
+            ? timelineNode.metadata.sourceChapterId
+            : '';
+          const timelineScenarioId = typeof timelineNode.metadata?.sourceScenarioId === 'string'
+            ? timelineNode.metadata.sourceScenarioId
+            : timelineNode.parentId ?? '';
+          if (
+            (sourceChapterId && timelineChapterId === sourceChapterId)
+            || (sourceScenarioEntry?.[0] && timelineScenarioId === sourceScenarioEntry[0])
+          ) {
+            nextNodes[timelineId] = {
+              ...timelineNode,
+              productionStatus: 'in_production',
+              statusMessage: `Добавлено сюжетных сцен: ${arrayValue.length}. Нажмите «Обновить» или запускайте недостающее.`,
+            };
+          }
+        });
+      }
 
       return nextNodes;
     });
@@ -2812,8 +3381,20 @@ export const useNodeManagement = (
             : value === 'nano_banana_2_lite_compose'
               ? 'nano_banana_2_lite_compose'
               : 'sdxl';
-    const updates = { imagePipeline: nextPipeline, pollinationsApiError: undefined };
-    if (nodesRef.current[nodeId]?.nodeType === 'chapter_timeline') {
+    const currentNode = nodesRef.current[nodeId];
+    const updates: Partial<NodeData> = {
+      imagePipeline: nextPipeline,
+      pollinationsApiError: undefined,
+      ...(currentNode?.nodeType === 'pollinations_image'
+        ? {
+          metadata: {
+            ...currentNode.metadata,
+            imagePipeline: nextPipeline,
+          },
+        }
+        : {}),
+    };
+    if (currentNode?.nodeType === 'chapter_timeline') {
       updateTimelineSetting(nodeId, updates);
     } else {
       updateNode(nodeId, updates);
@@ -4483,6 +5064,7 @@ export const useNodeManagement = (
     const sceneDescription = sceneNode.sceneText || sceneNode.inputValue || outputNode.inputValue;
     const useGptImage = providerOverride === 'comfy_openai_gpt_image_2_low';
     const sceneLocationPipeline = pipelineOverride ?? getNodeImagePipeline(sceneNode, 'z_image_turbo');
+    const promptModel = modelOverride || sceneNode.selectedModel || outputNode.selectedModel || MISTRAL_MODELS[0];
     const prompt = [
       `Нужная сцена: ${sceneNode.label}`,
       `Описание сцены:\n${sceneDescription}`,
@@ -4490,6 +5072,20 @@ export const useNodeManagement = (
       `Настроение сцены:\n${findDetail('Настроение')}`,
       'Задача: выбери или уточни конкретную локацию этой сцены и подготовь фон без персонажей.',
     ].join('\n\n');
+    const styledPromptContext = withProjectVisualStyle(prompt, currentNodes);
+    const sourceFingerprint = createPromptFingerprint(
+      'scene_location_prompt',
+      styledPromptContext,
+      SCENE_LOCATION_PROMPT_SYSTEM_PROMPT,
+      promptModel,
+    );
+    let preparedLocationPrompt = getReusableNodePrompt(
+      sceneNode,
+      'preparedSceneLocationPrompt',
+      'preparedSceneLocationPromptFingerprint',
+      sourceFingerprint,
+      sceneNode.assetPrompt || '',
+    );
 
     try {
       updateNode(sceneNodeId, {
@@ -4497,23 +5093,32 @@ export const useNodeManagement = (
         loadingProvider: generationSettings.mode,
         error: undefined,
         pollinationsApiError: undefined,
-        statusMessage: 'Определяем локацию сцены и собираем image prompt...',
+        statusMessage: preparedLocationPrompt
+          ? 'Используем сохранённый image prompt локации...'
+          : 'Определяем локацию сцены и собираем image prompt...',
       });
 
-      const locationPrompt = await generateText({
-        operation: 'scene_location_prompt',
-        prompt: withProjectVisualStyle(prompt, currentNodes),
-        systemPrompt: SCENE_LOCATION_PROMPT_SYSTEM_PROMPT,
-        model: modelOverride || sceneNode.selectedModel || outputNode.selectedModel || MISTRAL_MODELS[0],
-        sceneLabel: sceneNode.label,
-      }, controller.signal, generationSettings);
-      const styledLocationPrompt = appendProjectVisualStyleToImagePrompt(locationPrompt, currentNodes);
+      if (!preparedLocationPrompt) {
+        const locationPrompt = await generateText({
+          operation: 'scene_location_prompt',
+          prompt: styledPromptContext,
+          systemPrompt: SCENE_LOCATION_PROMPT_SYSTEM_PROMPT,
+          model: promptModel,
+          sceneLabel: sceneNode.label,
+        }, controller.signal, generationSettings);
+        preparedLocationPrompt = appendProjectVisualStyleToImagePrompt(locationPrompt, currentNodes);
+      }
 
       updateNode(sceneNodeId, {
         isLoading: false,
         isLoadingImage: true,
         loadingProvider: useGptImage ? 'comfy_openai_image' : imageGenerationSettings.provider,
-        assetPrompt: styledLocationPrompt,
+        assetPrompt: preparedLocationPrompt,
+        metadata: {
+          ...nodesRef.current[sceneNodeId]?.metadata,
+          preparedSceneLocationPrompt: preparedLocationPrompt,
+          preparedSceneLocationPromptFingerprint: sourceFingerprint,
+        },
         productionStatus: 'in_production',
         statusMessage: useGptImage
           ? 'GPT Image 2 API генерирует фон этой сцены без персонажей...'
@@ -4527,9 +5132,15 @@ export const useNodeManagement = (
       });
 
       const imageUrl = useGptImage
-        ? await generateComfyOpenAiGptImage2LowImage(styledLocationPrompt, 'location_asset', imageGenerationSettings, controller.signal)
+        ? await generateComfyOpenAiGptImage2LowImage(
+          preparedLocationPrompt,
+          'location_asset',
+          imageGenerationSettings,
+          controller.signal,
+          { reuseCompleted: true },
+        )
         : await generateImage(
-          styledLocationPrompt,
+          preparedLocationPrompt,
           sceneLocationPipeline,
           imageGenerationSettings,
           'scene_location',
@@ -4541,8 +5152,8 @@ export const useNodeManagement = (
         'Локация',
         'scene_location',
         0,
-        styledLocationPrompt,
-        withProjectVisualStyle(prompt, currentNodes),
+        preparedLocationPrompt,
+        styledPromptContext,
         { imageProvider: useGptImage ? 'comfy_openai_gpt_image_2_low' : imageGenerationSettings.provider },
       );
       showNotice('success', `Локация для «${sceneNode.label}» создана.`);
@@ -4550,7 +5161,7 @@ export const useNodeManagement = (
       if (isAbortError(error)) {
         showNotice('info', 'Генерация локации сцены отменена.');
       } else {
-        const message = errorMessage(error);
+        const message = withSavedImagePromptHint(errorMessage(error), preparedLocationPrompt);
         updateNode(sceneNodeId, { pollinationsApiError: message });
         showNotice('error', message);
       }
@@ -4594,6 +5205,20 @@ export const useNodeManagement = (
       `Настроение сцены:\n${findDetail('Настроение')}`,
       'Задача: подготовь персонажей этой сцены отдельным слоем для последующего наложения на фон.',
     ].filter(Boolean).join('\n\n');
+    const promptModel = sceneNode.selectedModel || outputNode.selectedModel || MISTRAL_MODELS[0];
+    const styledPromptContext = withProjectVisualStyle(prompt, currentNodes);
+    const sourceFingerprint = createPromptFingerprint(
+      'scene_character_layer_prompt',
+      styledPromptContext,
+      SCENE_CHARACTER_LAYER_PROMPT_SYSTEM_PROMPT,
+      promptModel,
+    );
+    let preparedCharacterPrompt = getReusableNodePrompt(
+      sceneNode,
+      'preparedSceneCharacterPrompt',
+      'preparedSceneCharacterPromptFingerprint',
+      sourceFingerprint,
+    );
 
     try {
       updateNode(sceneNodeId, {
@@ -4601,39 +5226,48 @@ export const useNodeManagement = (
         loadingProvider: generationSettings.mode,
         error: undefined,
         pollinationsApiError: undefined,
-        statusMessage: 'Выбираем героев сцены и собираем image prompt...',
+        statusMessage: preparedCharacterPrompt
+          ? 'Используем сохранённый image prompt персонажей...'
+          : 'Выбираем героев сцены и собираем image prompt...',
       });
 
-      const characterPrompt = await generateText({
-        operation: 'scene_character_layer_prompt',
-        prompt: withProjectVisualStyle(prompt, currentNodes),
-        systemPrompt: SCENE_CHARACTER_LAYER_PROMPT_SYSTEM_PROMPT,
-        model: sceneNode.selectedModel || outputNode.selectedModel || MISTRAL_MODELS[0],
-        sceneLabel: sceneNode.label,
-      }, controller.signal, generationSettings);
-      const styledCharacterPrompt = appendProjectVisualStyleToImagePrompt(characterPrompt, currentNodes);
+      if (!preparedCharacterPrompt) {
+        const characterPrompt = await generateText({
+          operation: 'scene_character_layer_prompt',
+          prompt: styledPromptContext,
+          systemPrompt: SCENE_CHARACTER_LAYER_PROMPT_SYSTEM_PROMPT,
+          model: promptModel,
+          sceneLabel: sceneNode.label,
+        }, controller.signal, generationSettings);
+        preparedCharacterPrompt = appendProjectVisualStyleToImagePrompt(characterPrompt, currentNodes);
+      }
 
       updateNode(sceneNodeId, {
         isLoading: false,
         isLoadingImage: true,
         loadingProvider: imageGenerationSettings.provider,
+        metadata: {
+          ...nodesRef.current[sceneNodeId]?.metadata,
+          preparedSceneCharacterPrompt: preparedCharacterPrompt,
+          preparedSceneCharacterPromptFingerprint: sourceFingerprint,
+        },
         statusMessage: 'Генерируем слой персонажей на чистом фоне...',
       });
 
       const imageUrl = await generateImage(
-        styledCharacterPrompt,
+        preparedCharacterPrompt,
         getNodeImagePipeline(sceneNode),
         imageGenerationSettings,
         'scene_characters',
         controller.signal,
       );
-      upsertImageNode(sceneNodeId, imageUrl, 'Персонажи', 'scene_characters', 1, styledCharacterPrompt, withProjectVisualStyle(prompt, currentNodes));
+      upsertImageNode(sceneNodeId, imageUrl, 'Персонажи', 'scene_characters', 1, preparedCharacterPrompt, styledPromptContext);
       showNotice('success', `Персонажи для «${sceneNode.label}» созданы.`);
     } catch (error) {
       if (isAbortError(error)) {
         showNotice('info', 'Генерация персонажей сцены отменена.');
       } else {
-        const message = errorMessage(error);
+        const message = withSavedImagePromptHint(errorMessage(error), preparedCharacterPrompt);
         updateNode(sceneNodeId, { pollinationsApiError: message });
         showNotice('error', message);
       }
@@ -4815,6 +5449,142 @@ export const useNodeManagement = (
     }
   }, [generationSettings, imageGenerationSettings.provider, showNotice, updateNode]);
 
+  const handlePrepareMissingSceneCharacters = useCallback(async (
+    sceneNodeId: string,
+    pipeline: ImagePipeline,
+    provider: DetailAssetImageProvider,
+    signal: AbortSignal,
+  ) => {
+    const sceneNode = nodesRef.current[sceneNodeId];
+    if (!sceneNode || sceneNode.nodeType !== 'scene') return false;
+    const sceneDescription = sceneNode.sceneText || sceneNode.inputValue || sceneNode.label;
+    const resolved = resolveCanonicalCharacterReferences(nodesRef.current, sceneNode, sceneDescription);
+    const missingTags = [...new Set(resolved.missingTags)];
+
+    setNodes((previousNodes) => {
+      const nextNodes = { ...previousNodes };
+      Object.entries(previousNodes).forEach(([candidateId, candidate]) => {
+        const candidateTag = typeof candidate.metadata?.characterTag === 'string'
+          ? normalizeCharacterTag(candidate.metadata.characterTag)
+          : '';
+        if (
+          candidate.metadata?.sourceKind === 'missing_character_asset'
+          && candidate.metadata?.missingFromSceneId === sceneNodeId
+          && !candidate.imageUrl
+          && candidateTag
+          && !missingTags.includes(candidateTag)
+        ) {
+          delete nextNodes[candidateId];
+        }
+      });
+      return nextNodes;
+    });
+
+    if (missingTags.length === 0) return true;
+    const preparedAssets: Array<{ nodeId: string; tag: string; prompt: string; imageUrl?: string }> = [];
+    setNodes((previousNodes) => {
+      const currentScene = previousNodes[sceneNodeId];
+      if (!currentScene) return previousNodes;
+      const nextNodes = { ...previousNodes };
+      missingTags.forEach((tag, index) => {
+        const assetNodeId = createMissingCharacterAssetNode(nextNodes, currentScene, tag, index);
+        const assetNode = nextNodes[assetNodeId];
+        if (!assetNode) return;
+        nextNodes[assetNodeId] = {
+          ...assetNode,
+          imagePipeline: pipeline,
+          metadata: {
+            ...assetNode.metadata,
+            imagePipeline: pipeline,
+          },
+        };
+        preparedAssets.push({
+          nodeId: assetNodeId,
+          tag,
+          prompt: assetNode.masterPrompt || assetNode.assetPrompt || '',
+          imageUrl: assetNode.imageUrl,
+        });
+      });
+      return nextNodes;
+    });
+    await new Promise((resolve) => window.setTimeout(resolve, 40));
+
+    const useGptImage = provider === 'comfy_openai_gpt_image_2_low';
+    if (!useGptImage) await unloadLmStudioBeforeComfyRender(sceneNodeId, signal);
+
+    for (let index = 0; index < preparedAssets.length; index += 1) {
+      if (signal.aborted) throw new DOMException('Aborted', 'AbortError');
+      const preparedAsset = preparedAssets[index];
+      if (!preparedAsset.prompt.trim()) continue;
+      if (preparedAsset.imageUrl) {
+        setNodes((previousNodes) => registerCanonicalCharacterAsset(previousNodes, preparedAsset.nodeId));
+        continue;
+      }
+
+      updateNode(preparedAsset.nodeId, {
+        isLoadingImage: true,
+        loadingProvider: useGptImage ? 'comfy_openai_image' : imageGenerationSettings.provider,
+        pollinationsApiError: undefined,
+        statusMessage: `Автодобор создаёт нового персонажа ${index + 1}/${preparedAssets.length}: ${preparedAsset.tag}`,
+      });
+      const styledPrompt = appendProjectVisualStyleToImagePrompt(preparedAsset.prompt, nodesRef.current);
+      const imageUrl = useGptImage
+        ? await generateComfyOpenAiGptImage2LowImage(
+          styledPrompt,
+          'character_asset',
+          imageGenerationSettings,
+          signal,
+          { reuseCompleted: true },
+        )
+        : await generateImage(
+          styledPrompt,
+          pipeline,
+          imageGenerationSettings,
+          'character_asset',
+          signal,
+        );
+
+      setNodes((previousNodes) => {
+        const currentAsset = previousNodes[preparedAsset.nodeId];
+        if (!currentAsset || currentAsset.nodeType !== 'pollinations_image') return previousNodes;
+        const withImage: NodesState = {
+          ...previousNodes,
+          [preparedAsset.nodeId]: {
+            ...currentAsset,
+            imageUrl,
+            masterPrompt: styledPrompt,
+            imagePipeline: pipeline,
+            isLoadingImage: false,
+            loadingProvider: undefined,
+            pollinationsApiError: undefined,
+            statusMessage: undefined,
+            metadata: {
+              ...currentAsset.metadata,
+              imagePipeline: pipeline,
+              imageProvider: useGptImage ? 'comfy_openai_gpt_image_2_low' : imageGenerationSettings.provider,
+              referencePrompt: styledPrompt,
+              referenceContext: sceneDescription,
+            },
+          },
+        };
+        return registerCanonicalCharacterAsset(withImage, preparedAsset.nodeId);
+      });
+      await new Promise((resolve) => window.setTimeout(resolve, 40));
+    }
+
+    const latestScene = nodesRef.current[sceneNodeId] ?? sceneNode;
+    return resolveCanonicalCharacterReferences(
+      nodesRef.current,
+      latestScene,
+      latestScene.sceneText || latestScene.inputValue || latestScene.label,
+    ).missingTags.length === 0;
+  }, [
+    imageGenerationSettings,
+    setNodes,
+    unloadLmStudioBeforeComfyRender,
+    updateNode,
+  ]);
+
   const handleGenerateDetailAsset = useCallback(async (
     detailNodeId: string,
     pipelineOverride?: ImagePipeline,
@@ -4853,6 +5623,7 @@ export const useNodeManagement = (
       : useNanoBanana
         ? 'comfy_nano_banana_2_lite'
         : imageGenerationSettings.provider;
+    const detailImagePipeline = pipelineOverride ?? getDetailImagePipeline(detailNode);
 
     try {
       if (isCharacters) {
@@ -4888,11 +5659,20 @@ export const useNodeManagement = (
           const characterDescription = characterDescriptions[index];
           const characterName = getCharacterName(characterDescription, index);
           const promptKey = `character:${createCharacterTag(characterName) || index}`;
+          const promptModel = modelOverride || detailNode.selectedModel || MISTRAL_MODELS[0];
+          const styledPromptContext = withProjectVisualStyle(characterDescription, nodesRef.current);
+          const sourceFingerprint = createPromptFingerprint(
+            'character_asset_prompt',
+            styledPromptContext,
+            CHARACTER_ASSET_PROMPT_SYSTEM_PROMPT,
+            promptModel,
+          );
           const reusablePrompt = getReusablePreparedAssetPrompt(
             detailNode,
             promptKey,
             characterName,
             allCharacterHeadings,
+            sourceFingerprint,
           );
           updateNode(detailNodeId, {
             isLoading: true,
@@ -4906,9 +5686,9 @@ export const useNodeManagement = (
 
           const styledAssetPrompt = reusablePrompt || appendProjectVisualStyleToImagePrompt(await generateText({
               operation: 'character_asset_prompt',
-              prompt: withProjectVisualStyle(characterDescription, nodesRef.current),
+              prompt: styledPromptContext,
               systemPrompt: CHARACTER_ASSET_PROMPT_SYSTEM_PROMPT,
-              model: modelOverride || detailNode.selectedModel || MISTRAL_MODELS[0],
+              model: promptModel,
             }, controller.signal, generationSettings), nodesRef.current);
           preparedAssets.push({
             name: characterName,
@@ -4917,7 +5697,7 @@ export const useNodeManagement = (
           });
           preparedPromptRecords = [
             ...preparedPromptRecords.filter((entry) => entry.key !== promptKey),
-            { key: promptKey, heading: characterName, prompt: styledAssetPrompt },
+            { key: promptKey, heading: characterName, prompt: styledAssetPrompt, sourceFingerprint },
           ];
 
           updateNode(detailNodeId, {
@@ -4951,7 +5731,7 @@ export const useNodeManagement = (
             )
             : await generateImage(
               preparedAsset.prompt,
-              pipelineOverride ?? getDetailImagePipeline(detailNode),
+              detailImagePipeline,
               imageGenerationSettings,
               'character_asset',
               controller.signal,
@@ -4966,6 +5746,7 @@ export const useNodeManagement = (
             withProjectVisualStyle(preparedAsset.description, nodesRef.current),
             {
               characterTag: createCharacterTag(preparedAsset.name),
+              imagePipeline: detailImagePipeline,
               imageProvider: imageProviderMetadata,
             },
           );
@@ -4988,22 +5769,6 @@ export const useNodeManagement = (
           return;
         }
 
-        setNodes((previousNodes) => {
-          const nextNodes = { ...previousNodes };
-          Object.entries(previousNodes).forEach(([nodeId, node]) => {
-            const assetKind = typeof node.metadata?.assetKind === 'string' ? node.metadata.assetKind : '';
-            if (
-              node.parentId === detailNodeId
-              && node.nodeType === 'pollinations_image'
-              && assetKind.startsWith('system_insert')
-            ) {
-              if (node.imageUrl?.startsWith('blob:')) URL.revokeObjectURL(node.imageUrl);
-              delete nextNodes[nodeId];
-            }
-          });
-          return nextNodes;
-        });
-
         const systemInsertHeadings = systemInsertDescriptions
           .map((insert) => `Сцена ${insert.sceneNumber} · ${insert.title}`);
         let preparedPromptRecords = getPreparedAssetPromptRecords(detailNode);
@@ -5012,11 +5777,20 @@ export const useNodeManagement = (
           const insert = systemInsertDescriptions[index];
           const heading = systemInsertHeadings[index];
           const promptKey = `system_insert:${insert.sceneNumber}:${index}`;
+          const promptModel = modelOverride || detailNode.selectedModel || MISTRAL_MODELS[0];
+          const styledPromptContext = withProjectVisualStyle(insert.body, nodesRef.current);
+          const sourceFingerprint = createPromptFingerprint(
+            'system_insert_asset_prompt',
+            styledPromptContext,
+            SYSTEM_INSERT_ASSET_PROMPT_SYSTEM_PROMPT,
+            promptModel,
+          );
           const reusablePrompt = getReusablePreparedAssetPrompt(
             detailNode,
             promptKey,
             heading,
             systemInsertHeadings,
+            sourceFingerprint,
           );
           updateNode(detailNodeId, {
             isLoading: true,
@@ -5030,9 +5804,9 @@ export const useNodeManagement = (
 
           const styledAssetPrompt = reusablePrompt || appendProjectVisualStyleToImagePrompt(await generateText({
               operation: 'system_insert_asset_prompt',
-              prompt: withProjectVisualStyle(insert.body, nodesRef.current),
+              prompt: styledPromptContext,
               systemPrompt: SYSTEM_INSERT_ASSET_PROMPT_SYSTEM_PROMPT,
-              model: modelOverride || detailNode.selectedModel || MISTRAL_MODELS[0],
+              model: promptModel,
             }, controller.signal, generationSettings), nodesRef.current);
           preparedAssets.push({
             sceneNumber: insert.sceneNumber,
@@ -5042,7 +5816,7 @@ export const useNodeManagement = (
           });
           preparedPromptRecords = [
             ...preparedPromptRecords.filter((entry) => entry.key !== promptKey),
-            { key: promptKey, heading, prompt: styledAssetPrompt },
+            { key: promptKey, heading, prompt: styledAssetPrompt, sourceFingerprint },
           ];
 
           updateNode(detailNodeId, {
@@ -5060,7 +5834,6 @@ export const useNodeManagement = (
           await unloadLmStudioBeforeComfyRender(detailNodeId, controller.signal);
         }
 
-        const imagePipeline = pipelineOverride ?? getDetailImagePipeline(detailNode);
         for (let index = 0; index < preparedAssets.length; index += 1) {
           const preparedAsset = preparedAssets[index];
           updateNode(detailNodeId, {
@@ -5081,7 +5854,7 @@ export const useNodeManagement = (
               )
               : await generateImage(
                 preparedAsset.prompt,
-                imagePipeline,
+                detailImagePipeline,
                 imageGenerationSettings,
                 'system_insert',
                 controller.signal,
@@ -5097,11 +5870,30 @@ export const useNodeManagement = (
             {
               sceneNumber: preparedAsset.sceneNumber,
               insertTitle: preparedAsset.title,
-              imagePipeline,
+              imagePipeline: detailImagePipeline,
               imageProvider: imageProviderMetadata,
             },
           );
         }
+
+        const expectedAssetKinds = new Set(preparedAssets.map((asset, index) =>
+          `system_insert:${asset.sceneNumber}:${index}`));
+        setNodes((previousNodes) => {
+          const nextNodes = { ...previousNodes };
+          Object.entries(previousNodes).forEach(([nodeId, node]) => {
+            const assetKind = typeof node.metadata?.assetKind === 'string' ? node.metadata.assetKind : '';
+            if (
+              node.parentId === detailNodeId
+              && node.nodeType === 'pollinations_image'
+              && assetKind.startsWith('system_insert')
+              && !expectedAssetKinds.has(assetKind)
+            ) {
+              if (node.imageUrl?.startsWith('blob:')) URL.revokeObjectURL(node.imageUrl);
+              delete nextNodes[nodeId];
+            }
+          });
+          return nextNodes;
+        });
 
         showNotice('success', `Создано системных вставок: ${systemInsertDescriptions.length}.`);
         return;
@@ -5127,11 +5919,20 @@ export const useNodeManagement = (
         const locationDescription = locationDescriptions[index];
         const locationName = getLocationName(locationDescription, index);
         const promptKey = `location:${index}:${locationName}`;
+        const promptModel = modelOverride || detailNode.selectedModel || MISTRAL_MODELS[0];
+        const styledPromptContext = withProjectVisualStyle(locationDescription, nodesRef.current);
+        const sourceFingerprint = createPromptFingerprint(
+          'location_asset_prompt',
+          styledPromptContext,
+          LOCATION_ASSET_PROMPT_SYSTEM_PROMPT,
+          promptModel,
+        );
         const reusablePrompt = getReusablePreparedAssetPrompt(
           detailNode,
           promptKey,
           locationName,
           locationHeadings,
+          sourceFingerprint,
         );
         updateNode(detailNodeId, {
           isLoading: true,
@@ -5145,9 +5946,9 @@ export const useNodeManagement = (
 
         const styledAssetPrompt = reusablePrompt || appendProjectVisualStyleToImagePrompt(await generateText({
             operation: 'location_asset_prompt',
-            prompt: withProjectVisualStyle(locationDescription, nodesRef.current),
+            prompt: styledPromptContext,
             systemPrompt: LOCATION_ASSET_PROMPT_SYSTEM_PROMPT,
-            model: modelOverride || detailNode.selectedModel || MISTRAL_MODELS[0],
+            model: promptModel,
           }, controller.signal, generationSettings), nodesRef.current);
         preparedAssets.push({
           name: locationName,
@@ -5156,7 +5957,7 @@ export const useNodeManagement = (
         });
         preparedPromptRecords = [
           ...preparedPromptRecords.filter((entry) => entry.key !== promptKey),
-          { key: promptKey, heading: locationName, prompt: styledAssetPrompt },
+          { key: promptKey, heading: locationName, prompt: styledAssetPrompt, sourceFingerprint },
         ];
 
         updateNode(detailNodeId, {
@@ -5190,7 +5991,7 @@ export const useNodeManagement = (
           )
           : await generateImage(
             preparedAsset.prompt,
-            pipelineOverride ?? getDetailImagePipeline(detailNode),
+            detailImagePipeline,
             imageGenerationSettings,
             'location_asset',
             controller.signal,
@@ -5203,7 +6004,10 @@ export const useNodeManagement = (
           index,
           preparedAsset.prompt,
           withProjectVisualStyle(preparedAsset.description, nodesRef.current),
-          { imageProvider: imageProviderMetadata },
+          {
+            imagePipeline: detailImagePipeline,
+            imageProvider: imageProviderMetadata,
+          },
         );
       }
       const validAssetKinds = new Set(preparedAssets.map((_, index) => `location_asset:${index}`));
@@ -5228,7 +6032,11 @@ export const useNodeManagement = (
       if (isAbortError(error)) {
         showNotice('info', 'Генерация ассета отменена.');
       } else {
-        const message = errorMessage(error);
+        const savedPromptRecords = getPreparedAssetPromptRecords(nodesRef.current[detailNodeId]);
+        const message = withSavedImagePromptHint(
+          errorMessage(error),
+          savedPromptRecords.length > 0 ? savedPromptRecords[0].prompt : '',
+        );
         updateNode(detailNodeId, { pollinationsApiError: message });
         showNotice('error', message);
       }
@@ -6198,7 +7006,7 @@ export const useNodeManagement = (
               : timelineEntry[1].parentId ?? ''
         )
         : sceneNode.parentId ?? '';
-      const systemInsertNode = sceneNumber
+      const systemInsertNode = sceneNumber && !isStoryExpansionSceneNode(sceneNode)
         ? findSystemInsertImageNodeForScene(currentNodes, sceneNumber, systemInsertScopeRootId)
         : undefined;
       const chapterBackdropNode = timelineEntry
@@ -6248,7 +7056,7 @@ export const useNodeManagement = (
               videoFrameSource: frameNode.label,
               sceneShotCountUsed: sceneShotUrls.length,
               videoVisualGenerationSignature: visualGenerationSignature,
-              ...(systemInsertNode ? { systemInsertSource: systemInsertNode.label } : {}),
+              systemInsertSource: systemInsertNode?.label ?? null,
               chapterBackdropSource: chapterBackdropNode?.label ?? null,
               chapterBackdropGeneratedAt: chapterBackdropGeneratedAt || null,
               ...(audioGeneratedAt ? { videoAudioGeneratedAt: audioGeneratedAt } : {}),
@@ -6302,7 +7110,7 @@ export const useNodeManagement = (
     const sceneEntries = Object.entries(currentNodes)
       .filter(([, candidate]) =>
         candidate.nodeType === 'scene'
-        && (!hasTimelineScope || timelineScope.has(candidate.parentId ?? '')))
+        && isSceneInTimelineScope(candidate, timelineScope, hasTimelineScope, sourceChapterId))
       .sort(([, first], [, second]) =>
         (getSceneNumber(first.label) ?? 0) - (getSceneNumber(second.label) ?? 0)
         || first.label.localeCompare(second.label, 'ru', { numeric: true }));
@@ -6316,7 +7124,7 @@ export const useNodeManagement = (
     const chapterBackdropGeneratedAt = getChapterBackdropGeneratedAt(chapterBackdropNode);
     const scenePlans = sceneEntries.map(([sceneId, scene], sceneIndex) => {
       const sceneNumber = getSceneNumber(scene.label) ?? 0;
-      const systemInsertNode = sceneNumber
+      const systemInsertNode = sceneNumber && !isStoryExpansionSceneNode(scene)
         ? findSystemInsertImageNodeForScene(currentNodes, sceneNumber, chapterScopeRootId)
         : undefined;
       const frameNode = findBestSceneFrameNode(currentNodes, sceneId);
@@ -6430,7 +7238,7 @@ export const useNodeManagement = (
                 videoFrameSource: plan.frameNode.label,
                 sceneShotCountUsed: shotUrls.length,
                 videoVisualGenerationSignature: plan.visualGenerationSignature,
-                ...(plan.systemInsertNode ? { systemInsertSource: plan.systemInsertNode.label } : {}),
+                systemInsertSource: plan.systemInsertNode?.label ?? null,
                 chapterBackdropSource: chapterBackdropNode?.label ?? null,
                 chapterBackdropGeneratedAt: chapterBackdropGeneratedAt || null,
                 ...(audioGeneratedAt ? { videoAudioGeneratedAt: audioGeneratedAt } : {}),
@@ -6500,7 +7308,7 @@ export const useNodeManagement = (
     const sceneEntries = Object.entries(currentNodes)
       .filter(([, candidate]) =>
         candidate.nodeType === 'scene'
-        && (!hasTimelineScope || timelineScope.has(candidate.parentId ?? '')))
+        && isSceneInTimelineScope(candidate, timelineScope, hasTimelineScope, sourceChapterId))
       .sort(([, first], [, second]) =>
         (getSceneNumber(first.label) ?? 0) - (getSceneNumber(second.label) ?? 0)
         || first.label.localeCompare(second.label, 'ru', { numeric: true }));
@@ -6509,7 +7317,7 @@ export const useNodeManagement = (
     const chapterBackdropGeneratedAt = getChapterBackdropGeneratedAt(chapterBackdropNode);
     const scenePlans = sceneEntries.map(([sceneId, scene]) => {
       const sceneNumber = getSceneNumber(scene.label) ?? 0;
-      const systemInsertNode = sceneNumber
+      const systemInsertNode = sceneNumber && !isStoryExpansionSceneNode(scene)
         ? findSystemInsertImageNodeForScene(currentNodes, sceneNumber, chapterScopeRootId)
         : undefined;
       const frameNode = findBestSceneFrameNode(currentNodes, sceneId);
@@ -6602,7 +7410,7 @@ export const useNodeManagement = (
                   videoFrameSource: plan.frameNode.label,
                   sceneShotCountUsed: shotUrls.length,
                   videoVisualGenerationSignature: plan.visualGenerationSignature,
-                  ...(plan.systemInsertNode ? { systemInsertSource: plan.systemInsertNode.label } : {}),
+                  systemInsertSource: plan.systemInsertNode?.label ?? null,
                   chapterBackdropSource: chapterBackdropNode?.label ?? null,
                   chapterBackdropGeneratedAt: chapterBackdropGeneratedAt || null,
                   ...(audioGeneratedAt ? { videoAudioGeneratedAt: audioGeneratedAt } : {}),
@@ -6692,7 +7500,7 @@ export const useNodeManagement = (
     const sceneEntries = Object.entries(currentNodes)
       .filter(([, candidate]) =>
         candidate.nodeType === 'scene'
-        && (!hasTimelineScope || timelineScope.has(candidate.parentId ?? '')))
+        && isSceneInTimelineScope(candidate, timelineScope, hasTimelineScope, sourceChapterId))
       .sort(([, first], [, second]) =>
         (getSceneNumber(first.label) ?? 0) - (getSceneNumber(second.label) ?? 0)
         || first.label.localeCompare(second.label, 'ru', { numeric: true }));
@@ -6724,6 +7532,20 @@ export const useNodeManagement = (
       systemInsertsNode?.inputValue ? `Системные вставки главы:\n${systemInsertsNode.inputValue.slice(0, 4000)}` : '',
       'Задача: придумай одну тёмную низкоконтрастную декоративную подложку главы для фона видеоклипов. Она должна поддерживать основной кадр и не перетягивать внимание.',
     ].filter(Boolean).join('\n\n');
+    const styledPromptContext = withProjectVisualStyle(promptContext, currentNodes);
+    const sourceFingerprint = createPromptFingerprint(
+      'chapter_backdrop_prompt',
+      styledPromptContext,
+      CHAPTER_BACKDROP_ASSET_PROMPT_SYSTEM_PROMPT,
+      timelineTextModel,
+    );
+    let preparedBackdropPrompt = getReusableNodePrompt(
+      timelineNode,
+      'preparedChapterBackdropPrompt',
+      'preparedChapterBackdropPromptFingerprint',
+      sourceFingerprint,
+      timelineNode.assetPrompt || '',
+    );
 
     if (!promptContext.trim()) {
       updateNode(timelineNodeId, { pollinationsApiError: 'Нет материала главы для генерации фона.' });
@@ -6740,31 +7562,41 @@ export const useNodeManagement = (
         isLoadingImage: true,
         loadingProvider: generationSettings.mode,
         pollinationsApiError: undefined,
-        statusMessage: 'Собираем prompt фона главы...',
+        statusMessage: preparedBackdropPrompt
+          ? 'Используем сохранённый image prompt фона главы...'
+          : 'Собираем prompt фона главы...',
       });
 
-      const assetPrompt = await generateText({
-        operation: 'chapter_backdrop_prompt',
-        prompt: withProjectVisualStyle(promptContext, nodesRef.current),
-        systemPrompt: CHAPTER_BACKDROP_ASSET_PROMPT_SYSTEM_PROMPT,
-        model: timelineTextModel,
-      }, controller.signal, generationSettings);
-      const styledAssetPrompt = [
-        appendProjectVisualStyleToImagePrompt(assetPrompt, nodesRef.current),
-        'Non-negotiable backdrop treatment: deliberately dark low-key 16:9 background, deep muted colors, restrained highlights, soft low contrast, subdued decorative edges, calm darker center, visually secondary to the foreground frame.',
-      ].join('\n\n');
+      if (!preparedBackdropPrompt) {
+        const assetPrompt = await generateText({
+          operation: 'chapter_backdrop_prompt',
+          prompt: styledPromptContext,
+          systemPrompt: CHAPTER_BACKDROP_ASSET_PROMPT_SYSTEM_PROMPT,
+          model: timelineTextModel,
+        }, controller.signal, generationSettings);
+        preparedBackdropPrompt = [
+          appendProjectVisualStyleToImagePrompt(assetPrompt, nodesRef.current),
+          'Non-negotiable backdrop treatment: deliberately dark low-key 16:9 background, deep muted colors, restrained highlights, soft low contrast, subdued decorative edges, calm darker center, visually secondary to the foreground frame.',
+        ].join('\n\n');
+      }
 
       updateNode(timelineNodeId, {
-        assetPrompt: styledAssetPrompt,
+        assetPrompt: preparedBackdropPrompt,
         loadingProvider: 'comfy_openai_image',
+        metadata: {
+          ...nodesRef.current[timelineNodeId]?.metadata,
+          preparedChapterBackdropPrompt: preparedBackdropPrompt,
+          preparedChapterBackdropPromptFingerprint: sourceFingerprint,
+        },
         statusMessage: 'Генерируем тёмный фон главы через GPT Image 2 Low API...',
       });
 
       const imageUrl = await generateComfyOpenAiGptImage2LowImage(
-        styledAssetPrompt,
+        preparedBackdropPrompt,
         'chapter_backdrop',
         imageGenerationSettings,
         controller.signal,
+        { reuseCompleted: true },
       );
 
       upsertImageNode(
@@ -6773,7 +7605,7 @@ export const useNodeManagement = (
         'Фон главы',
         'chapter_backdrop',
         -1,
-        styledAssetPrompt,
+        preparedBackdropPrompt,
         promptContext,
         {
           imagePipeline: 'gpt_image_2_low',
@@ -6789,7 +7621,7 @@ export const useNodeManagement = (
       if (isAbortError(error)) {
         showNotice('info', 'Генерация фона главы отменена.');
       } else {
-        const message = errorMessage(error);
+        const message = withSavedImagePromptHint(errorMessage(error), preparedBackdropPrompt);
         updateNode(timelineNodeId, { pollinationsApiError: message });
         showNotice('error', message);
       }
@@ -6901,7 +7733,7 @@ export const useNodeManagement = (
         .filter((entry): entry is [string, NodeData] => {
           const candidate = entry[1];
           return candidate.nodeType === 'scene'
-            && (!hasTimelineScope || timelineScope.has(candidate.parentId ?? ''));
+            && isSceneInTimelineScope(candidate, timelineScope, hasTimelineScope, sourceChapterId);
         })
         .sort(([, first], [, second]) =>
           (getSceneNumber(first.label) ?? 0) - (getSceneNumber(second.label) ?? 0)
@@ -7113,6 +7945,167 @@ export const useNodeManagement = (
       return sceneEntries.length > 0;
     };
 
+    const ensureStoryExpansionScenes = async () => {
+      const expansionSourceId = sourceChapterId || sourceScenarioId || timelineNode.parentId || '';
+      const expansionContext = expansionSourceId
+        ? getChapterExpansionContext(nodesRef.current, expansionSourceId)
+        : { chapterId: '', chapterText: '', chapterNode: undefined };
+      const expansionChapterId = expansionContext.chapterId;
+      if (!expansionChapterId) return true;
+
+      const findPlanner = (candidateNodes: NodesState) => Object.entries(candidateNodes)
+        .find((entry): entry is [string, NodeData] =>
+          entry[1].nodeType === 'prompt_node'
+          && entry[1].parentId === expansionChapterId
+          && entry[1].metadata?.promptPreset === 'story_expansion_planner');
+      const findChildSplit = (
+        candidateNodes: NodesState,
+        parentId: string,
+        splitPurpose: string,
+      ) => Object.entries(candidateNodes)
+        .find((entry): entry is [string, NodeData] =>
+          entry[1].nodeType === 'split_node'
+          && entry[1].parentId === parentId
+          && entry[1].metadata?.splitPurpose === splitPurpose);
+      const findSplitItems = (candidateNodes: NodesState, splitNodeId: string) => Object.entries(candidateNodes)
+        .filter((entry): entry is [string, NodeData] =>
+          entry[1].nodeType === 'split_item'
+          && entry[1].metadata?.splitParentId === splitNodeId);
+      const findExpansionSceneCount = (candidateNodes: NodesState, splitNodeId: string) => Object.values(candidateNodes)
+        .filter((candidate) =>
+          candidate.nodeType === 'scene'
+          && candidate.metadata?.sourceKind === 'story_expansion_scene'
+          && candidate.metadata?.sourceExpansionSplitNodeId === splitNodeId)
+        .length;
+
+      let plannerEntry = findPlanner(nodesRef.current);
+      if (!plannerEntry) {
+        updateNode(timelineNodeId, { statusMessage: 'Создаём архитектора сюжетных дополнений...' });
+        handleCreateStoryExpansionPromptNode(expansionChapterId);
+        await waitForNodes((candidateNodes) => Boolean(findPlanner(candidateNodes)), 5000);
+        plannerEntry = findPlanner(nodesRef.current);
+      }
+      if (!plannerEntry) {
+        chapterTextWorkflowError = 'Не удалось создать архитектора сюжетных дополнений.';
+        return false;
+      }
+
+      const [plannerId, initialPlanner] = plannerEntry;
+      if (timelineTextModel && initialPlanner.selectedModel !== timelineTextModel) {
+        updateNode(plannerId, { selectedModel: timelineTextModel });
+        await waitForState();
+      }
+      let planner = nodesRef.current[plannerId] ?? initialPlanner;
+      if (!planner.promptResultValue?.trim()) {
+        updateNode(timelineNodeId, { statusMessage: 'Планируем сюжетные дополнения главы...' });
+        await handleRunPromptNode(plannerId);
+        await waitForNodes(
+          (candidateNodes) => Boolean(candidateNodes[plannerId]?.promptResultValue?.trim()),
+          3000,
+        );
+        planner = nodesRef.current[plannerId] ?? planner;
+      }
+      if (isCancelled()) return false;
+      if (!planner.promptResultValue?.trim()) {
+        chapterTextWorkflowError = planner.error?.trim()
+          || 'Архитектор не вернул карточки сюжетных дополнений.';
+        return false;
+      }
+
+      const cardSplitEntry = findChildSplit(nodesRef.current, plannerId, 'story_expansion_cards');
+      if (!cardSplitEntry) {
+        chapterTextWorkflowError = 'Не найден Split Node карточек сюжетных дополнений.';
+        return false;
+      }
+      const [cardSplitId] = cardSplitEntry;
+      if (findSplitItems(nodesRef.current, cardSplitId).length === 0) {
+        updateNode(timelineNodeId, { statusMessage: 'Раскладываем сюжетные дополнения по карточкам...' });
+        handleRunSplitNode(cardSplitId);
+        await waitForNodes((candidateNodes) => findSplitItems(candidateNodes, cardSplitId).length > 0, 5000);
+      }
+      if (isCancelled()) return false;
+
+      const expansionCards = findSplitItems(nodesRef.current, cardSplitId);
+      if (expansionCards.length === 0) {
+        chapterTextWorkflowError = nodesRef.current[cardSplitId]?.error?.trim()
+          || 'Не удалось получить карточки сюжетных дополнений.';
+        return false;
+      }
+
+      for (let cardIndex = 0; cardIndex < expansionCards.length; cardIndex += 1) {
+        if (isCancelled()) return false;
+        const [cardId, cardNode] = expansionCards[cardIndex];
+        const findSceneWriter = (candidateNodes: NodesState) => Object.entries(candidateNodes)
+          .find((entry): entry is [string, NodeData] =>
+            entry[1].nodeType === 'prompt_node'
+            && entry[1].parentId === cardId
+            && entry[1].metadata?.promptPreset === 'story_expansion_scene_writer');
+
+        let writerEntry = findSceneWriter(nodesRef.current);
+        if (!writerEntry) {
+          updateNode(timelineNodeId, {
+            statusMessage: `Дополнение ${cardIndex + 1}/${expansionCards.length}: создаём разворачиватель...`,
+          });
+          handleCreateStoryExpansionSceneWriterPromptNode(cardId);
+          await waitForNodes((candidateNodes) => Boolean(findSceneWriter(candidateNodes)), 5000);
+          writerEntry = findSceneWriter(nodesRef.current);
+        }
+        if (!writerEntry) {
+          chapterTextWorkflowError = `Не удалось создать разворачиватель для «${cardNode.label}».`;
+          return false;
+        }
+
+        const [writerId, initialWriter] = writerEntry;
+        if (timelineTextModel && initialWriter.selectedModel !== timelineTextModel) {
+          updateNode(writerId, { selectedModel: timelineTextModel });
+          await waitForState();
+        }
+        let writer = nodesRef.current[writerId] ?? initialWriter;
+        if (!writer.promptResultValue?.trim()) {
+          updateNode(timelineNodeId, {
+            statusMessage: `Дополнение ${cardIndex + 1}/${expansionCards.length}: разбиваем на сцены...`,
+          });
+          await handleRunPromptNode(writerId);
+          await waitForNodes(
+            (candidateNodes) => Boolean(candidateNodes[writerId]?.promptResultValue?.trim()),
+            3000,
+          );
+          writer = nodesRef.current[writerId] ?? writer;
+        }
+        if (isCancelled()) return false;
+        if (!writer.promptResultValue?.trim()) {
+          chapterTextWorkflowError = writer.error?.trim()
+            || `Разворачиватель не вернул сцены для «${cardNode.label}».`;
+          return false;
+        }
+
+        const sceneSplitEntry = findChildSplit(nodesRef.current, writerId, 'story_expansion_scenes');
+        if (!sceneSplitEntry) {
+          chapterTextWorkflowError = `Не найден Split Node сцен для «${cardNode.label}».`;
+          return false;
+        }
+        const [sceneSplitId] = sceneSplitEntry;
+        if (findExpansionSceneCount(nodesRef.current, sceneSplitId) === 0) {
+          updateNode(timelineNodeId, {
+            statusMessage: `Дополнение ${cardIndex + 1}/${expansionCards.length}: добавляем сцены в таймлайн...`,
+          });
+          handleRunSplitNode(sceneSplitId);
+          await waitForNodes(
+            (candidateNodes) => findExpansionSceneCount(candidateNodes, sceneSplitId) > 0,
+            5000,
+          );
+        }
+        if (findExpansionSceneCount(nodesRef.current, sceneSplitId) === 0) {
+          chapterTextWorkflowError = nodesRef.current[sceneSplitId]?.error?.trim()
+            || `Не удалось добавить сцены «${cardNode.label}» в таймлайн.`;
+          return false;
+        }
+      }
+
+      refreshTimelineContext();
+      return true;
+    };
+
     const findScopedDetail = (label: string) => {
       const latestNodes = nodesRef.current;
       return findScopedProjectDetail(
@@ -7190,6 +8183,16 @@ export const useNodeManagement = (
         }
         updateNode(timelineNodeId, { statusMessage: 'Структура главы готова. Добираем изображения и озвучку...' });
       }
+
+      updateNode(timelineNodeId, { statusMessage: 'Проверяем сюжетные дополнения главы...' });
+      const expansionsReady = await ensureStoryExpansionScenes();
+      if (isCancelled()) return false;
+      if (!expansionsReady) {
+        const message = chapterTextWorkflowError || 'Не удалось подготовить сюжетные дополнения главы.';
+        updateNode(timelineNodeId, { pollinationsApiError: `Автодобор остановился на дополнениях: ${message}` });
+        return false;
+      }
+      refreshTimelineContext();
 
       await ensureDetail('герои');
       if (isCancelled()) return false;
@@ -7339,25 +8342,42 @@ export const useNodeManagement = (
 
         const sceneAfterLocation = nodesRef.current[sceneId] ?? latestScene;
         if (sceneAfterLocation.nodeType !== 'scene') continue;
-        if (!hasSceneLocation(sceneId, sceneAfterLocation)) {
-          const message = sceneAfterLocation.pollinationsApiError
-            ? `Автодобор остановился на локации «${sceneAfterLocation.label}»: ${sceneAfterLocation.pollinationsApiError}`
-            : `Для «${sceneAfterLocation.label}» не найден общий референс. Сначала создайте локации в ноде «Локации».`;
+        if (
+          !hasSceneLocation(sceneId, sceneAfterLocation)
+          && sceneAfterLocation.metadata?.sourceKind === 'story_expansion_scene'
+        ) {
+          updateNode(timelineNodeId, {
+            statusMessage: `Сцена ${index + 1}/${sceneEntries.length}: создаём локацию сюжетного дополнения...`,
+          });
+          await handleGenerateSceneLocationAsset(
+            sceneId,
+            timelineAssetPipeline,
+            timelineTextModel,
+            timelineAssetImageProvider,
+          );
+          await waitForState();
+        }
+        if (isCancelled()) return false;
+        const sceneWithLocation = nodesRef.current[sceneId] ?? sceneAfterLocation;
+        if (!hasSceneLocation(sceneId, sceneWithLocation)) {
+          const message = sceneWithLocation.pollinationsApiError
+            ? `Автодобор остановился на локации «${sceneWithLocation.label}»: ${sceneWithLocation.pollinationsApiError}`
+            : `Для «${sceneWithLocation.label}» не найден общий референс. Сначала создайте локации в ноде «Локации».`;
           updateNode(timelineNodeId, { pollinationsApiError: message });
           return false;
         }
-        const narrationText = resolveSceneNarrationText(nodesRef.current, sceneAfterLocation);
+        const narrationText = resolveSceneNarrationText(nodesRef.current, sceneWithLocation);
         const currentTtsSignature = narrationText
           ? getSceneTtsGenerationSignature(narrationText, narrationSettings)
           : '';
-        const storedTtsSignature = typeof sceneAfterLocation.metadata?.ttsGenerationSignature === 'string'
-          ? sceneAfterLocation.metadata.ttsGenerationSignature
+        const storedTtsSignature = typeof sceneWithLocation.metadata?.ttsGenerationSignature === 'string'
+          ? sceneWithLocation.metadata.ttsGenerationSignature
           : '';
-        const shouldRefreshAudio = !sceneAfterLocation.audioUrl
+        const shouldRefreshAudio = !sceneWithLocation.audioUrl
           || Boolean(narrationText && storedTtsSignature !== currentTtsSignature);
         if (shouldRefreshAudio) {
           updateNode(timelineNodeId, {
-            statusMessage: sceneAfterLocation.audioUrl
+            statusMessage: sceneWithLocation.audioUrl
               ? `Сцена ${index + 1}/${sceneEntries.length}: обновляем озвучку после изменения голоса или TTS-текста...`
               : `Сцена ${index + 1}/${sceneEntries.length}: озвучиваем закадр...`,
           });
@@ -7375,6 +8395,25 @@ export const useNodeManagement = (
         }
 
         if (!hasComposedFrame(sceneId)) {
+          const charactersReady = await handlePrepareMissingSceneCharacters(
+            sceneId,
+            timelineAssetPipeline,
+            timelineAssetImageProvider,
+            controller.signal,
+          );
+          if (isCancelled()) return false;
+          if (!charactersReady) {
+            const sceneAfterCharacters = nodesRef.current[sceneId] ?? sceneAfterAudio;
+            const unresolved = resolveCanonicalCharacterReferences(
+              nodesRef.current,
+              sceneAfterCharacters,
+              sceneAfterCharacters.sceneText || sceneAfterCharacters.inputValue || sceneAfterCharacters.label,
+            ).missingTags;
+            updateNode(timelineNodeId, {
+              pollinationsApiError: `Автодобор остановился на персонажах «${sceneAfterCharacters.label}»: ${unresolved.join(', ') || 'референс не зарегистрирован'}.`,
+            });
+            return false;
+          }
           updateNode(timelineNodeId, {
             statusMessage: `Сцена ${index + 1}/${sceneEntries.length}: объединяем кадр через ${timelineComposeLabel}...`,
           });
@@ -7446,14 +8485,19 @@ export const useNodeManagement = (
     handleComposeSceneFlux2,
     handleCreateChapterPlanNodes,
     handleCreateSceneWriterPromptNode,
+    handleCreateStoryExpansionPromptNode,
+    handleCreateStoryExpansionSceneWriterPromptNode,
     handleEnsureChapterTimeline,
     handleGenerateChapterBackdrop,
     handleGenerateDetailAsset,
+    handlePrepareMissingSceneCharacters,
+    handleGenerateSceneLocationAsset,
     handleGenerateSceneOmniVoiceNarration,
     handleGenerateSceneShotGrid,
     handlePlanChapters,
     handlePrepareNarrationTts,
     handleRunPromptNode,
+    handleRunSplitNode,
     handleScenarioDetailClick,
     narrationSettings,
     showNotice,
@@ -7560,7 +8604,7 @@ export const useNodeManagement = (
       const hasTimelineScope = timelineScope.size > 0;
       const chapterScenes = Object.values(nodesRef.current).filter((candidate) =>
         candidate.nodeType === 'scene'
-        && (!hasTimelineScope || timelineScope.has(candidate.parentId ?? '')));
+        && isSceneInTimelineScope(candidate, timelineScope, hasTimelineScope, sourceChapterId));
       const missingClipLabels = chapterScenes
         .filter((scene) => !scene.videoUrl)
         .map((scene) => scene.label);
@@ -8079,7 +9123,19 @@ export const useNodeManagement = (
     });
 
     try {
-      const styledPrompt = appendProjectVisualStyleToImagePrompt(prompt, nodesRef.current);
+      const protagonistContext = [
+        prompt,
+        typeof node.metadata?.promptContext === 'string' ? node.metadata.promptContext : '',
+        typeof node.metadata?.referenceContext === 'string' ? node.metadata.referenceContext : '',
+        typeof node.metadata?.characterTag === 'string' ? node.metadata.characterTag : '',
+      ].filter(Boolean).join('\n');
+      const shouldKeepYoungProtagonist = isCharacterReferenceNode(node)
+        && /(протагонист|главн(?:ый|ая)\s+геро|main\s+(?:protagonist|hero)|@LIAM\b)/iu.test(protagonistContext)
+        && !/(старш(?:ий|ая)|пожил|elderly|middle-aged|older\s+(?:man|woman)|\b(?:4[5-9]|[5-9]\d)\s*(?:лет|years?\s+old))/iu.test(protagonistContext);
+      const promptWithAgeRule = shouldKeepYoungProtagonist && !/visibly young adult/iu.test(prompt)
+        ? `${prompt}\n\nDepict the protagonist as a visibly young adult around 20-28 years old, with a youthful face, clear expressive eyes, and an energetic manhwa-lead silhouette. Show experience, fatigue, or trauma through the gaze, posture, scars, and worn clothing while preserving the young physical age.`
+        : prompt;
+      const styledPrompt = appendProjectVisualStyleToImagePrompt(promptWithAgeRule, nodesRef.current);
       let imageUrl: string;
       if (useNanoBanana || useNanoBananaThumbnail) {
         imageUrl = await generateComfyNanoBanana2LiteImage(styledPrompt, imageGenerationSettings, controller.signal);
@@ -8195,82 +9251,7 @@ export const useNodeManagement = (
   }, [setNodes, showNotice]);
 
   const handleSetCharacterCanonicalAsset = useCallback((nodeId: string) => {
-    setNodes((previousNodes) => {
-      const node = previousNodes[nodeId];
-      if (!isCharacterAssetNode(node)) return previousNodes;
-
-      const existingRegistry = findCharacterRegistryNodeEntry(previousNodes);
-      const existingRegistryId = existingRegistry?.[0] ?? generateNodeId();
-      const existingRegistryNode = existingRegistry?.[1];
-      const characterName = getCanonicalCharacterName(node);
-      const existingTag = typeof node.metadata?.characterTag === 'string'
-        ? normalizeCharacterTag(node.metadata.characterTag)
-        : '';
-      const tag = existingTag || createCharacterTag(characterName, `CHARACTER_${Date.now()}`);
-      const entries = parseCharacterRegistryEntries(existingRegistryNode);
-      const now = new Date().toISOString();
-      const referenceDescription = typeof node.metadata?.referenceContext === 'string'
-        ? node.metadata.referenceContext
-        : typeof node.metadata?.promptContext === 'string' ? node.metadata.promptContext : '';
-      const aliases = [...new Set([
-        characterName,
-        getReferenceLabel(node),
-        tag,
-        ...(typeof node.metadata?.characterTag === 'string' ? [node.metadata.characterTag] : []),
-        ...getCharacterAliasCandidatesFromDescription(referenceDescription),
-        ...createCharacterTagVariants(characterName),
-      ].map((alias) => alias.trim()).filter(Boolean))];
-      const nextEntry = {
-        tag,
-        name: characterName,
-        assetNodeId: nodeId,
-        aliases,
-        description: referenceDescription,
-        updatedAt: now,
-      };
-      const nextEntries = [
-        ...entries.filter((entry) => entry.tag !== tag && entry.assetNodeId !== nodeId),
-        nextEntry,
-      ].sort((left, right) => left.tag.localeCompare(right.tag, 'ru', { numeric: true }));
-      const nextRegistryNode: NodeData = {
-        ...(existingRegistryNode ?? {
-          nodeType: 'character_registry',
-          x: node.x + Math.max(node.width ?? 320, 320) + 40,
-          y: node.y,
-          label: 'Реестр персонажей',
-          width: 440,
-          height: 420,
-          level: (node.level ?? 0) + 1,
-          parentId: node.parentId,
-        }),
-        nodeType: 'character_registry',
-        inputValue: formatCharacterRegistryText(nextEntries),
-        statusMessage: `${tag} закреплён как канонический референс.`,
-        metadata: {
-          ...existingRegistryNode?.metadata,
-          sourceKind: CHARACTER_REGISTRY_SOURCE_KIND,
-          characterRegistryJson: serializeCharacterRegistryEntries(nextEntries),
-        },
-      };
-
-      return {
-        ...previousNodes,
-        [nodeId]: {
-          ...node,
-          productionStatus: 'ready',
-          metadata: {
-            ...node.metadata,
-            isReference: true,
-            canonicalCharacter: true,
-            characterTag: tag,
-            referencePrompt: node.masterPrompt ?? '',
-            referenceContext: typeof node.metadata?.promptContext === 'string' ? node.metadata.promptContext : '',
-            canonicalRegisteredAt: now,
-          },
-        },
-        [existingRegistryId]: nextRegistryNode,
-      };
-    });
+    setNodes((previousNodes) => registerCanonicalCharacterAsset(previousNodes, nodeId));
     showNotice('success', 'Персонаж добавлен в канон. Теперь сцены с его @ID будут брать этот референс.');
   }, [setNodes, showNotice]);
 
@@ -8328,6 +9309,8 @@ export const useNodeManagement = (
     handlePromptTemplateChange,
     handleCreatePromptNode,
     handleCreateSceneWriterPromptNode,
+    handleCreateStoryExpansionPromptNode,
+    handleCreateStoryExpansionSceneWriterPromptNode,
     handleRunPromptNode,
     handleAssemblePromptResultScenario,
     handleCreateSplitNode,

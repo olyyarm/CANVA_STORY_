@@ -1014,6 +1014,64 @@ const waitForComfyImage = async (
   return null;
 };
 
+const runComfyPartnerImageWorkflowWithAuthRetry = async (
+  baseUrl: string,
+  workflow: unknown,
+  settings: ImageGenerationSettings,
+  clientPrefix: string,
+  submitAction: string,
+  timeoutMs: number,
+  timeoutMessage: string,
+  signal?: AbortSignal,
+) => {
+  let promptId: string | null = null;
+  for (let attempt = 0; attempt <= COMFY_PARTNER_AUTH_RETRY_COUNT; attempt += 1) {
+    try {
+      const clientId = typeof crypto.randomUUID === 'function'
+        ? crypto.randomUUID()
+        : `${clientPrefix}-${Date.now()}-${attempt}`;
+      const promptResponse = await fetch(`${baseUrl}/prompt`, getComfyFetchOptions({
+        method: 'POST',
+        signal,
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(createComfyPromptPayload(clientId, workflow, settings)),
+      }));
+      if (!promptResponse.ok) {
+        throw new Error(getComfyError(submitAction, promptResponse, await readResponseDetails(promptResponse)));
+      }
+      const promptData: ComfyPromptResponse = await promptResponse.json();
+      if (!promptData.prompt_id) throw new Error('ComfyUI не вернул prompt_id для партнёрского image workflow.');
+      promptId = promptData.prompt_id;
+
+      const image = await waitForComfyImage(baseUrl, promptId, timeoutMs, signal);
+      if (!image) {
+        await cancelComfyPrompt(baseUrl, promptId);
+        throw new Error(timeoutMessage);
+      }
+      return image;
+    } catch (error) {
+      if (error instanceof DOMException && error.name === 'AbortError') {
+        if (promptId) await cancelComfyPrompt(baseUrl, promptId);
+        throw error;
+      }
+      const message = error instanceof Error ? error.message : String(error);
+      const canRetryAuthorization = isComfyAuthorizationError(message)
+        && attempt < COMFY_PARTNER_AUTH_RETRY_COUNT;
+      if (!canRetryAuthorization) {
+        if (isComfyAuthorizationError(message) && attempt > 0) {
+          throw new Error(`Comfy API отклонил image workflow после ${attempt + 1} попыток. ${message}`);
+        }
+        throw error;
+      }
+
+      if (promptId) await cancelComfyPrompt(baseUrl, promptId);
+      promptId = null;
+      await wait(COMFY_PARTNER_AUTH_RETRY_DELAY_MS, signal);
+    }
+  }
+  throw new Error('Comfy API не завершил image workflow.');
+};
+
 const getComfyHistoryWorkflow = (entry: ComfyHistoryEntry) => {
   if (!Array.isArray(entry.prompt) || !entry.prompt[2] || typeof entry.prompt[2] !== 'object') return null;
   return entry.prompt[2] as Record<string, {
@@ -2338,7 +2396,6 @@ export const generateComfyNanoBanana2LiteComposeImage = async (
 ) => {
   const baseUrl = getComfyBaseUrl(settings.comfyEndpoint);
   let referenceBoardUrl: string | null = null;
-  let promptId: string | null = null;
   try {
     if (settings.provider !== 'comfyui') throw new Error('Nano Banana compose работает только через ComfyUI.');
     const normalizedReferences = Array.isArray(characterReferences)
@@ -2354,28 +2411,16 @@ export const generateComfyNanoBanana2LiteComposeImage = async (
       uploadComfyInputImage(baseUrl, characterImageUrl, 'canva-story-ref', signal),
     ]);
     const workflow = buildComfyNanoBanana2LiteComposeWorkflow(prompt, backgroundImageName, characterImageName);
-    const clientId = typeof crypto.randomUUID === 'function'
-      ? crypto.randomUUID()
-      : `canva-story-nano-banana-${Date.now()}`;
-
-    const promptResponse = await fetch(`${baseUrl}/prompt`, getComfyFetchOptions({
-      method: 'POST',
+    const image = await runComfyPartnerImageWorkflowWithAuthRetry(
+      baseUrl,
+      workflow,
+      settings,
+      'canva-story-nano-banana-compose',
+      'ComfyUI не принял Nano Banana workflow',
+      COMFY_NANO_BANANA_TIMEOUT_MS,
+      'Nano Banana не вернул изображение за 45 минут. Задача снята с очереди ComfyUI.',
       signal,
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(createComfyPromptPayload(clientId, workflow, settings)),
-    }));
-    if (!promptResponse.ok) {
-      throw new Error(getComfyError('ComfyUI не принял Nano Banana workflow', promptResponse, await readResponseDetails(promptResponse)));
-    }
-    const promptData: ComfyPromptResponse = await promptResponse.json();
-    if (!promptData.prompt_id) throw new Error('ComfyUI не вернул prompt_id для Nano Banana workflow.');
-    promptId = promptData.prompt_id;
-
-    const image = await waitForComfyImage(baseUrl, promptId, COMFY_NANO_BANANA_TIMEOUT_MS, signal);
-    if (!image) {
-      await cancelComfyPrompt(baseUrl, promptId);
-      throw new Error('Nano Banana не вернул изображение за 45 минут. Задача снята с очереди ComfyUI.');
-    }
+    );
 
     const params = new URLSearchParams({
       filename: image.filename,
@@ -2391,7 +2436,6 @@ export const generateComfyNanoBanana2LiteComposeImage = async (
     return URL.createObjectURL(blob);
   } catch (error) {
     if (error instanceof DOMException && error.name === 'AbortError') {
-      if (promptId) await cancelComfyPrompt(baseUrl, promptId);
       throw error;
     }
     if (error instanceof TypeError) {
@@ -2421,7 +2465,6 @@ export const generateComfyNanoBanana2LiteShotGrid = async (
   signal?: AbortSignal,
 ) => {
   const baseUrl = getComfyBaseUrl(settings.comfyEndpoint);
-  let promptId: string | null = null;
   try {
     if (settings.provider !== 'comfyui') {
       throw new Error('Дополнительные планы Nano Banana работают только через ComfyUI API.');
@@ -2433,31 +2476,16 @@ export const generateComfyNanoBanana2LiteShotGrid = async (
       signal,
     );
     const workflow = buildComfyNanoBanana2LiteShotGridWorkflow(prompt, sourceFrameName);
-    const clientId = typeof crypto.randomUUID === 'function'
-      ? crypto.randomUUID()
-      : `canva-story-scene-shot-grid-${Date.now()}`;
-    const promptResponse = await fetch(`${baseUrl}/prompt`, getComfyFetchOptions({
-      method: 'POST',
+    const image = await runComfyPartnerImageWorkflowWithAuthRetry(
+      baseUrl,
+      workflow,
+      settings,
+      'canva-story-scene-shot-grid',
+      'ComfyUI не принял Nano Banana workflow дополнительных планов',
+      COMFY_NANO_BANANA_TIMEOUT_MS,
+      'Nano Banana не вернула лист дополнительных планов за 45 минут. Задача снята с очереди ComfyUI.',
       signal,
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(createComfyPromptPayload(clientId, workflow, settings)),
-    }));
-    if (!promptResponse.ok) {
-      throw new Error(getComfyError(
-        'ComfyUI не принял Nano Banana workflow дополнительных планов',
-        promptResponse,
-        await readResponseDetails(promptResponse),
-      ));
-    }
-    const promptData: ComfyPromptResponse = await promptResponse.json();
-    if (!promptData.prompt_id) throw new Error('ComfyUI не вернул prompt_id для листа дополнительных планов.');
-    promptId = promptData.prompt_id;
-
-    const image = await waitForComfyImage(baseUrl, promptId, COMFY_NANO_BANANA_TIMEOUT_MS, signal);
-    if (!image) {
-      await cancelComfyPrompt(baseUrl, promptId);
-      throw new Error('Nano Banana не вернула лист дополнительных планов за 45 минут. Задача снята с очереди ComfyUI.');
-    }
+    );
     const params = new URLSearchParams({
       filename: image.filename,
       subfolder: image.subfolder ?? '',
@@ -2474,7 +2502,6 @@ export const generateComfyNanoBanana2LiteShotGrid = async (
     return URL.createObjectURL(await viewResponse.blob());
   } catch (error) {
     if (error instanceof DOMException && error.name === 'AbortError') {
-      if (promptId) await cancelComfyPrompt(baseUrl, promptId);
       throw error;
     }
     if (error instanceof TypeError) {
@@ -2602,28 +2629,16 @@ export const generateComfyNanoBanana2LiteImage = async (
   const baseUrl = getComfyBaseUrl(settings.comfyEndpoint);
   try {
     const workflow = buildComfyNanoBanana2LiteImageWorkflow(prompt);
-    const clientId = typeof crypto.randomUUID === 'function'
-      ? crypto.randomUUID()
-      : `canva-story-nano-banana-insert-${Date.now()}`;
-
-    const promptResponse = await fetch(`${baseUrl}/prompt`, getComfyFetchOptions({
-      method: 'POST',
+    const image = await runComfyPartnerImageWorkflowWithAuthRetry(
+      baseUrl,
+      workflow,
+      settings,
+      'canva-story-nano-banana-image',
+      'ComfyUI не принял workflow самостоятельного изображения Nano Banana',
+      COMFY_NANO_BANANA_TIMEOUT_MS,
+      'Nano Banana не вернул изображение за 45 минут. Проверьте очередь ComfyUI и output.',
       signal,
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(createComfyPromptPayload(clientId, workflow, settings)),
-    }));
-    if (!promptResponse.ok) {
-      throw new Error(getComfyError(
-        'ComfyUI не принял workflow самостоятельного изображения Nano Banana',
-        promptResponse,
-        await readResponseDetails(promptResponse),
-      ));
-    }
-    const promptData: ComfyPromptResponse = await promptResponse.json();
-    if (!promptData.prompt_id) throw new Error('ComfyUI не вернул prompt_id для изображения Nano Banana.');
-
-    const image = await waitForComfyImage(baseUrl, promptData.prompt_id, COMFY_NANO_BANANA_TIMEOUT_MS, signal);
-    if (!image) throw new Error('Nano Banana не вернул изображение за 45 минут. Проверьте очередь ComfyUI и output.');
+    );
 
     const params = new URLSearchParams({
       filename: image.filename,

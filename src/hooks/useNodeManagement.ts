@@ -1128,6 +1128,9 @@ const findPreparedTtsNarrationNode = (nodes: NodesState, narrationNodeId?: strin
 };
 
 const resolveSceneNarrationText = (nodes: NodesState, sceneNode: NodeData) => {
+  const expansionNarration = isStoryExpansionSceneNode(sceneNode)
+    ? extractStoryExpansionNarration(sceneNode.sceneText || sceneNode.inputValue || '')
+    : '';
   const narrationEntry = Object.entries(nodes).find(
     ([, node]) => node.parentId === sceneNode.parentId && node.nodeType === 'script_detail' && node.label === 'Закадр',
   );
@@ -1147,7 +1150,8 @@ const resolveSceneNarrationText = (nodes: NodesState, sceneNode: NodeData) => {
     : '';
   const outputNode = sceneNode.parentId ? nodes[sceneNode.parentId] : undefined;
   const fallbackText = cleanupBrowserSpeechText(sceneNode.sceneText || sceneNode.inputValue || outputNode?.inputValue || '');
-  return preparedSceneNarration
+  return expansionNarration
+    || preparedSceneNarration
     || preparedChapterNarration
     || sceneNarration
     || previousGeneratedNarration
@@ -6399,6 +6403,7 @@ export const useNodeManagement = (
       };
       Object.entries(nextNodes).forEach(([sceneNodeId, sceneNode]) => {
         if (sceneNode.nodeType !== 'scene' || sceneNode.parentId !== currentDetail.parentId) return;
+        if (isStoryExpansionSceneNode(sceneNode)) return;
         const preparedTtsText = extractSceneNarration(result, sceneNode.label);
         if (!preparedTtsText) return;
         distributedSceneCount += 1;

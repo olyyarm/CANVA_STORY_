@@ -64,7 +64,7 @@ import {
   SYSTEM_INSERTS_DETAIL_SYSTEM_PROMPT,
   TTS_CLEANUP_SYSTEM_PROMPT,
 } from '../constants';
-import { getNextNarrationSeed, getOmniVoiceSteps } from '../narrationSettings';
+import { applyPronunciationDictionary, getNextNarrationSeed, getOmniVoiceSteps } from '../narrationSettings';
 import {
   SCENE_WRITER_CHARACTER_TAG_CONTRACT,
   SCENE_WRITER_SHOT_SCALE_CONTRACT,
@@ -1164,7 +1164,10 @@ const getSceneTtsGenerationSignature = (
   seed = settings.seed,
 ) => JSON.stringify({
   version: 1,
-  text: cleanupBrowserSpeechText(text),
+  text: applyPronunciationDictionary(
+    cleanupBrowserSpeechText(text),
+    settings.pronunciationDictionary,
+  ),
   mode: settings.mode,
   model: settings.model,
   quality: settings.quality,
@@ -1173,7 +1176,7 @@ const getSceneTtsGenerationSignature = (
   voiceInstruct: settings.voiceInstruct.trim(),
   referenceAssetId: settings.referenceAudio?.assetId ?? '',
   referenceText: settings.referenceText?.trim() ?? '',
-  synthesisProfile: 'omnivoice-speed-0.9-v1',
+  synthesisProfile: 'omnivoice-speed-0.9-stable-pronunciation-v2',
 });
 
 const upsertScriptDetailNode = (
@@ -6464,7 +6467,10 @@ export const useNodeManagement = (
       updateNode(previousNodeId, { isSpeaking: false, statusMessage: undefined });
     }
 
-    const text = cleanupBrowserSpeechText(rawText);
+    const text = applyPronunciationDictionary(
+      cleanupBrowserSpeechText(rawText),
+      narrationSettings.pronunciationDictionary,
+    );
     const chunks = splitSpeechText(text);
     if (chunks.length === 0) {
       updateNode(detailNodeId, { error: 'После очистки не осталось текста для озвучки.' });
@@ -6519,7 +6525,7 @@ export const useNodeManagement = (
     };
 
     speakChunk(0);
-  }, [showNotice, updateNode]);
+  }, [narrationSettings.pronunciationDictionary, showNotice, updateNode]);
 
   const getOmniVoiceReferenceInput = useCallback(async () => {
     if (narrationSettings.mode !== 'clone') return undefined;
@@ -6548,7 +6554,10 @@ export const useNodeManagement = (
       return;
     }
 
-    const text = cleanupBrowserSpeechText(rawText);
+    const text = applyPronunciationDictionary(
+      cleanupBrowserSpeechText(rawText),
+      narrationSettings.pronunciationDictionary,
+    );
     if (!text) {
       updateNode(detailNodeId, { error: 'После очистки не осталось текста для озвучки.' });
       return;
@@ -6637,11 +6646,15 @@ export const useNodeManagement = (
     const sceneNode = currentNodes[sceneNodeId];
     if (!sceneNode || sceneNode.nodeType !== 'scene' || sceneNode.isLoadingAudio) return;
 
-    const text = resolveSceneNarrationText(currentNodes, sceneNode);
-    if (!text) {
+    const narrationText = resolveSceneNarrationText(currentNodes, sceneNode);
+    if (!narrationText) {
       updateNode(sceneNodeId, { pollinationsApiError: 'Не найден закадровый текст для этой сцены. Сначала создайте или подготовьте ноду «Закадр».' });
       return;
     }
+    const text = applyPronunciationDictionary(
+      narrationText,
+      narrationSettings.pronunciationDictionary,
+    );
 
     const requestId = `tts-scene:${sceneNodeId}`;
     if (activeRequests.current.has(requestId)) return;
@@ -6649,7 +6662,7 @@ export const useNodeManagement = (
     activeRequests.current.set(requestId, controller);
     setNodeActiveOperation(sceneNodeId, 'scene_tts');
     const effectiveSeed = seedOverride ?? narrationSettings.seed;
-    const ttsGenerationSignature = getSceneTtsGenerationSignature(text, narrationSettings, effectiveSeed);
+    const ttsGenerationSignature = getSceneTtsGenerationSignature(narrationText, narrationSettings, effectiveSeed);
 
     try {
       updateNode(sceneNodeId, {
@@ -6710,7 +6723,7 @@ export const useNodeManagement = (
               ttsQuality: narrationSettings.quality,
               ttsSeed: effectiveSeed,
               ttsGenerationSignature,
-              sceneNarrationText: text,
+              sceneNarrationText: narrationText,
               ttsGeneratedAt: new Date().toISOString(),
             },
           },

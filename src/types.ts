@@ -94,6 +94,7 @@ export interface NarrationSettings {
   quality: OmniVoiceQuality;
   seed: number;
   voiceInstruct: string;
+  pronunciationDictionary: string;
   referenceAudio?: AssetReference;
   referenceFileName?: string;
   referenceText?: string;

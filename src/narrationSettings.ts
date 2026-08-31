@@ -153,7 +153,51 @@ export const createDefaultNarrationSettings = (): NarrationSettings => ({
   quality: 'fast',
   seed: createSeed(),
   voiceInstruct: OMNIVOICE_DEFAULT_VOICE_INSTRUCT,
+  pronunciationDictionary: '',
 });
+
+const escapeRegExp = (value: string) => value.replace(/[.*+?^${}()|[\]\\]/gu, '\\$&');
+
+const normalizePronunciation = (value: string) => value
+  .replace(/\+([аеёиоуыэюя])/giu, '$1\u0301')
+  .normalize('NFC');
+
+const preserveReplacementCase = (source: string, replacement: string) => {
+  if (source === source.toLocaleUpperCase('ru')) return replacement.toLocaleUpperCase('ru');
+  const firstCharacter = [...source][0] ?? '';
+  if (firstCharacter && firstCharacter === firstCharacter.toLocaleUpperCase('ru')) {
+    const replacementCharacters = [...replacement];
+    if (replacementCharacters[0]) {
+      replacementCharacters[0] = replacementCharacters[0].toLocaleUpperCase('ru');
+    }
+    return replacementCharacters.join('');
+  }
+  return replacement;
+};
+
+export const applyPronunciationDictionary = (text: string, dictionary = '') => {
+  const entries = dictionary
+    .split(/\r?\n/u)
+    .map((line) => line.trim())
+    .filter((line) => line && !line.startsWith('#'))
+    .map((line) => {
+      const separatorIndex = line.indexOf('=');
+      if (separatorIndex <= 0) return null;
+      const source = line.slice(0, separatorIndex).trim().normalize('NFC');
+      const replacement = normalizePronunciation(line.slice(separatorIndex + 1).trim());
+      return source && replacement ? { source, replacement } : null;
+    })
+    .filter((entry): entry is { source: string; replacement: string } => Boolean(entry))
+    .sort((left, right) => right.source.length - left.source.length);
+
+  return entries.reduce((result, entry) => {
+    const pattern = new RegExp(
+      '(?<![\\p{L}\\p{N}_])' + escapeRegExp(entry.source) + '(?![\\p{L}\\p{N}_])',
+      'giu',
+    );
+    return result.replace(pattern, (match) => preserveReplacementCase(match, entry.replacement));
+  }, text).normalize('NFC');
+};
 
 export const sanitizeNarrationSettings = (
   value: unknown,
@@ -175,6 +219,9 @@ export const sanitizeNarrationSettings = (
     quality: isOmniVoiceQuality(data.quality) ? data.quality : fallback.quality,
     seed,
     voiceInstruct,
+    pronunciationDictionary: typeof data.pronunciationDictionary === 'string'
+      ? data.pronunciationDictionary.slice(0, 12_000)
+      : fallback.pronunciationDictionary,
     ...(referenceAudio ? { referenceAudio } : {}),
     ...(typeof data.referenceFileName === 'string' && data.referenceFileName.trim()
       ? { referenceFileName: data.referenceFileName.trim().slice(0, 260) }

@@ -1941,6 +1941,21 @@ const App = () => {
                 </label>
               </div>
             )}
+            <label className="narration-wide-field">
+              Словарь ударений и произношения
+              <textarea
+                rows={3}
+                value={narrationSettings.pronunciationDictionary}
+                onChange={(event) => setNarrationSettings((settings) => ({
+                  ...settings,
+                  pronunciationDictionary: event.target.value,
+                }))}
+                placeholder={'договор = догов+ор\nКель = К+ель\nзамок = з+амок'}
+              />
+              <span className="narration-settings-hint">
+                Одна замена на строку. Знак + ставится перед ударной гласной и перед отправкой превращается в знак ударения. Можно заменять целые фразы.
+              </span>
+            </label>
             <p className="narration-settings-hint">
               Рулетка использует только официальные теги OmniVoice. Отдельного тега хрипотцы у модели нет: низкий возрастной голос — ближайший синтетический вариант, а точную хрипотцу лучше задавать через Voice Clone. Один seed сохраняет голос одинаковым во всей главе.
             </p>

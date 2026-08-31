@@ -1253,7 +1253,7 @@ const getComfyOmniVoiceCommonInputs = (settings: NarrationSettings, seed: number
   dtype: settings.model === 'OmniVoice' ? 'fp32' : 'bf16',
   attention: 'auto',
   seed,
-  position_temperature: 5,
+  position_temperature: 0,
   class_temperature: 0,
   layer_penalty_factor: 5,
   denoise: true,

@@ -13,6 +13,7 @@ export const COMFYUI_DEFAULT_CHECKPOINT = 'SDXL\\sd_xl_base_1.0.safetensors';
 export const COMFY_GEMINI_DEFAULT_MODEL = 'Gemini 3.5 Flash';
 export const COMFY_GEMINI_DEFAULT_THINKING_LEVEL = 'MEDIUM';
 export const COMFY_GEMINI_DEFAULT_MAX_OUTPUT_TOKENS = 32768;
+export const COMFY_GEMINI_ECONOMY_MODEL = 'Gemini 3.1 Flash-Lite';
 const FLUX2_DIFFUSION_MODEL = 'flux2_dev_fp8mixed.safetensors';
 const FLUX2_TEXT_ENCODER = 'mistral_3_small_flux2_fp8.safetensors';
 const FLUX2_VAE = 'flux2-vae.safetensors';
@@ -37,11 +38,13 @@ const WIDE_FRAME_WIDTH = 1344;
 const WIDE_FRAME_HEIGHT = 768;
 
 export type GenerationMode = 'mock' | 'mistral' | 'lmstudio' | 'comfygemini';
+export type TextCostProfile = 'economy' | 'balanced' | 'quality';
 export type ImageProvider = 'pollinations' | 'comfyui';
 export type DetailAssetImageProvider = 'inherit' | 'comfy_openai_gpt_image_2_low' | 'comfy_nano_banana_2_lite';
 
 export interface GenerationSettings {
   mode: GenerationMode;
+  textCostProfile: TextCostProfile;
   lmStudioEndpoint: string;
   lmStudioModel: string;
   lmStudioDraftContextLength: number;
@@ -73,6 +76,7 @@ export const getDefaultGenerationMode = (): GenerationMode => {
 
 export const getDefaultGenerationSettings = (): GenerationSettings => ({
   mode: getDefaultGenerationMode(),
+  textCostProfile: 'balanced',
   lmStudioEndpoint: LM_STUDIO_DEFAULT_ENDPOINT,
   lmStudioModel: LM_STUDIO_DEFAULT_MODEL,
   lmStudioDraftContextLength: LM_STUDIO_DEFAULT_DRAFT_CONTEXT_LENGTH,
@@ -159,6 +163,83 @@ const resolveComfyGeminiModel = (requestModel: string | undefined, settingsModel
 
   return candidates.find((candidate): candidate is (typeof COMFY_GEMINI_MODELS)[number] =>
     Boolean(candidate && isComfyGeminiModel(candidate))) ?? COMFY_GEMINI_DEFAULT_MODEL;
+};
+
+const balancedPremiumOperations = new Set<GenerationRequest['operation']>([
+  'scenario',
+  'narration',
+  'narration_edit',
+  'story_structure_edit',
+  'brief_revision',
+  'chapter_planner',
+  'season_skeleton',
+  'chapter_material',
+  'scene_dialogue',
+  'prompt_node',
+]);
+
+const getProfileOutputTokenLimit = (request: GenerationRequest) => {
+  if (request.operation.endsWith('_prompt')) return 3072;
+  if (
+    request.operation === 'chapter_summary'
+    || request.operation === 'chapter_facts'
+    || request.operation === 'character_memory'
+    || request.operation === 'tts_cleanup'
+  ) return 4096;
+  if (
+    request.operation === 'scenario'
+    || request.operation === 'chapter_material'
+    || request.operation === 'prompt_node'
+  ) return 24576;
+  if (
+    request.operation === 'narration'
+    || request.operation === 'narration_edit'
+    || request.operation === 'story_structure_edit'
+    || request.operation === 'brief_revision'
+  ) return 12288;
+  if (
+    request.operation === 'chapter_planner'
+    || request.operation === 'chapter_knowledge'
+    || request.operation === 'chapter_topic'
+    || request.operation === 'season_skeleton'
+  ) return 8192;
+  return 6144;
+};
+
+export interface ComfyGeminiTextRoute {
+  model: (typeof COMFY_GEMINI_MODELS)[number];
+  thinkingLevel: string;
+  maxOutputTokens: number;
+  usesEconomyModel: boolean;
+}
+
+export const getComfyGeminiTextRoute = (
+  request: GenerationRequest,
+  settings: GenerationSettings,
+): ComfyGeminiTextRoute => {
+  const selectedModel = resolveComfyGeminiModel(request.model, settings.comfyGeminiModel);
+  const configuredMaxOutputTokens = Math.max(
+    512,
+    Math.floor(settings.comfyGeminiMaxOutputTokens || COMFY_GEMINI_DEFAULT_MAX_OUTPUT_TOKENS),
+  );
+  const profile = settings.textCostProfile ?? 'balanced';
+  if (profile === 'quality') {
+    return {
+      model: selectedModel,
+      thinkingLevel: settings.comfyGeminiThinkingLevel.trim() || COMFY_GEMINI_DEFAULT_THINKING_LEVEL,
+      maxOutputTokens: configuredMaxOutputTokens,
+      usesEconomyModel: selectedModel === COMFY_GEMINI_ECONOMY_MODEL,
+    };
+  }
+
+  const isPremiumOperation = balancedPremiumOperations.has(request.operation);
+  const useEconomyModel = profile === 'economy' || !isPremiumOperation;
+  return {
+    model: useEconomyModel ? COMFY_GEMINI_ECONOMY_MODEL : selectedModel,
+    thinkingLevel: useEconomyModel ? 'LOW' : 'MEDIUM',
+    maxOutputTokens: Math.min(configuredMaxOutputTokens, getProfileOutputTokenLimit(request)),
+    usesEconomyModel: useEconomyModel,
+  };
 };
 
 const callMistralAPI = async (request: GenerationRequest, signal?: AbortSignal): Promise<string> => {
@@ -1426,22 +1507,17 @@ const buildComfyGeminiTextWorkflow = (
   // Invalid names like `mistral-small-latest` make Comfy drop the whole `model` group.
   const parameters = getTextGenerationParameters(request);
   const seed = Math.floor(Math.random() * 2_000_000_000);
-  const model = resolveComfyGeminiModel(request.model, settings.comfyGeminiModel);
-  const maxOutputTokens = Math.max(
-    512,
-    Math.floor(settings.comfyGeminiMaxOutputTokens || COMFY_GEMINI_DEFAULT_MAX_OUTPUT_TOKENS),
-  );
-  const thinkingLevel = settings.comfyGeminiThinkingLevel.trim() || COMFY_GEMINI_DEFAULT_THINKING_LEVEL;
+  const route = getComfyGeminiTextRoute(request, settings);
   return {
     '1': {
       class_type: 'GeminiNodeV2',
       inputs: {
         prompt: request.prompt,
-        model,
-        'model.thinking_level': thinkingLevel,
+        model: route.model,
+        'model.thinking_level': route.thinkingLevel,
         'model.temperature': parameters.temperature,
         'model.top_p': parameters.top_p,
-        'model.max_output_tokens': maxOutputTokens,
+        'model.max_output_tokens': route.maxOutputTokens,
         seed,
         system_prompt: request.systemPrompt,
       },

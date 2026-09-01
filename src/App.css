@@ -218,6 +218,10 @@
   gap: 6px;
 }
 
+.generation-controls--gemini {
+  grid-template-columns: 130px 140px minmax(180px, 1fr) minmax(150px, 190px) 90px 100px;
+}
+
 .generation-select,
 .generation-endpoint-input,
 .generation-model-input,

@@ -4,6 +4,7 @@ import {
   GenerationSettings,
   ImageGenerationSettings,
   ImageProvider,
+  TextCostProfile,
   COMFY_GEMINI_DEFAULT_MAX_OUTPUT_TOKENS,
   COMFY_GEMINI_DEFAULT_MODEL,
   COMFY_GEMINI_DEFAULT_THINKING_LEVEL,
@@ -208,6 +209,18 @@ const generationModeLabels: Record<GenerationMode, string> = {
   comfygemini: 'Gemini · ComfyUI',
 };
 
+const textCostProfileLabels: Record<TextCostProfile, string> = {
+  economy: 'Экономный',
+  balanced: 'Сбалансированный',
+  quality: 'Максимум',
+};
+
+const textCostProfileTitles: Record<TextCostProfile, string> = {
+  economy: 'Все текстовые задачи: Gemini 3.1 Flash-Lite, LOW thinking',
+  balanced: 'Ключевая драматургия: выбранный Gemini; служебные задачи: Gemini 3.1 Flash-Lite, LOW thinking',
+  quality: 'Все задачи используют выбранную в ноде модель и ручные настройки thinking',
+};
+
 const imageProviderLabels: Record<ImageProvider, string> = {
   pollinations: 'Pollinations',
   comfyui: 'ComfyUI',
@@ -215,6 +228,9 @@ const imageProviderLabels: Record<ImageProvider, string> = {
 
 const isGenerationMode = (value: unknown): value is GenerationMode =>
   value === 'mock' || value === 'mistral' || value === 'lmstudio' || value === 'comfygemini';
+
+const isTextCostProfile = (value: unknown): value is TextCostProfile =>
+  value === 'economy' || value === 'balanced' || value === 'quality';
 
 const isImageProvider = (value: unknown): value is ImageProvider =>
   value === 'pollinations' || value === 'comfyui';
@@ -252,6 +268,9 @@ const loadGenerationSettings = (): GenerationSettings => {
       : '';
     return {
       mode: isGenerationMode(parsed.mode) ? parsed.mode : fallback.mode,
+      textCostProfile: isTextCostProfile(parsed.textCostProfile)
+        ? parsed.textCostProfile
+        : fallback.textCostProfile,
       lmStudioEndpoint: typeof parsed.lmStudioEndpoint === 'string'
         ? parsed.lmStudioEndpoint
         : LM_STUDIO_DEFAULT_ENDPOINT,
@@ -1504,6 +1523,12 @@ const App = () => {
     setGenerationSettings((settings) => ({ ...settings, mode }));
   }, []);
 
+  const handleTextCostProfileChange = useCallback((event: React.ChangeEvent<HTMLSelectElement>) => {
+    const textCostProfile = event.target.value;
+    if (!isTextCostProfile(textCostProfile)) return;
+    setGenerationSettings((settings) => ({ ...settings, textCostProfile }));
+  }, []);
+
   const handleLmStudioEndpointChange = useCallback((event: React.ChangeEvent<HTMLInputElement>) => {
     setGenerationSettings((settings) => ({ ...settings, lmStudioEndpoint: event.target.value }));
   }, []);
@@ -1663,13 +1688,20 @@ const App = () => {
             </span>
             <span className={`mode-badge mode-badge--${generationSettings.mode}`}>
               {generationModeLabels[generationSettings.mode]}
+              {generationSettings.mode === 'comfygemini'
+                ? ` · ${textCostProfileLabels[generationSettings.textCostProfile]}`
+                : ''}
             </span>
           </div>
           <details className="generation-settings-panel">
             <summary>
               <span>Настройки генерации</span>
               <small>
-                {generationModeLabels[generationSettings.mode]} · {imageProviderLabels[imageGenerationSettings.provider]}
+                {generationModeLabels[generationSettings.mode]}
+                {generationSettings.mode === 'comfygemini'
+                  ? ` · ${textCostProfileLabels[generationSettings.textCostProfile]}`
+                  : ''}
+                {' · '}{imageProviderLabels[imageGenerationSettings.provider]}
               </small>
             </summary>
             <div className="generation-settings-panel__content">
@@ -1687,7 +1719,10 @@ const App = () => {
                   {imageGenerationSettings.comfyOrgApiKey.trim() ? 'Ключ указан' : 'Ключ не указан'}
                 </strong>
               </label>
-              <div className="generation-controls" aria-label="Режим генерации текста">
+              <div
+                className={`generation-controls${generationSettings.mode === 'comfygemini' ? ' generation-controls--gemini' : ''}`}
+                aria-label="Режим генерации текста"
+              >
             <select
               className="generation-select"
               value={generationSettings.mode}
@@ -1699,6 +1734,19 @@ const App = () => {
               <option value="lmstudio">LM Studio</option>
               <option value="comfygemini">Gemini · ComfyUI</option>
             </select>
+            {generationSettings.mode === 'comfygemini' && (
+              <select
+                className="generation-select"
+                value={generationSettings.textCostProfile}
+                onChange={handleTextCostProfileChange}
+                aria-label="Профиль стоимости текста"
+                title={textCostProfileTitles[generationSettings.textCostProfile]}
+              >
+                {(Object.keys(textCostProfileLabels) as TextCostProfile[]).map((profile) => (
+                  <option key={profile} value={profile}>{textCostProfileLabels[profile]}</option>
+                ))}
+              </select>
+            )}
             {generationSettings.mode === 'lmstudio' && (
               <>
                 <input
@@ -1765,6 +1813,10 @@ const App = () => {
                   value={generationSettings.comfyGeminiModel}
                   onChange={handleComfyGeminiModelChange}
                   aria-label="Модель Gemini в ComfyUI"
+                  disabled={generationSettings.textCostProfile === 'economy'}
+                  title={generationSettings.textCostProfile === 'economy'
+                    ? 'Экономный профиль всегда использует Gemini 3.1 Flash-Lite'
+                    : 'В сбалансированном профиле эта модель используется для ключевой драматургии'}
                 >
                   {COMFY_GEMINI_MODELS.map((model) => (
                     <option key={model} value={model}>{model}</option>
@@ -1775,7 +1827,10 @@ const App = () => {
                   value={generationSettings.comfyGeminiThinkingLevel}
                   onChange={handleComfyGeminiThinkingLevelChange}
                   aria-label="Thinking level Gemini"
-                  title="Поле thinking_level из GeminiNodeV2"
+                  disabled={generationSettings.textCostProfile !== 'quality'}
+                  title={generationSettings.textCostProfile === 'quality'
+                    ? 'Поле thinking_level из GeminiNodeV2'
+                    : 'Thinking автоматически ограничивает выбранный профиль стоимости'}
                 >
                   <option value="LOW">LOW</option>
                   <option value="MEDIUM">MEDIUM</option>

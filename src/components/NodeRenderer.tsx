@@ -7,7 +7,7 @@ import {
   getNewCharacterDescriptions,
   isCharacterAssetNode,
 } from '../characterRegistry';
-import { DetailType, ImagePipeline, NodeData, NodesState } from '../types';
+import { DetailType, ImagePipeline, NarrationProvider, NodeData, NodesState } from '../types';
 import { assetPath, getNodeIcon } from '../utils';
 
 interface NodeRendererProps {
@@ -52,8 +52,6 @@ interface NodeRendererProps {
   onExtractChapterTopic: (nodeId: string) => Promise<void>;
   onPlanChapters: (nodeId: string) => Promise<void>;
   onCreateChapterPlanNodes: (nodeId: string) => void;
-  onBuildChapterKnowledge: (nodeId: string) => Promise<void>;
-  onBuildSeasonSkeleton: (nodeId: string) => Promise<void>;
   onBuildChapterMaterial: (nodeId: string) => Promise<void>;
   onAutoBuildChapter: (nodeId: string) => Promise<void>;
   onEnsureChapterTimeline: (sourceNodeId?: string) => void;
@@ -71,6 +69,7 @@ interface NodeRendererProps {
   onGenerateOmniVoiceNarration: (nodeId: string) => Promise<void>;
   onGenerateAlternateOmniVoiceNarration: (nodeId: string) => Promise<void>;
   onGenerateSceneOmniVoiceNarration: (nodeId: string) => Promise<void>;
+  onGenerateTimelineFinalNarration: (nodeId: string) => Promise<void>;
   onBuildSceneVideoClip: (nodeId: string) => Promise<void>;
   onGenerateChapterBackdrop: (nodeId: string) => Promise<void>;
   onGenerateTimelineMissingAssets: (nodeId: string) => Promise<boolean>;
@@ -85,6 +84,7 @@ interface NodeRendererProps {
   onSetCharacterCanonicalAsset: (nodeId: string) => void;
   textModelOptions: string[];
   imageProvider: ImageProvider;
+  narrationProvider: NarrationProvider;
   onCancelGeneration: (nodeId: string) => void;
   onOpenChapterWorkspace?: (nodeId: string) => void;
   onDelete?: (nodeId: string) => void;
@@ -535,8 +535,6 @@ const NodeRenderer: React.FC<NodeRendererProps> = ({
   onExtractChapterTopic,
   onPlanChapters,
   onCreateChapterPlanNodes,
-  onBuildChapterKnowledge,
-  onBuildSeasonSkeleton,
   onBuildChapterMaterial,
   onAutoBuildChapter,
   onEnsureChapterTimeline,
@@ -554,6 +552,7 @@ const NodeRenderer: React.FC<NodeRendererProps> = ({
   onGenerateOmniVoiceNarration,
   onGenerateAlternateOmniVoiceNarration,
   onGenerateSceneOmniVoiceNarration,
+  onGenerateTimelineFinalNarration,
   onBuildSceneVideoClip,
   onGenerateChapterBackdrop,
   onGenerateTimelineMissingAssets,
@@ -568,6 +567,7 @@ const NodeRenderer: React.FC<NodeRendererProps> = ({
   onSetCharacterCanonicalAsset,
   textModelOptions,
   imageProvider,
+  narrationProvider,
   onCancelGeneration,
   onOpenChapterWorkspace,
   onDelete,
@@ -584,7 +584,9 @@ const NodeRenderer: React.FC<NodeRendererProps> = ({
   const canGenerateDetailAsset = node.nodeType === 'script_detail'
     && (node.label === 'Герои' || node.label === 'Локации' || isSystemInsertDetail);
   const canBuildCharacterMemory = node.nodeType === 'script_detail' && node.label === 'Герои';
-  const detailAssetImageProvider: DetailAssetImageProvider = node.metadata?.detailAssetImageProvider === 'comfy_openai_gpt_image_2_low'
+  const detailAssetImageProvider: DetailAssetImageProvider = node.metadata?.detailAssetImageProvider === 'openai_direct_gpt_image_2_low'
+    ? 'openai_direct_gpt_image_2_low'
+    : node.metadata?.detailAssetImageProvider === 'comfy_openai_gpt_image_2_low'
     || node.metadata?.detailAssetImageProvider === 'comfy_krea_medium_turbo'
     || node.metadata?.detailAssetImageProvider === 'comfy_luma_photon_flash'
     || node.metadata?.detailAssetImageProvider === 'replicate_flux_schnell'
@@ -599,8 +601,37 @@ const NodeRenderer: React.FC<NodeRendererProps> = ({
   const canExtractChapterTopic = node.nodeType === 'script_detail' && sourceKind === 'pdf_source';
   const canPlanChapters = node.nodeType === 'script_detail' && sourceKind === 'chapter_planner';
   const canCreateChapterPlanNodes = node.nodeType === 'script_detail' && sourceKind === 'chapter_planner';
-  const canBuildChapterKnowledge = node.nodeType === 'script_detail' && sourceKind === 'chapter_topic';
-  const canBuildSeasonSkeleton = node.nodeType === 'script_detail' && sourceKind === 'chapter_knowledge';
+  const plannerJsonStart = node.inputValue?.indexOf('{') ?? -1;
+  const plannerJsonEnd = node.inputValue?.lastIndexOf('}') ?? -1;
+  const chapterPlanWasTruncated = canPlanChapters
+    && (
+      /ответ планировщика оборвался|отсутствует часть глав|получено только \d+ глав/iu.test(node.error ?? '')
+      || (plannerJsonStart >= 0 && plannerJsonEnd <= plannerJsonStart)
+    );
+  const chapterPlanNeedsRepair = canPlanChapters
+    && !chapterPlanWasTruncated
+    && /JSON планировщика|JSON at position|JSON-объект/iu.test(node.error ?? '');
+  const chapterPlanReady = canPlanChapters
+    && !node.error
+    && node.metadata?.chapterPlanValid !== false
+    && (
+      Number(node.metadata?.plannedChapterCount) > 0
+      || /"chapters"\s*:\s*\[/u.test(node.inputValue ?? '')
+    );
+  const chapterPlannerEntry = sourceKind === 'chapter_topic'
+    ? Object.entries(allNodes).find(([, candidate]) =>
+      candidate.nodeType === 'script_detail'
+      && candidate.metadata?.sourceKind === 'chapter_planner'
+      && (
+        candidate.parentId === id
+        || candidate.metadata?.sourceTopicId === id
+      ))
+    : undefined;
+  const chapterPlannerId = chapterPlannerEntry?.[0];
+  const chapterPlanner = chapterPlannerEntry?.[1];
+  const canStartChapterPlanning = node.nodeType === 'script_detail'
+    && sourceKind === 'chapter_topic'
+    && Boolean(chapterPlannerId);
   const canBuildChapterMaterial = node.nodeType === 'script_detail' && (sourceKind === 'season_skeleton' || sourceKind === 'chapter_plan');
   const isChapterPlanNode = sourceKind === 'chapter_plan';
   const splitSourcePreset = typeof node.metadata?.splitSourcePreset === 'string'
@@ -684,13 +715,16 @@ const NodeRenderer: React.FC<NodeRendererProps> = ({
     && node.nodeType !== 'scene'
     && node.nodeType !== 'chapter_timeline'
     && node.nodeType !== 'video_output';
+  const selectedTtsLabel = narrationProvider === 'elevenlabs' ? 'ElevenLabs' : 'OmniVoice';
   const loadingLabel = node.isSpeaking
     ? 'Озвучиваем закадр...'
     : node.isLoadingAudio
-      ? 'OmniVoice готовит озвучку в ComfyUI...'
+      ? `${selectedTtsLabel} готовит озвучку в ComfyUI...`
       : node.isLoadingImage
       ? node.loadingProvider === 'comfyui'
         ? 'ComfyUI загружает модель или рендерит кадр...'
+        : node.loadingProvider === 'openai_image'
+          ? 'GPT Image 2 Low создаёт ассет напрямую через OpenAI API...'
         : node.loadingProvider === 'comfy_openai_image'
           ? 'GPT Image 2 Low создаёт ассет через Comfy API...'
           : node.loadingProvider === 'comfy_nano_banana'
@@ -700,6 +734,8 @@ const NodeRenderer: React.FC<NodeRendererProps> = ({
         ? 'LM Studio загружает модель и готовит ответ...'
         : node.loadingProvider === 'comfygemini'
           ? 'ComfyUI отправляет текст в Gemini API...'
+        : node.loadingProvider === 'openai'
+          ? 'OpenAI Luna готовит ответ...'
         : node.loadingProvider === 'mistral'
           ? 'Mistral API готовит ответ...'
           : node.loadingProvider === 'mock'
@@ -822,7 +858,9 @@ const NodeRenderer: React.FC<NodeRendererProps> = ({
       ? imageProvider === 'comfyui'
         ? timelineAssetPipelineValue
         : 'inherit'
-      : 'comfy_openai_gpt_image_2_low';
+      : node.metadata?.timelineAssetImageProvider === 'comfy_openai_gpt_image_2_low'
+        ? 'comfy_openai_gpt_image_2_low'
+        : 'openai_direct_gpt_image_2_low';
   const timelineSystemInsertPipelineValue =
     node.nodeType === 'chapter_timeline'
     && (
@@ -836,7 +874,9 @@ const NodeRenderer: React.FC<NodeRendererProps> = ({
     node.nodeType === 'chapter_timeline'
     && node.metadata?.timelineSystemInsertImageProvider === 'inherit'
       ? timelineSystemInsertPipelineValue
-      : 'comfy_openai_gpt_image_2_low';
+      : node.metadata?.timelineSystemInsertImageProvider === 'comfy_openai_gpt_image_2_low'
+        ? 'comfy_openai_gpt_image_2_low'
+        : 'openai_direct_gpt_image_2_low';
   const chapterCollectorEntries = node.nodeType === 'chapter_collector'
     ? getChapterCollectorEntries(allNodes)
     : [];
@@ -1412,17 +1452,17 @@ const NodeRenderer: React.FC<NodeRendererProps> = ({
           </button>
         )}
 
-        {canBuildChapterKnowledge && (
+        {canStartChapterPlanning && chapterPlannerId && chapterPlanner && (
           <button
             type="button"
-            className={`node-secondary-button${node.isLoading ? ' node-secondary-button--cancel' : ''}`}
+            className={`node-primary-button${chapterPlanner.isLoading ? ' node-primary-button--cancel' : ''}`}
             onMouseDown={stopMouseDown}
-            onClick={(event) => runWithoutDrag(event, () => node.isLoading
-              ? onCancelGeneration(id)
-              : void onBuildChapterKnowledge(id))}
-            disabled={Boolean(node.isLoadingImage)}
+            onClick={(event) => runWithoutDrag(event, () => chapterPlanner.isLoading
+              ? onCancelGeneration(chapterPlannerId)
+              : void onPlanChapters(chapterPlannerId))}
+            disabled={Boolean(node.isLoadingImage || chapterPlanner.isLoadingImage)}
           >
-            {node.isLoading ? 'Отменить базу главы' : 'Собрать базу главы'}
+            {chapterPlanner.isLoading ? 'Отменить планирование' : 'Дальше: спланировать главы'}
           </button>
         )}
 
@@ -1436,33 +1476,25 @@ const NodeRenderer: React.FC<NodeRendererProps> = ({
               : void onPlanChapters(id))}
             disabled={Boolean(node.isLoadingImage)}
           >
-            {node.isLoading ? 'Отменить план' : 'Спланировать главы'}
+            {node.isLoading
+              ? 'Отменить план'
+              : chapterPlanWasTruncated
+                ? '1. Повторить — прошлый ответ был обрезан'
+                : chapterPlanReady
+                  ? 'Пересчитать план глав'
+                  : '1. Спланировать главы'}
           </button>
         )}
 
         {canCreateChapterPlanNodes && (
           <button
             type="button"
-            className="node-secondary-button"
+            className="node-primary-button"
             onMouseDown={stopMouseDown}
             onClick={(event) => runWithoutDrag(event, () => onCreateChapterPlanNodes(id))}
-            disabled={Boolean(node.isLoading || node.isLoadingImage)}
+            disabled={Boolean(node.isLoading || node.isLoadingImage || (!chapterPlanReady && !chapterPlanNeedsRepair))}
           >
-            Создать ноды глав
-          </button>
-        )}
-
-        {canBuildSeasonSkeleton && (
-          <button
-            type="button"
-            className={`node-secondary-button${node.isLoading ? ' node-secondary-button--cancel' : ''}`}
-            onMouseDown={stopMouseDown}
-            onClick={(event) => runWithoutDrag(event, () => node.isLoading
-              ? onCancelGeneration(id)
-              : void onBuildSeasonSkeleton(id))}
-            disabled={Boolean(node.isLoadingImage)}
-          >
-            {node.isLoading ? 'Отменить скелет' : 'Собрать скелет сезона'}
+            {chapterPlanNeedsRepair ? 'Исправить JSON и создать ноды глав' : '2. Создать ноды глав'}
           </button>
         )}
 
@@ -1571,6 +1603,7 @@ const NodeRenderer: React.FC<NodeRendererProps> = ({
               <option value="inherit">
                 Основной · {imageProvider === 'comfyui' ? 'ComfyUI' : 'Pollinations'}
               </option>
+              <option value="openai_direct_gpt_image_2_low">OpenAI Direct · GPT Image 2 Low · ≈ $0.005+</option>
               <option value="comfy_openai_gpt_image_2_low">Comfy API · GPT Image 2 Low · ≈ $0.006–0.023</option>
               {isSystemInsertDetail && (
                 <option value="comfy_nano_banana_2_lite">Nano Banana 2 Lite API · ≈ $0.041</option>
@@ -1613,8 +1646,10 @@ const NodeRenderer: React.FC<NodeRendererProps> = ({
                 ? `Сгенерировать ${detailCharacterCount} героев`
                 : isSystemInsertDetail
                   ? 'Сгенерировать системные вставки'
-                  : 'Сгенерировать локации'} · ${detailAssetImageProvider === 'comfy_openai_gpt_image_2_low'
-                    ? 'GPT Image API'
+                  : 'Сгенерировать локации'} · ${detailAssetImageProvider === 'openai_direct_gpt_image_2_low'
+                    ? 'OpenAI Direct'
+                    : detailAssetImageProvider === 'comfy_openai_gpt_image_2_low'
+                      ? 'Comfy GPT Image'
                     : detailAssetImageProvider === 'comfy_nano_banana_2_lite'
                       ? 'Nano Banana API'
                     : imageProvider === 'comfyui'
@@ -1685,7 +1720,7 @@ const NodeRenderer: React.FC<NodeRendererProps> = ({
                 : void onGenerateOmniVoiceNarration(id))}
               disabled={Boolean(node.isLoading || node.isLoadingImage || node.isSpeaking)}
             >
-              {node.isLoadingAudio ? 'Отменить OmniVoice' : 'OmniVoice'}
+              {node.isLoadingAudio ? `Отменить ${selectedTtsLabel}` : selectedTtsLabel}
             </button>
           </div>
         )}
@@ -1840,25 +1875,31 @@ const NodeRenderer: React.FC<NodeRendererProps> = ({
                   ) : (
                     <option value="inherit">Основной · Pollinations</option>
                   )}
+                  <option value="openai_direct_gpt_image_2_low">OpenAI Direct · GPT Image 2 Low · ≈ $0.005+</option>
                   <option value="comfy_openai_gpt_image_2_low">Comfy API · GPT Image 2 Low · ≈ $0.006–0.023</option>
+                </select>
+              </label>
+              <label className="node-field node-field--inline">
+                <span>Вставки</span>
+                <select
+                  value={timelineSystemInsertRendererValue}
+                  onChange={(event) => onTimelineSystemInsertPipelineChange(event, id)}
+                  onMouseDown={stopMouseDown}
+                  disabled={node.isLoadingVideo}
+                >
+                  <option value="openai_direct_gpt_image_2_low">OpenAI Direct · GPT Image 2 Low · ≈ $0.005+</option>
+                  <option value="comfy_openai_gpt_image_2_low">Comfy API · GPT Image 2 Low · ≈ $0.006–0.023</option>
+                  {imageProvider === 'comfyui' && (
+                    <>
+                      <option value="ernie_image_turbo">Локально · ERNIE Image Turbo</option>
+                      <option value="z_image_turbo">Локально · Z-Image Turbo</option>
+                      <option value="sdxl">Локально · SDXL</option>
+                    </>
+                  )}
                 </select>
               </label>
               {imageProvider === 'comfyui' && (
                 <>
-                  <label className="node-field node-field--inline">
-                    <span>Вставки</span>
-                    <select
-                      value={timelineSystemInsertRendererValue}
-                      onChange={(event) => onTimelineSystemInsertPipelineChange(event, id)}
-                      onMouseDown={stopMouseDown}
-                      disabled={node.isLoadingVideo}
-                    >
-                      <option value="comfy_openai_gpt_image_2_low">По умолчанию · GPT Image 2 Low API · ≈ $0.006–0.023</option>
-                      <option value="ernie_image_turbo">Локально · ERNIE Image Turbo</option>
-                      <option value="z_image_turbo">Локально · Z-Image Turbo</option>
-                      <option value="sdxl">Локально · SDXL</option>
-                    </select>
-                  </label>
                   <label className="node-field node-field--inline">
                     <span>Compose</span>
                     <select
@@ -1926,6 +1967,18 @@ const NodeRenderer: React.FC<NodeRendererProps> = ({
               </button>
               <button
                 type="button"
+                className={`node-secondary-button chapter-timeline__refresh${node.isLoadingAudio ? ' node-secondary-button--cancel' : ''}`}
+                onMouseDown={stopMouseDown}
+                onClick={(event) => runWithoutDrag(event, () => node.isLoadingAudio
+                  ? onCancelGeneration(id)
+                  : void onGenerateTimelineFinalNarration(id))}
+                disabled={Boolean(node.isLoading || node.isLoadingImage || node.isLoadingVideo || timelineStats.scenes === 0)}
+                title="После черновой OmniVoice-озвучки заменить только звук на чистовой ElevenLabs и пометить клипы для пересборки"
+              >
+                {node.isLoadingAudio ? 'Остановить чистовую' : 'Чистовая озвучка · ElevenLabs'}
+              </button>
+              <button
+                type="button"
                 className={`node-secondary-button chapter-timeline__refresh${node.isLoadingVideo ? ' node-secondary-button--cancel' : ''}`}
                 onMouseDown={stopMouseDown}
                 onClick={(event) => runWithoutDrag(event, () => node.isLoadingVideo
@@ -1985,6 +2038,11 @@ const NodeRenderer: React.FC<NodeRendererProps> = ({
                     ? scene.metadata.activeOperation
                     : '';
                   const sceneComposeActive = sceneActiveOperation.startsWith('scene_compose_');
+                  const storedTtsProvider = typeof scene.metadata?.ttsProvider === 'string'
+                    ? scene.metadata.ttsProvider
+                    : '';
+                  const audioProviderMatches = Boolean(scene.audioUrl)
+                    && storedTtsProvider === narrationProvider;
                   return (
                     <React.Fragment key={sceneId}>
                       <article className="chapter-timeline__scene">
@@ -2044,7 +2102,13 @@ const NodeRenderer: React.FC<NodeRendererProps> = ({
                           )}
                           {renderTimelineBadge('Кадр', Boolean(frame?.imageUrl), frame?.label)}
                           {renderTimelineBadge('Планы', shots.length === 4, `${shots.length}/4 дополнительных планов`)}
-                          {renderTimelineBadge('Аудио', Boolean(scene.audioUrl), 'Озвучка сцены')}
+                          {renderTimelineBadge(
+                            narrationProvider === 'elevenlabs' ? 'Аудио · чистовик' : 'Аудио · черновик',
+                            audioProviderMatches,
+                            scene.audioUrl && !audioProviderMatches
+                              ? `Сохранена озвучка ${storedTtsProvider || 'старого формата'}; для выбранного провайдера она устарела`
+                              : `Озвучка сцены · ${selectedTtsLabel}`,
+                          )}
                           {renderTimelineBadge('Клип', Boolean(scene.videoUrl), '16:9 фрагмент')}
                           {renderTimelineBadge('Вставка', Boolean(systemInsert), systemInsert)}
                           {renderTimelineBadge('QA', qaStatus !== 'ожидает', `Vision: ${qaStatus}`)}

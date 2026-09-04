@@ -4,6 +4,7 @@ import {
   GenerationSettings,
   ImageGenerationSettings,
   ImageProvider,
+  OpenAiReasoningEffort,
   TextCostProfile,
   COMFY_GEMINI_DEFAULT_MAX_OUTPUT_TOKENS,
   COMFY_GEMINI_DEFAULT_MODEL,
@@ -12,11 +13,15 @@ import {
   COMFYUI_DEFAULT_ENDPOINT,
   getDefaultGenerationSettings,
   getDefaultImageGenerationSettings,
+  generateComfyElevenLabsAudio,
   listLmStudioModels,
   LM_STUDIO_DEFAULT_DRAFT_CONTEXT_LENGTH,
   LM_STUDIO_DEFAULT_ENDPOINT,
   LM_STUDIO_DEFAULT_LARGE_CONTEXT_LENGTH,
   LM_STUDIO_DEFAULT_MODEL,
+  OPENAI_LUNA_DEFAULT_MAX_OUTPUT_TOKENS,
+  OPENAI_LUNA_DEFAULT_REASONING_EFFORT,
+  OPENAI_LUNA_MODEL,
   unloadComfyModels,
   unloadLmStudioModels,
 } from './api';
@@ -55,6 +60,9 @@ import {
 } from './folderProject';
 import {
   createDefaultNarrationSettings,
+  ELEVENLABS_MAX_SEED,
+  ELEVENLABS_MODEL_OPTIONS,
+  ELEVENLABS_OUTPUT_FORMAT_OPTIONS,
   getNextNarrationSeed,
   getRandomOmniVoiceNarratorPreset,
   isOmniVoiceNarratorPreset,
@@ -62,6 +70,7 @@ import {
   OMNIVOICE_MODEL_OPTIONS,
   OMNIVOICE_NARRATOR_PRESETS,
   OMNIVOICE_QUALITY_OPTIONS,
+  prepareNarrationText,
 } from './narrationSettings';
 import {
   AppNotice,
@@ -207,6 +216,7 @@ const generationModeLabels: Record<GenerationMode, string> = {
   mistral: 'Mistral API',
   lmstudio: 'LM Studio',
   comfygemini: 'Gemini · ComfyUI',
+  openai: 'OpenAI · Luna',
 };
 
 const textCostProfileLabels: Record<TextCostProfile, string> = {
@@ -227,7 +237,19 @@ const imageProviderLabels: Record<ImageProvider, string> = {
 };
 
 const isGenerationMode = (value: unknown): value is GenerationMode =>
-  value === 'mock' || value === 'mistral' || value === 'lmstudio' || value === 'comfygemini';
+  value === 'mock'
+  || value === 'mistral'
+  || value === 'lmstudio'
+  || value === 'comfygemini'
+  || value === 'openai';
+
+const isOpenAiReasoningEffort = (value: unknown): value is OpenAiReasoningEffort =>
+  value === 'none'
+  || value === 'low'
+  || value === 'medium'
+  || value === 'high'
+  || value === 'xhigh'
+  || value === 'max';
 
 const isTextCostProfile = (value: unknown): value is TextCostProfile =>
   value === 'economy' || value === 'balanced' || value === 'quality';
@@ -299,6 +321,13 @@ const loadGenerationSettings = (): GenerationSettings => {
         COMFY_GEMINI_DEFAULT_MAX_OUTPUT_TOKENS,
       ),
       comfyGeminiApiKey: savedComfyGeminiApiKey || sharedComfyOrgApiKey || fallback.comfyGeminiApiKey,
+      openAiReasoningEffort: isOpenAiReasoningEffort(parsed.openAiReasoningEffort)
+        ? parsed.openAiReasoningEffort
+        : OPENAI_LUNA_DEFAULT_REASONING_EFFORT,
+      openAiMaxOutputTokens: getSavedContextLength(
+        parsed.openAiMaxOutputTokens,
+        OPENAI_LUNA_DEFAULT_MAX_OUTPUT_TOKENS,
+      ),
     };
   } catch {
     return {
@@ -346,10 +375,23 @@ const collectNodeFamily = (nodes: NodesState, rootId: string) => {
   return ids;
 };
 
-const isHiddenTechnicalCanvasNode = (node: NodeData) => {
+const legacyPlanningSourceKinds = new Set(['chapter_knowledge', 'season_skeleton']);
+
+const isHiddenTechnicalCanvasNode = (
+  node: NodeData,
+  nodes: NodesState,
+  hasChapterPlanner: boolean,
+) => {
   if (node.metadata?.hiddenOnCanvas === true) return true;
   const assetKind = typeof node.metadata?.assetKind === 'string' ? node.metadata.assetKind : '';
-  return node.nodeType === 'pollinations_image' && /^scene_shot:\d+$/u.test(assetKind);
+  if (node.nodeType === 'pollinations_image' && /^scene_shot:\d+$/u.test(assetKind)) return true;
+
+  if (!hasChapterPlanner) return false;
+
+  const sourceKind = typeof node.metadata?.sourceKind === 'string' ? node.metadata.sourceKind : '';
+  if (legacyPlanningSourceKinds.has(sourceKind)) return true;
+  if (sourceKind !== 'chapter_material' || !node.parentId) return false;
+  return nodes[node.parentId]?.metadata?.sourceKind === 'season_skeleton';
 };
 
 const getSafeProjectFileName = (title: string) =>
@@ -424,6 +466,12 @@ const App = () => {
   const [narrationSettings, setNarrationSettings] = useState<NarrationSettings>(
     () => bootstrap.project.extensions?.narration ?? createDefaultNarrationSettings(),
   );
+  const [narrationTestAudioUrl, setNarrationTestAudioUrl] = useState('');
+  const [isNarrationTestLoading, setIsNarrationTestLoading] = useState(false);
+  const narrationTestRequestRef = useRef(false);
+  useEffect(() => () => {
+    if (narrationTestAudioUrl.startsWith('blob:')) URL.revokeObjectURL(narrationTestAudioUrl);
+  }, [narrationTestAudioUrl]);
   const restoredWorkspaceId = bootstrap.project.extensions?.canvasWorkspaces?.activeChapterId;
   const initialWorkspaceId = restoredWorkspaceId && bootstrap.project.nodes[restoredWorkspaceId]
     ? restoredWorkspaceId
@@ -493,8 +541,6 @@ const App = () => {
     handleExtractChapterTopic,
     handlePlanChapters,
     handleCreateChapterPlanNodes,
-    handleBuildChapterKnowledge,
-    handleBuildSeasonSkeleton,
     handleBuildChapterMaterial,
     handleAutoBuildChapter,
     handleEnsureStoryReferenceNodes,
@@ -514,6 +560,7 @@ const App = () => {
     handleGenerateOmniVoiceNarration,
     handleGenerateAlternateOmniVoiceNarration,
     handleGenerateSceneOmniVoiceNarration,
+    handleGenerateTimelineFinalNarration,
     handleBuildSceneVideoClip,
     handleGenerateChapterBackdrop,
     handleGenerateTimelineMissingAssets,
@@ -541,7 +588,13 @@ const App = () => {
     setPendingOutputNodeId(null);
   }, []);
   const canvasNodeEntries = useMemo(
-    () => Object.entries(nodes).filter(([, node]) => !isHiddenTechnicalCanvasNode(node)),
+    () => {
+      const hasChapterPlanner = Object.values(nodes).some((node) =>
+        node.nodeType === 'script_detail'
+        && node.metadata?.sourceKind === 'chapter_planner');
+      return Object.entries(nodes).filter(([, node]) =>
+        !isHiddenTechnicalCanvasNode(node, nodes, hasChapterPlanner));
+    },
     [nodes],
   );
   const { handleMouseDown, handleResizeMouseDown } = useDraggableNodes({
@@ -556,6 +609,7 @@ const App = () => {
     () => nodeEntries.some(([, node]) => (
       node.metadata?.detailAssetImageProvider === 'comfy_openai_gpt_image_2_low'
       || node.metadata?.timelineAssetImageProvider === 'comfy_openai_gpt_image_2_low'
+      || node.metadata?.timelineSystemInsertImageProvider === 'comfy_openai_gpt_image_2_low'
       || node.metadata?.detailAssetImageProvider === 'comfy_krea_medium_turbo'
       || node.metadata?.detailAssetImageProvider === 'comfy_luma_photon_flash'
       || node.metadata?.detailAssetImageProvider === 'replicate_flux_schnell'
@@ -904,6 +958,7 @@ const App = () => {
     () => {
       if (generationSettings.mode === 'lmstudio' && lmStudioModels.length > 0) return lmStudioModels;
       if (generationSettings.mode === 'comfygemini') return [...COMFY_GEMINI_MODELS];
+      if (generationSettings.mode === 'openai') return [OPENAI_LUNA_MODEL];
       return [...MISTRAL_MODELS];
     },
     [generationSettings.mode, lmStudioModels],
@@ -1471,6 +1526,65 @@ const App = () => {
     setNarrationSettings((settings) => ({ ...settings, mode }));
   }, []);
 
+  const handleNarrationProviderChange = useCallback((event: React.ChangeEvent<HTMLSelectElement>) => {
+    const provider = event.target.value;
+    if (provider !== 'omnivoice' && provider !== 'elevenlabs') return;
+    setNarrationSettings((settings) => ({ ...settings, provider }));
+  }, []);
+
+  const updateElevenLabsSettings = useCallback((patch: Partial<NarrationSettings['elevenLabs']>) => {
+    setNarrationSettings((settings) => ({
+      ...settings,
+      elevenLabs: { ...settings.elevenLabs, ...patch },
+    }));
+  }, []);
+
+  const handleElevenLabsNumberChange = useCallback((
+    key: 'speed' | 'stability' | 'similarityBoost' | 'style' | 'seed',
+    rawValue: string,
+  ) => {
+    const value = Number(rawValue);
+    if (!Number.isFinite(value)) return;
+    const limits = key === 'speed'
+      ? { min: 0.7, max: 1.2 }
+      : key === 'seed'
+        ? { min: 0, max: ELEVENLABS_MAX_SEED }
+        : { min: 0, max: 1 };
+    updateElevenLabsSettings({
+      [key]: key === 'seed'
+        ? Math.floor(Math.min(limits.max, Math.max(limits.min, value)))
+        : Math.min(limits.max, Math.max(limits.min, value)),
+    });
+  }, [updateElevenLabsSettings]);
+
+  const handleTestElevenLabsNarration = useCallback(async () => {
+    if (narrationTestRequestRef.current) return;
+    if (!narrationSettings.elevenLabs.voiceId.trim()) {
+      showProjectNotice('error', 'Сначала укажите ElevenLabs voice_id.');
+      return;
+    }
+    const sample = 'В старом зале гулко падали капли. Кель поднялся и посмотрел на закрытые двери.';
+    narrationTestRequestRef.current = true;
+    setIsNarrationTestLoading(true);
+    try {
+      const audioUrl = await generateComfyElevenLabsAudio(
+        prepareNarrationText(sample, narrationSettings),
+        narrationSettings,
+        imageGenerationSettings,
+      );
+      setNarrationTestAudioUrl((previousUrl) => {
+        if (previousUrl.startsWith('blob:')) URL.revokeObjectURL(previousUrl);
+        return audioUrl;
+      });
+      showProjectNotice('success', 'Короткий тест ElevenLabs готов. Полная озвучка не запускалась.');
+    } catch (error) {
+      showProjectNotice('error', errorMessage(error));
+    } finally {
+      narrationTestRequestRef.current = false;
+      setIsNarrationTestLoading(false);
+    }
+  }, [imageGenerationSettings, narrationSettings, showProjectNotice]);
+
   const handleNarrationModelChange = useCallback((event: React.ChangeEvent<HTMLSelectElement>) => {
     const model = event.target.value;
     if (model !== 'OmniVoice-bf16' && model !== 'OmniVoice') return;
@@ -1481,6 +1595,15 @@ const App = () => {
     const quality = event.target.value;
     if (quality !== 'fast' && quality !== 'balanced' && quality !== 'quality') return;
     setNarrationSettings((settings) => ({ ...settings, quality }));
+  }, []);
+
+  const handleNarrationSpeedChange = useCallback((event: React.ChangeEvent<HTMLInputElement>) => {
+    const value = Number(event.target.value);
+    if (!Number.isFinite(value)) return;
+    setNarrationSettings((settings) => ({
+      ...settings,
+      speed: Math.min(2, Math.max(0.5, value)),
+    }));
   }, []);
 
   const handleNarrationSeedInputChange = useCallback((event: React.ChangeEvent<HTMLInputElement>) => {
@@ -1570,6 +1693,20 @@ const App = () => {
     setGenerationSettings((settings) => ({
       ...settings,
       comfyGeminiMaxOutputTokens: getSavedContextLength(value, COMFY_GEMINI_DEFAULT_MAX_OUTPUT_TOKENS),
+    }));
+  }, []);
+
+  const handleOpenAiReasoningEffortChange = useCallback((event: React.ChangeEvent<HTMLSelectElement>) => {
+    const openAiReasoningEffort = event.target.value;
+    if (!isOpenAiReasoningEffort(openAiReasoningEffort)) return;
+    setGenerationSettings((settings) => ({ ...settings, openAiReasoningEffort }));
+  }, []);
+
+  const handleOpenAiMaxOutputTokensChange = useCallback((event: React.ChangeEvent<HTMLInputElement>) => {
+    const value = Number(event.target.value);
+    setGenerationSettings((settings) => ({
+      ...settings,
+      openAiMaxOutputTokens: getSavedContextLength(value, OPENAI_LUNA_DEFAULT_MAX_OUTPUT_TOKENS),
     }));
   }, []);
 
@@ -1720,7 +1857,7 @@ const App = () => {
                 </strong>
               </label>
               <div
-                className={`generation-controls${generationSettings.mode === 'comfygemini' ? ' generation-controls--gemini' : ''}`}
+                className={`generation-controls${generationSettings.mode === 'comfygemini' ? ' generation-controls--gemini' : ''}${generationSettings.mode === 'openai' ? ' generation-controls--openai' : ''}`}
                 aria-label="Режим генерации текста"
               >
             <select
@@ -1733,6 +1870,7 @@ const App = () => {
               <option value="mistral">Mistral API</option>
               <option value="lmstudio">LM Studio</option>
               <option value="comfygemini">Gemini · ComfyUI</option>
+              <option value="openai">OpenAI · Luna Direct API</option>
             </select>
             {generationSettings.mode === 'comfygemini' && (
               <select
@@ -1848,6 +1986,43 @@ const App = () => {
                 />
               </>
             )}
+            {generationSettings.mode === 'openai' && (
+              <>
+                <select
+                  className="generation-model-input"
+                  value={OPENAI_LUNA_MODEL}
+                  aria-label="Модель OpenAI"
+                  disabled
+                >
+                  <option value={OPENAI_LUNA_MODEL}>{OPENAI_LUNA_MODEL}</option>
+                </select>
+                <select
+                  className="generation-context-input"
+                  value={generationSettings.openAiReasoningEffort}
+                  onChange={handleOpenAiReasoningEffortChange}
+                  aria-label="Глубина рассуждения Luna"
+                  title="Для обычной работы достаточно medium; high и выше медленнее и расходуют больше выходных токенов"
+                >
+                  <option value="none">NONE</option>
+                  <option value="low">LOW</option>
+                  <option value="medium">MEDIUM</option>
+                  <option value="high">HIGH</option>
+                  <option value="xhigh">XHIGH</option>
+                  <option value="max">MAX</option>
+                </select>
+                <input
+                  className="generation-context-input"
+                  type="number"
+                  min="1024"
+                  max="128000"
+                  step="1024"
+                  value={generationSettings.openAiMaxOutputTokens}
+                  onChange={handleOpenAiMaxOutputTokensChange}
+                  aria-label="Максимальный ответ Luna"
+                  title="Верхний предел выходных токенов, включая рассуждение"
+                />
+              </>
+            )}
               </div>
               {hasLmStudioMixedContentRisk && (
                 <div className="generation-warning" role="status">
@@ -1857,6 +2032,11 @@ const App = () => {
               {hasComfyGeminiMixedContentRisk && (
                 <div className="generation-warning" role="status">
                   GitHub Pages по HTTPS может блокировать HTTP ComfyUI для Gemini. Для такого режима лучше локальный запуск или HTTPS/proxy.
+                </div>
+              )}
+              {generationSettings.mode === 'openai' && (
+                <div className="generation-warning generation-warning--info" role="status">
+                  Luna работает через локальный сервер CANVA STORY. Ключ берётся только из OPENAI_API_KEY в локальном конфиге; после добавления ключа перезапустите full-stack батник.
                 </div>
               )}
               <div className="image-generation-controls" aria-label="Генерация кадров">
@@ -1895,105 +2075,122 @@ const App = () => {
               </div>
               <details className="narration-generation-controls">
             <summary>
-              Озвучка · {narrationSettings.mode === 'clone' ? 'Voice Clone' : 'Голос по описанию'} ·{' '}
-              {narrationSettings.model === 'OmniVoice' ? 'FP32' : 'BF16'}
+              Озвучка · {narrationSettings.provider === 'elevenlabs'
+                ? `ElevenLabs · ${narrationSettings.elevenLabs.model}`
+                : `${narrationSettings.mode === 'clone' ? 'Voice Clone' : 'OmniVoice'} · ${narrationSettings.model === 'OmniVoice' ? 'FP32' : 'BF16'}`}
             </summary>
             <div className="narration-settings-grid">
               <label>
-                Режим голоса
-                <select value={narrationSettings.mode} onChange={handleNarrationModeChange}>
-                  <option value="design">Голос по описанию</option>
-                  <option value="clone">Voice Clone</option>
+                TTS-провайдер
+                <select value={narrationSettings.provider} onChange={handleNarrationProviderChange}>
+                  <option value="omnivoice">OmniVoice Local · черновик</option>
+                  <option value="elevenlabs">ElevenLabs Direct API · чистовик</option>
                 </select>
-              </label>
-              <label>
-                Модель
-                <select value={narrationSettings.model} onChange={handleNarrationModelChange}>
-                  {OMNIVOICE_MODEL_OPTIONS.map((option) => (
-                    <option key={option.value} value={option.value}>{option.label}</option>
-                  ))}
-                </select>
-              </label>
-              <label>
-                Качество
-                <select value={narrationSettings.quality} onChange={handleNarrationQualityChange}>
-                  {OMNIVOICE_QUALITY_OPTIONS.map((option) => (
-                    <option key={option.value} value={option.value}>{option.label}</option>
-                  ))}
-                </select>
-              </label>
-              <label>
-                Seed дубля
-                <span className="narration-seed-control">
-                  <input
-                    type="number"
-                    min="1"
-                    max={OMNIVOICE_MAX_SEED}
-                    step="1"
-                    value={narrationSettings.seed}
-                    onChange={handleNarrationSeedInputChange}
-                  />
-                  <button
-                    type="button"
-                    onClick={() => handleNarrationSeedChange(getNextNarrationSeed(narrationSettings.seed))}
-                    title="Подготовить новый вариант голоса для следующей генерации"
-                  >
-                    Новый
-                  </button>
-                </span>
               </label>
             </div>
-            {narrationSettings.mode === 'design' ? (
-              <label className="narration-wide-field">
-                Голос рассказчика
-                <span className="narration-voice-preset-row">
-                  <select
-                  value={narrationSettings.voiceInstruct}
-                    onChange={handleNarrationVoicePresetChange}
-                    aria-label="Пресет голоса рассказчика OmniVoice"
-                  >
-                    {!isOmniVoiceNarratorPreset(narrationSettings.voiceInstruct) && (
-                      <option value={narrationSettings.voiceInstruct}>Сохранённая комбинация тегов</option>
-                    )}
-                    {OMNIVOICE_NARRATOR_PRESETS.map((preset) => (
-                      <option key={preset.value} value={preset.value}>{preset.label}</option>
-                    ))}
-                  </select>
-                  <button
-                    type="button"
-                    onClick={handleNarrationVoiceRoulette}
-                    title="Выбрать другую допустимую комбинацию тегов и новый seed"
-                  >
-                    🎲 Рулетка
-                  </button>
-                </span>
-                <code className="narration-voice-tags">{narrationSettings.voiceInstruct}</code>
-              </label>
-            ) : (
-              <div className="narration-clone-settings">
-                <div className="narration-reference-row">
-                  <button type="button" onClick={() => voiceReferenceInputRef.current?.click()}>
-                    {narrationSettings.referenceAudio ? 'Заменить аудио' : 'Выбрать аудио'}
-                  </button>
-                  <span className="narration-reference-name">
-                    {narrationSettings.referenceFileName || 'Референс ещё не выбран'}
-                  </span>
-                  {narrationSettings.referenceAudio && (
-                    <button type="button" onClick={handleRemoveVoiceReference}>Убрать</button>
-                  )}
+            {narrationSettings.provider === 'omnivoice' ? (
+              <>
+                <div className="narration-settings-grid">
+                  <label>
+                    Режим голоса
+                    <select value={narrationSettings.mode} onChange={handleNarrationModeChange}>
+                      <option value="design">Голос по описанию</option>
+                      <option value="clone">Voice Clone</option>
+                    </select>
+                  </label>
+                  <label>
+                    Модель
+                    <select value={narrationSettings.model} onChange={handleNarrationModelChange}>
+                      {OMNIVOICE_MODEL_OPTIONS.map((option) => (
+                        <option key={option.value} value={option.value}>{option.label}</option>
+                      ))}
+                    </select>
+                  </label>
+                  <label>
+                    Качество
+                    <select value={narrationSettings.quality} onChange={handleNarrationQualityChange}>
+                      {OMNIVOICE_QUALITY_OPTIONS.map((option) => (
+                        <option key={option.value} value={option.value}>{option.label}</option>
+                      ))}
+                    </select>
+                  </label>
+                  <label>
+                    Скорость речи
+                    <input
+                      type="number"
+                      min="0.5"
+                      max="2"
+                      step="0.05"
+                      value={narrationSettings.speed}
+                      onChange={handleNarrationSpeedChange}
+                    />
+                  </label>
+                  <label>
+                    Seed дубля
+                    <span className="narration-seed-control">
+                      <input type="number" min="1" max={OMNIVOICE_MAX_SEED} step="1" value={narrationSettings.seed} onChange={handleNarrationSeedInputChange} />
+                      <button type="button" onClick={() => handleNarrationSeedChange(getNextNarrationSeed(narrationSettings.seed))}>Новый</button>
+                    </span>
+                  </label>
                 </div>
-                <label className="narration-wide-field">
-                  Точный текст, произнесённый в референсе
-                  <textarea
-                    rows={2}
-                    value={narrationSettings.referenceText ?? ''}
-                    onChange={(event) => setNarrationSettings((settings) => ({
-                      ...settings,
-                      referenceText: event.target.value,
-                    }))}
-                    placeholder="Впишите дословную расшифровку аудиофайла — так не потребуется Whisper."
-                  />
-                </label>
+                {narrationSettings.mode === 'design' ? (
+                  <label className="narration-wide-field">
+                    Голос рассказчика
+                    <span className="narration-voice-preset-row">
+                      <select value={narrationSettings.voiceInstruct} onChange={handleNarrationVoicePresetChange} aria-label="Пресет голоса рассказчика OmniVoice">
+                        {!isOmniVoiceNarratorPreset(narrationSettings.voiceInstruct) && (
+                          <option value={narrationSettings.voiceInstruct}>Сохранённая комбинация тегов</option>
+                        )}
+                        {OMNIVOICE_NARRATOR_PRESETS.map((preset) => (
+                          <option key={preset.value} value={preset.value}>{preset.label}</option>
+                        ))}
+                      </select>
+                      <button type="button" onClick={handleNarrationVoiceRoulette}>🎲 Рулетка</button>
+                    </span>
+                    <code className="narration-voice-tags">{narrationSettings.voiceInstruct}</code>
+                  </label>
+                ) : (
+                  <div className="narration-clone-settings">
+                    <div className="narration-reference-row">
+                      <button type="button" onClick={() => voiceReferenceInputRef.current?.click()}>
+                        {narrationSettings.referenceAudio ? 'Заменить аудио' : 'Выбрать аудио'}
+                      </button>
+                      <span className="narration-reference-name">{narrationSettings.referenceFileName || 'Референс ещё не выбран'}</span>
+                      {narrationSettings.referenceAudio && <button type="button" onClick={handleRemoveVoiceReference}>Убрать</button>}
+                    </div>
+                    <label className="narration-wide-field">
+                      Точный текст, произнесённый в референсе
+                      <textarea rows={2} value={narrationSettings.referenceText ?? ''} onChange={(event) => setNarrationSettings((settings) => ({ ...settings, referenceText: event.target.value }))} />
+                    </label>
+                  </div>
+                )}
+              </>
+            ) : (
+              <div className="narration-elevenlabs-settings">
+                <div className="narration-settings-grid">
+                  <label>Voice ID<input value={narrationSettings.elevenLabs.voiceId} onChange={(event) => updateElevenLabsSettings({ voiceId: event.target.value })} placeholder="Например: 21m00Tcm4TlvDq8ikWAM" /></label>
+                  <label>Модель<select value={narrationSettings.elevenLabs.model} onChange={(event) => updateElevenLabsSettings({ model: event.target.value as NarrationSettings['elevenLabs']['model'] })}>{ELEVENLABS_MODEL_OPTIONS.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}</select></label>
+                  <label>Скорость<input type="number" min="0.7" max="1.2" step="0.01" value={narrationSettings.elevenLabs.speed} onChange={(event) => handleElevenLabsNumberChange('speed', event.target.value)} /></label>
+                  <label>Seed<input type="number" min="0" max={ELEVENLABS_MAX_SEED} step="1" value={narrationSettings.elevenLabs.seed} onChange={(event) => handleElevenLabsNumberChange('seed', event.target.value)} /></label>
+                  <label>Stability<input type="number" min="0" max="1" step="0.01" value={narrationSettings.elevenLabs.stability} onChange={(event) => handleElevenLabsNumberChange('stability', event.target.value)} /></label>
+                  <label>Similarity boost<input type="number" min="0" max="1" step="0.01" value={narrationSettings.elevenLabs.similarityBoost} onChange={(event) => handleElevenLabsNumberChange('similarityBoost', event.target.value)} /></label>
+                  <label>Style<input type="number" min="0" max="1" step="0.01" value={narrationSettings.elevenLabs.style} onChange={(event) => handleElevenLabsNumberChange('style', event.target.value)} /></label>
+                  <label>Нормализация<select value={narrationSettings.elevenLabs.applyTextNormalization} onChange={(event) => updateElevenLabsSettings({ applyTextNormalization: event.target.value as NarrationSettings['elevenLabs']['applyTextNormalization'] })}><option value="auto">Авто</option><option value="on">Включена</option><option value="off">Выключена</option></select></label>
+                  <label>Язык<input value={narrationSettings.elevenLabs.languageCode} onChange={(event) => updateElevenLabsSettings({ languageCode: event.target.value })} placeholder="ru" /></label>
+                  <label>Формат<select value={narrationSettings.elevenLabs.outputFormat} onChange={(event) => updateElevenLabsSettings({ outputFormat: event.target.value as NarrationSettings['elevenLabs']['outputFormat'] })}>{ELEVENLABS_OUTPUT_FORMAT_OPTIONS.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}</select></label>
+                  <label className="narration-checkbox-field"><input type="checkbox" checked={narrationSettings.elevenLabs.useSpeakerBoost} onChange={(event) => updateElevenLabsSettings({ useSpeakerBoost: event.target.checked })} /> Speaker boost</label>
+                </div>
+                <div className="narration-settings-grid">
+                  <label>Pronunciation dictionary ID<input value={narrationSettings.elevenLabs.pronunciationDictionaryId} onChange={(event) => updateElevenLabsSettings({ pronunciationDictionaryId: event.target.value })} /></label>
+                  <label>Dictionary version ID<input value={narrationSettings.elevenLabs.pronunciationDictionaryVersionId} onChange={(event) => updateElevenLabsSettings({ pronunciationDictionaryVersionId: event.target.value })} /></label>
+                </div>
+                <div className="narration-test-row">
+                  <button type="button" onClick={() => void handleTestElevenLabsNarration()} disabled={isNarrationTestLoading}>
+                    {isNarrationTestLoading ? 'Готовим короткий тест…' : 'Тест одного короткого фрагмента'}
+                  </button>
+                  {narrationTestAudioUrl && <audio controls src={narrationTestAudioUrl} />}
+                </div>
+                <p className="narration-settings-hint">Ключ берётся только из ELEVENLABS_API_KEY локального батника. Для полного чистового запуска стоимость будет показана до подтверждения.</p>
               </div>
             )}
             <label className="narration-wide-field">
@@ -2012,7 +2209,9 @@ const App = () => {
               </span>
             </label>
             <p className="narration-settings-hint">
-              Рулетка использует только официальные теги OmniVoice. Отдельного тега хрипотцы у модели нет: низкий возрастной голос — ближайший синтетический вариант, а точную хрипотцу лучше задавать через Voice Clone. Один seed сохраняет голос одинаковым во всей главе.
+              {narrationSettings.provider === 'omnivoice'
+                ? 'OmniVoice остаётся бесплатной черновой озвучкой. Один seed сохраняет голос одинаковым во всей главе.'
+                : 'Multilingual v2 применяет локальные текстовые замены. V3 и Flash могут передавать ElevenLabs pronunciation dictionary ID/version и контекст соседних сцен.'}
             </p>
             <input
               ref={voiceReferenceInputRef}
@@ -2217,8 +2416,6 @@ const App = () => {
               onExtractChapterTopic={handleExtractChapterTopic}
               onPlanChapters={handlePlanChapters}
               onCreateChapterPlanNodes={handleCreateChapterPlanNodes}
-              onBuildChapterKnowledge={handleBuildChapterKnowledge}
-              onBuildSeasonSkeleton={handleBuildSeasonSkeleton}
               onBuildChapterMaterial={handleBuildChapterMaterial}
               onAutoBuildChapter={handleAutoBuildChapter}
               onEnsureChapterTimeline={handleEnsureChapterTimeline}
@@ -2236,6 +2433,7 @@ const App = () => {
               onGenerateOmniVoiceNarration={handleGenerateOmniVoiceNarration}
               onGenerateAlternateOmniVoiceNarration={handleGenerateAlternateOmniVoiceNarration}
               onGenerateSceneOmniVoiceNarration={handleGenerateSceneOmniVoiceNarration}
+              onGenerateTimelineFinalNarration={handleGenerateTimelineFinalNarration}
               onBuildSceneVideoClip={handleBuildSceneVideoClip}
               onGenerateChapterBackdrop={handleGenerateChapterBackdrop}
               onGenerateTimelineMissingAssets={handleGenerateTimelineMissingAssets}
@@ -2250,6 +2448,7 @@ const App = () => {
               onSetCharacterCanonicalAsset={handleSetCharacterCanonicalAsset}
               textModelOptions={textModelOptions}
               imageProvider={imageGenerationSettings.provider}
+              narrationProvider={narrationSettings.provider}
               onCancelGeneration={handleCancelGeneration}
               onOpenChapterWorkspace={handleOpenChapterWorkspace}
             />

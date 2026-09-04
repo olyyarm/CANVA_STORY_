@@ -87,17 +87,44 @@ export type NodeAssetReferences = Partial<Record<AssetMediaKind, AssetReference>
 export type OmniVoiceMode = 'design' | 'clone';
 export type OmniVoiceModel = 'OmniVoice-bf16' | 'OmniVoice';
 export type OmniVoiceQuality = 'fast' | 'balanced' | 'quality';
+export type NarrationProvider = 'omnivoice' | 'elevenlabs';
+export type ElevenLabsModel = 'eleven_multilingual_v2' | 'eleven_v3' | 'eleven_flash_v2_5';
+export type ElevenLabsTextNormalization = 'auto' | 'on' | 'off';
+export type ElevenLabsOutputFormat =
+  | 'mp3_22050_32'
+  | 'mp3_44100_128'
+  | 'mp3_44100_192'
+  | 'pcm_44100';
+
+export interface ElevenLabsNarrationSettings {
+  voiceId: string;
+  model: ElevenLabsModel;
+  speed: number;
+  stability: number;
+  similarityBoost: number;
+  style: number;
+  useSpeakerBoost: boolean;
+  applyTextNormalization: ElevenLabsTextNormalization;
+  languageCode: string;
+  seed: number;
+  outputFormat: ElevenLabsOutputFormat;
+  pronunciationDictionaryId: string;
+  pronunciationDictionaryVersionId: string;
+}
 
 export interface NarrationSettings {
+  provider: NarrationProvider;
   mode: OmniVoiceMode;
   model: OmniVoiceModel;
   quality: OmniVoiceQuality;
+  speed: number;
   seed: number;
   voiceInstruct: string;
   pronunciationDictionary: string;
   referenceAudio?: AssetReference;
   referenceFileName?: string;
   referenceText?: string;
+  elevenLabs: ElevenLabsNarrationSettings;
 }
 
 export interface NodeData {
@@ -129,7 +156,7 @@ export interface NodeData {
   sceneCount?: number;
   sceneText?: string;
   isLoading?: boolean;
-  loadingProvider?: 'mock' | 'mistral' | 'lmstudio' | 'comfygemini' | 'pollinations' | 'comfyui' | 'comfy_openai_image' | 'comfy_nano_banana';
+  loadingProvider?: 'mock' | 'mistral' | 'lmstudio' | 'comfygemini' | 'openai' | 'pollinations' | 'comfyui' | 'openai_image' | 'comfy_openai_image' | 'comfy_nano_banana';
   isSpeaking?: boolean;
   isGenerated?: boolean;
   canContinue?: boolean;

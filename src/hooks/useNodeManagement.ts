@@ -14,8 +14,10 @@ import {
   generateComfyNanoBanana2LiteImage,
   generateComfyNanoBanana2LiteComposeImage,
   generateComfyNanoBanana2LiteShotGrid,
+  generateComfyElevenLabsAudio,
   generateComfyOmniVoiceAudio,
   generateImage,
+  generateOpenAiGptImage2LowImage,
   generateText,
   GenerationSettings,
   ImageGenerationSettings,
@@ -34,6 +36,8 @@ import {
   CHAPTER_TOPIC_SYSTEM_PROMPT,
   CHAPTER_BACKDROP_ASSET_PROMPT_SYSTEM_PROMPT,
   DEFAULT_FANTASY_STYLE_BIBLE,
+  LEGACY_DEFAULT_FANTASY_STYLE_BIBLE,
+  MAGICAL_ECONOMY_REQUIREMENT,
   DEFAULT_CHAPTER_MATERIAL,
   DEFAULT_CHAPTER_KNOWLEDGE,
   DEFAULT_CHAPTER_PLANNER,
@@ -64,7 +68,13 @@ import {
   SYSTEM_INSERTS_DETAIL_SYSTEM_PROMPT,
   TTS_CLEANUP_SYSTEM_PROMPT,
 } from '../constants';
-import { applyPronunciationDictionary, getNextNarrationSeed, getOmniVoiceSteps } from '../narrationSettings';
+import {
+  applyPronunciationDictionary,
+  estimateElevenLabsCostUsd,
+  getNextNarrationSeed,
+  getOmniVoiceSteps,
+  prepareNarrationText,
+} from '../narrationSettings';
 import {
   SCENE_WRITER_CHARACTER_TAG_CONTRACT,
   SCENE_WRITER_SHOT_SCALE_CONTRACT,
@@ -181,6 +191,7 @@ interface UseNodeManagementReturn {
   handleGenerateAlternateOmniVoiceNarration: (detailNodeId: string) => Promise<void>;
   handleGenerateSceneOmniVoiceNarration: (sceneNodeId: string) => Promise<void>;
   handleGenerateAlternateSceneOmniVoiceNarration: (sceneNodeId: string) => Promise<void>;
+  handleGenerateTimelineFinalNarration: (timelineNodeId: string) => Promise<void>;
   handleGenerateSceneShotGrid: (sceneNodeId: string) => Promise<void>;
   handleBuildSceneVideoClip: (sceneNodeId: string) => Promise<void>;
   handleGenerateChapterBackdrop: (timelineNodeId: string) => Promise<void>;
@@ -441,6 +452,8 @@ interface PlannedChapter {
   human_problem?: string;
   client_or_pressure?: string;
   professional_problem?: string;
+  magical_economy_mechanic?: string;
+  visible_magic_consequence?: string;
   source_material_focus?: string[];
   antagonist_pressure?: string;
   system_insert_candidate?: string;
@@ -473,14 +486,102 @@ const extractJsonObject = (text: string) => {
   const trimmed = text.trim().replace(/^```(?:json)?\s*/iu, '').replace(/\s*```$/u, '').trim();
   const start = trimmed.indexOf('{');
   const end = trimmed.lastIndexOf('}');
-  if (start < 0 || end <= start) throw new Error('Планировщик не вернул JSON-объект.');
+  if (start < 0) throw new Error('Планировщик не вернул JSON-объект.');
+  if (end <= start) {
+    throw new Error('Ответ планировщика оборвался до конца JSON. В нём отсутствует часть глав — локально восстановить их нельзя. Повторите планирование: лимит полного ответа уже увеличен.');
+  }
   return trimmed.slice(start, end + 1);
+};
+
+const escapeRawLineBreaksInsideJsonStrings = (text: string) => {
+  let result = '';
+  let inString = false;
+  let escaped = false;
+  for (let index = 0; index < text.length; index += 1) {
+    const character = text[index];
+    if (inString && (character === '\n' || character === '\r')) {
+      result += '\\n';
+      if (character === '\r' && text[index + 1] === '\n') index += 1;
+      escaped = false;
+      continue;
+    }
+    result += character;
+    if (escaped) {
+      escaped = false;
+      continue;
+    }
+    if (character === '\\' && inString) {
+      escaped = true;
+      continue;
+    }
+    if (character === '"') inString = !inString;
+  }
+  return result;
+};
+
+const getJsonErrorPosition = (message: string, text: string) => {
+  const positionMatch = message.match(/position\s+(\d+)/iu);
+  if (positionMatch) return Number(positionMatch[1]);
+  const locationMatch = message.match(/line\s+(\d+)\s+column\s+(\d+)/iu);
+  if (!locationMatch) return null;
+  const targetLine = Number(locationMatch[1]);
+  const targetColumn = Number(locationMatch[2]);
+  if (!Number.isFinite(targetLine) || !Number.isFinite(targetColumn)) return null;
+  const lines = text.split('\n');
+  if (targetLine < 1 || targetLine > lines.length) return null;
+  return lines.slice(0, targetLine - 1).reduce((length, line) => length + line.length + 1, 0)
+    + Math.max(0, targetColumn - 1);
+};
+
+const findNonWhitespaceIndex = (text: string, start: number, direction: -1 | 1) => {
+  for (let index = start; index >= 0 && index < text.length; index += direction) {
+    if (!/\s/u.test(text[index])) return index;
+  }
+  return -1;
+};
+
+const parseJsonWithCommonRepairs = (text: string): unknown => {
+  let candidate = escapeRawLineBreaksInsideJsonStrings(text.replace(/^\uFEFF/u, ''));
+  let lastError: unknown;
+  for (let attempt = 0; attempt < 16; attempt += 1) {
+    try {
+      return JSON.parse(candidate) as unknown;
+    } catch (error) {
+      lastError = error;
+      const message = errorMessage(error);
+      const position = getJsonErrorPosition(message, candidate);
+      if (position === null) break;
+      const rightIndex = findNonWhitespaceIndex(candidate, position, 1);
+      const leftIndex = findNonWhitespaceIndex(candidate, Math.min(position - 1, candidate.length - 1), -1);
+      if (rightIndex < 0 || leftIndex < 0) break;
+      const rightCharacter = candidate[rightIndex];
+      const leftCharacter = candidate[leftIndex];
+      const expectsSeparator = /Expected\s+['"]?,['"]?\s+or\s+['"]?[}\]]['"]?\s+after/iu.test(message)
+        || /Expected\s+['"]?,['"]?\s+or\s+['"]?\]["]?\s+after\s+array\s+element/iu.test(message);
+      const nextValueStarts = /["{[\d\-tfn]/u.test(rightCharacter);
+      const previousValueEnds = /["}\]\d]/u.test(leftCharacter)
+        || candidate.slice(Math.max(0, leftIndex - 4), leftIndex + 1).match(/(?:true|false|null)$/u);
+      if (expectsSeparator && nextValueStarts && previousValueEnds && leftCharacter !== ',') {
+        candidate = `${candidate.slice(0, leftIndex + 1)},${candidate.slice(leftIndex + 1)}`;
+        continue;
+      }
+      const isTrailingComma = leftCharacter === ','
+        && (rightCharacter === '}' || rightCharacter === ']')
+        && /property name|Unexpected token|JSON/iu.test(message);
+      if (isTrailingComma) {
+        candidate = `${candidate.slice(0, leftIndex)}${candidate.slice(leftIndex + 1)}`;
+        continue;
+      }
+      break;
+    }
+  }
+  throw lastError;
 };
 
 const parseChapterPlanDocument = (text: string): ChapterPlanDocument => {
   let parsed: unknown;
   try {
-    parsed = JSON.parse(extractJsonObject(text));
+    parsed = parseJsonWithCommonRepairs(extractJsonObject(text));
   } catch (error) {
     throw new Error(`Не удалось прочитать JSON планировщика: ${errorMessage(error)}`);
   }
@@ -500,6 +601,10 @@ const parseChapterPlanDocument = (text: string): ChapterPlanDocument => {
     })
     .filter((chapter): chapter is PlannedChapter => Boolean(chapter)) ?? [];
   if (chapters.length === 0) throw new Error('Планировщик вернул пустой список глав.');
+  const recommendedCount = Number(rawDocument.recommended_chapter_count);
+  if (Number.isFinite(recommendedCount) && recommendedCount > chapters.length) {
+    throw new Error(`Ответ планировщика оборвался: обещано ${recommendedCount} глав, получено только ${chapters.length}. Повторите планирование с увеличенным лимитом ответа.`);
+  }
   return { ...rawDocument, chapters };
 };
 
@@ -517,6 +622,8 @@ const formatPlannedChapter = (document: ChapterPlanDocument, chapter: PlannedCha
     chapter.human_problem ? `Человеческая проблема: ${chapter.human_problem}` : '',
     chapter.client_or_pressure ? `Клиент/давление: ${chapter.client_or_pressure}` : '',
     chapter.professional_problem ? `Профессиональная проблема: ${chapter.professional_problem}` : '',
+    chapter.magical_economy_mechanic ? `Механика магической экономики: ${chapter.magical_economy_mechanic}` : '',
+    chapter.visible_magic_consequence ? `Наблюдаемое магическое последствие: ${chapter.visible_magic_consequence}` : '',
     stringifyList('Фокус источника', chapter.source_material_focus),
     chapter.antagonist_pressure ? `Сопротивление: ${chapter.antagonist_pressure}` : '',
     chapter.system_insert_candidate ? `Системная вставка-кандидат: ${chapter.system_insert_candidate}` : '',
@@ -694,7 +801,13 @@ const withProjectVisualStyle = (prompt: string, nodes: NodesState) => {
 };
 
 const appendProjectVisualStyleToImagePrompt = (imagePrompt: string, nodes: NodesState) => {
-  const cleanImagePrompt = sanitizePositiveImagePrompt(imagePrompt);
+  const legacyStyle = extractFantasyStyleSection(LEGACY_DEFAULT_FANTASY_STYLE_BIBLE, 'style');
+  const legacyStyleSuffix = `Visual style: ${legacyStyle}. Keep this exact rendering language, medium, line quality, realism level, palette logic, and finish consistent with every other project image.`;
+  const imagePromptWithoutLegacyStyle = imagePrompt
+    .replace(legacyStyleSuffix, '')
+    .replace(legacyStyle, '')
+    .trim();
+  const cleanImagePrompt = sanitizePositiveImagePrompt(imagePromptWithoutLegacyStyle);
   const style = sanitizePositiveImagePrompt(getProjectVisualStyle(nodes));
   if (!style) return cleanImagePrompt;
   const normalizedPrompt = cleanImagePrompt.toLocaleLowerCase('en');
@@ -1056,6 +1169,34 @@ const isSceneInTimelineScope = (
     && scene.metadata?.sourceChapterId === sourceChapterId
   );
 
+const getTimelineSceneEntries = (
+  nodes: NodesState,
+  timelineNodeId: string,
+): Array<[string, NodeData]> => {
+  const timelineNode = nodes[timelineNodeId];
+  if (!timelineNode || timelineNode.nodeType !== 'chapter_timeline') return [];
+  const sourceScenarioId = typeof timelineNode.metadata?.sourceScenarioId === 'string'
+    ? timelineNode.metadata.sourceScenarioId
+    : timelineNode.parentId;
+  const sourceChapterId = typeof timelineNode.metadata?.sourceChapterId === 'string'
+    ? timelineNode.metadata.sourceChapterId
+    : '';
+  const timelineScope = getScopedNodeIds(
+    nodes,
+    sourceChapterId ? [sourceChapterId] : [sourceScenarioId ?? ''],
+  );
+  const hasTimelineScope = timelineScope.size > 0;
+  return Object.entries(nodes)
+    .filter((entry): entry is [string, NodeData] => {
+      const candidate = entry[1];
+      return candidate.nodeType === 'scene'
+        && isSceneInTimelineScope(candidate, timelineScope, hasTimelineScope, sourceChapterId);
+    })
+    .sort(([, first], [, second]) =>
+      (getSceneNumber(first.label) ?? 0) - (getSceneNumber(second.label) ?? 0)
+      || first.label.localeCompare(second.label, 'ru', { numeric: true }));
+};
+
 const isStoryExpansionSceneNode = (scene: NodeData) =>
   scene.metadata?.sourceKind === 'story_expansion_scene'
   || /\d+\s*[A-ZА-Я]\s*\.\s*\d+/iu.test(scene.label);
@@ -1158,26 +1299,91 @@ const resolveSceneNarrationText = (nodes: NodesState, sceneNode: NodeData) => {
     || fallbackText;
 };
 
+const getSceneNarrationContext = (nodes: NodesState, sceneNodeId: string) => {
+  const sceneNode = nodes[sceneNodeId];
+  if (!sceneNode || sceneNode.nodeType !== 'scene') return {};
+  const sourceChapterId = typeof sceneNode.metadata?.sourceChapterId === 'string'
+    ? sceneNode.metadata.sourceChapterId
+    : '';
+  const sceneEntries = Object.entries(nodes)
+    .filter((entry): entry is [string, NodeData] => {
+      const candidate = entry[1];
+      return candidate.nodeType === 'scene'
+        && (
+          candidate.parentId === sceneNode.parentId
+          || (Boolean(sourceChapterId) && candidate.metadata?.sourceChapterId === sourceChapterId)
+        );
+    })
+    .sort(([, first], [, second]) =>
+      (getSceneNumber(first.label) ?? 0) - (getSceneNumber(second.label) ?? 0)
+      || first.label.localeCompare(second.label, 'ru', { numeric: true }));
+  const index = sceneEntries.findIndex(([candidateId]) => candidateId === sceneNodeId);
+  if (index < 0) return {};
+  return {
+    previousText: index > 0 ? resolveSceneNarrationText(nodes, sceneEntries[index - 1][1]) : '',
+    nextText: index + 1 < sceneEntries.length
+      ? resolveSceneNarrationText(nodes, sceneEntries[index + 1][1])
+      : '',
+  };
+};
+
 const getSceneTtsGenerationSignature = (
   text: string,
   settings: NarrationSettings,
-  seed = settings.seed,
-) => JSON.stringify({
-  version: 1,
-  text: applyPronunciationDictionary(
-    cleanupBrowserSpeechText(text),
-    settings.pronunciationDictionary,
-  ),
-  mode: settings.mode,
-  model: settings.model,
-  quality: settings.quality,
-  steps: getOmniVoiceSteps(settings.quality),
-  seed,
-  voiceInstruct: settings.voiceInstruct.trim(),
-  referenceAssetId: settings.referenceAudio?.assetId ?? '',
-  referenceText: settings.referenceText?.trim() ?? '',
-  synthesisProfile: 'omnivoice-speed-0.9-stable-pronunciation-v2',
-});
+  seed = settings.provider === 'elevenlabs' ? settings.elevenLabs.seed : settings.seed,
+  context: { previousText?: string; nextText?: string } = {},
+) => {
+  const cleanedText = cleanupBrowserSpeechText(text);
+  const previousText = cleanupBrowserSpeechText(context.previousText ?? '');
+  const nextText = cleanupBrowserSpeechText(context.nextText ?? '');
+  if (settings.provider === 'elevenlabs') {
+    const elevenLabs = settings.elevenLabs;
+    return JSON.stringify({
+      version: 2,
+      text: prepareNarrationText(cleanedText, settings),
+      provider: 'elevenlabs',
+      voiceId: elevenLabs.voiceId.trim(),
+      model: elevenLabs.model,
+      speed: elevenLabs.speed,
+      stability: elevenLabs.stability,
+      similarityBoost: elevenLabs.similarityBoost,
+      style: elevenLabs.style,
+      useSpeakerBoost: elevenLabs.useSpeakerBoost,
+      applyTextNormalization: elevenLabs.applyTextNormalization,
+      languageCode: elevenLabs.languageCode.trim().toLowerCase(),
+      seed,
+      outputFormat: elevenLabs.outputFormat,
+      pronunciationDictionary: settings.pronunciationDictionary,
+      pronunciationDictionaryId: elevenLabs.pronunciationDictionaryId.trim(),
+      pronunciationDictionaryVersionId: elevenLabs.pronunciationDictionaryVersionId.trim(),
+      previousText,
+      nextText,
+      synthesisProfile: 'elevenlabs-direct-api-scene-context-v1',
+    });
+  }
+  const signature = {
+    version: 2,
+    text: applyPronunciationDictionary(cleanedText, settings.pronunciationDictionary),
+    provider: 'omnivoice',
+    mode: settings.mode,
+    model: settings.model,
+    quality: settings.quality,
+    steps: getOmniVoiceSteps(settings.quality),
+    seed,
+    voiceInstruct: settings.voiceInstruct.trim(),
+    pronunciationDictionary: settings.pronunciationDictionary,
+    referenceAssetId: settings.referenceAudio?.assetId ?? '',
+    referenceText: settings.referenceText?.trim() ?? '',
+    synthesisProfile: 'omnivoice-speed-0.9-stable-pronunciation-v2',
+  };
+  if (settings.speed === 0.9) return JSON.stringify(signature);
+  return JSON.stringify({
+    ...signature,
+    version: 3,
+    speed: settings.speed,
+    synthesisProfile: 'omnivoice-configurable-speed-stable-pronunciation-v3',
+  });
+};
 
 const upsertScriptDetailNode = (
   previousNodes: NodesState,
@@ -1559,6 +1765,7 @@ const getAssetKind = (node: NodeData) =>
 
 const getDetailAssetImageProvider = (node?: NodeData): DetailAssetImageProvider => {
   const provider = node?.metadata?.detailAssetImageProvider;
+  if (provider === 'openai_direct_gpt_image_2_low') return provider;
   if (
     provider === 'comfy_openai_gpt_image_2_low'
     || provider === 'comfy_krea_medium_turbo'
@@ -1571,8 +1778,11 @@ const getDetailAssetImageProvider = (node?: NodeData): DetailAssetImageProvider 
 
 const isCloudDetailPromptKind = (
   promptKind: ImagePromptKind,
-): promptKind is Extract<ImagePromptKind, 'character_asset' | 'location_asset' | 'system_insert'> =>
-  promptKind === 'character_asset' || promptKind === 'location_asset' || promptKind === 'system_insert';
+): promptKind is Extract<ImagePromptKind, 'character_asset' | 'location_asset' | 'system_insert' | 'chapter_backdrop'> =>
+  promptKind === 'character_asset'
+  || promptKind === 'location_asset'
+  || promptKind === 'system_insert'
+  || promptKind === 'chapter_backdrop';
 
 const isImagePipeline = (value: unknown): value is ImagePipeline =>
   value === 'sdxl'
@@ -3415,8 +3625,10 @@ export const useNodeManagement = (
     const currentNode = nodesRef.current[nodeId];
     if (!currentNode || currentNode.nodeType !== 'script_detail') return;
     const value = event.target.value;
-    const nextProvider: DetailAssetImageProvider = value === 'comfy_openai_gpt_image_2_low'
-      ? 'comfy_openai_gpt_image_2_low'
+    const nextProvider: DetailAssetImageProvider = value === 'openai_direct_gpt_image_2_low'
+      ? 'openai_direct_gpt_image_2_low'
+      : value === 'comfy_openai_gpt_image_2_low'
+        ? 'comfy_openai_gpt_image_2_low'
       : value === 'comfy_nano_banana_2_lite' && currentNode.label === 'Системные вставки'
         ? 'comfy_nano_banana_2_lite'
         : 'inherit';
@@ -3443,8 +3655,10 @@ export const useNodeManagement = (
       || value === 'z_image_turbo'
         ? value
         : fallbackPipeline;
-    const nextProvider: DetailAssetImageProvider = value === 'comfy_openai_gpt_image_2_low'
-      ? 'comfy_openai_gpt_image_2_low'
+    const nextProvider: DetailAssetImageProvider = value === 'openai_direct_gpt_image_2_low'
+      ? 'openai_direct_gpt_image_2_low'
+      : value === 'comfy_openai_gpt_image_2_low'
+        ? 'comfy_openai_gpt_image_2_low'
       : 'inherit';
     updateTimelineSetting(nodeId, {
       pollinationsApiError: undefined,
@@ -3469,8 +3683,10 @@ export const useNodeManagement = (
       || value === 'ernie_image_turbo'
         ? value
         : fallbackPipeline;
-    const nextProvider: DetailAssetImageProvider = value === 'comfy_openai_gpt_image_2_low'
-      ? 'comfy_openai_gpt_image_2_low'
+    const nextProvider: DetailAssetImageProvider = value === 'openai_direct_gpt_image_2_low'
+      ? 'openai_direct_gpt_image_2_low'
+      : value === 'comfy_openai_gpt_image_2_low'
+        ? 'comfy_openai_gpt_image_2_low'
       : 'inherit';
     updateTimelineSetting(nodeId, {
       pollinationsApiError: undefined,
@@ -3634,6 +3850,7 @@ export const useNodeManagement = (
           systemPrompt?: string;
           parentId?: string;
           sceneCount?: number;
+          hiddenOnCanvas?: boolean;
         },
       ) => {
         const existing = findNodeBySourceKind(nextNodes, sourceKind);
@@ -3657,6 +3874,51 @@ export const useNodeManagement = (
           metadata: {
             ...existing?.[1].metadata,
             sourceKind,
+            ...(config.hiddenOnCanvas !== undefined ? { hiddenOnCanvas: config.hiddenOnCanvas } : {}),
+          },
+        };
+        return nodeId;
+      };
+
+      const ensurePromptSnippetNode = (
+        promptSnippetKey: string,
+        config: {
+          label: string;
+          x: number;
+          y: number;
+          width: number;
+          height: number;
+          inputValue: string;
+          statusMessage: string;
+          appliesTo: string;
+          parentId?: string;
+        },
+      ) => {
+        const existing = Object.entries(nextNodes).find(([, node]) =>
+          node.nodeType === 'script_detail'
+          && getSourceKind(node) === promptSnippetSourceKind
+          && node.metadata?.promptSnippetKey === promptSnippetKey);
+        const nodeId = existing?.[0] ?? generateNodeId();
+        nextNodes[nodeId] = {
+          ...existing?.[1],
+          nodeType: 'script_detail',
+          x: existing?.[1].x ?? config.x,
+          y: existing?.[1].y ?? config.y,
+          label: existing?.[1].label ?? config.label,
+          width: existing?.[1].width ?? config.width,
+          height: existing?.[1].height ?? config.height,
+          isGenerated: true,
+          level: anchor?.level ?? 0,
+          parentId: config.parentId,
+          inputValue: existing?.[1].inputValue ?? config.inputValue,
+          statusMessage: config.statusMessage,
+          error: undefined,
+          metadata: {
+            ...existing?.[1].metadata,
+            sourceKind: promptSnippetSourceKind,
+            promptSnippetKey,
+            appliesTo: config.appliesTo,
+            enabled: existing?.[1].metadata?.enabled ?? true,
           },
         };
         return nodeId;
@@ -3680,7 +3942,7 @@ export const useNodeManagement = (
         inputValue: DEFAULT_KNOWLEDGE_BASE,
         parentId: formatBibleId,
       });
-      ensureReferenceNode('fantasy_style_bible', {
+      const fantasyStyleBibleId = ensureReferenceNode('fantasy_style_bible', {
         label: 'Библия фэнтези-стиля',
         x: anchorX + 1340,
         y: anchorY,
@@ -3689,7 +3951,14 @@ export const useNodeManagement = (
         inputValue: DEFAULT_FANTASY_STYLE_BIBLE,
         parentId: formatBibleId,
       });
-      ensureReferenceNode(promptSnippetSourceKind, {
+      if (nextNodes[fantasyStyleBibleId]?.inputValue?.trim() === LEGACY_DEFAULT_FANTASY_STYLE_BIBLE.trim()) {
+        nextNodes[fantasyStyleBibleId] = {
+          ...nextNodes[fantasyStyleBibleId],
+          inputValue: DEFAULT_FANTASY_STYLE_BIBLE,
+          statusMessage: 'Обновлено: живое фэнтези, самоцветная палитра и видимая магическая инфраструктура.',
+        };
+      }
+      ensurePromptSnippetNode('isekai_prolog', {
         label: 'Системное правило · исекай-пролог',
         x: anchorX + 1790,
         y: anchorY,
@@ -3697,21 +3966,20 @@ export const useNodeManagement = (
         height: 420,
         inputValue: ISEKAI_PROLOG_REQUIREMENT,
         parentId: formatBibleId,
+        statusMessage: 'Подключено к: зерно, планировщик и материал глав.',
+        appliesTo: 'pdf_source,chapter_topic,chapter_planner,chapter_plan,chapter_material',
       });
-      const isekaiPromptSnippet = findNodeBySourceKind(nextNodes, promptSnippetSourceKind);
-      if (isekaiPromptSnippet) {
-        nextNodes[isekaiPromptSnippet[0]] = {
-          ...isekaiPromptSnippet[1],
-          statusMessage: 'Подключено к: зерно, планировщик и материал глав.',
-          metadata: {
-            ...isekaiPromptSnippet[1].metadata,
-            sourceKind: promptSnippetSourceKind,
-            promptSnippetKey: 'isekai_prolog',
-            appliesTo: 'pdf_source,chapter_topic,chapter_planner,chapter_plan,chapter_material',
-            enabled: isekaiPromptSnippet[1].metadata?.enabled ?? true,
-          },
-        };
-      }
+      ensurePromptSnippetNode('magical_economy', {
+        label: 'Системное правило · магическая экономика',
+        x: anchorX + 2280,
+        y: anchorY,
+        width: 500,
+        height: 560,
+        inputValue: MAGICAL_ECONOMY_REQUIREMENT,
+        parentId: formatBibleId,
+        statusMessage: 'Подключено к: мир, планы, материалы, сцены и память глав.',
+        appliesTo: 'chapter_topic,chapter_planner,chapter_knowledge,season_skeleton,chapter_material,scenario,brief_revision,story_structure_edit,chapter_facts,chapter_summary,season_memory_update,story_expansion_planner,story_expansion_scene_writer',
+      });
       ensureReferenceNode('season_memory', {
         label: 'Сезонная память',
         x: anchorX + 450,
@@ -3744,7 +4012,7 @@ export const useNodeManagement = (
       ensureReferenceNode('chapter_planner', {
         label: 'Планировщик глав',
         x: anchorX + 1790,
-        y: anchorY + 790,
+        y: anchorY + 330,
         width: 460,
         height: 380,
         inputValue: DEFAULT_CHAPTER_PLANNER,
@@ -3760,6 +4028,7 @@ export const useNodeManagement = (
         inputValue: DEFAULT_CHAPTER_KNOWLEDGE,
         systemPrompt: SEASON_SKELETON_SYSTEM_PROMPT,
         parentId: chapterTopicId,
+        hiddenOnCanvas: true,
       });
       const seasonSkeletonId = ensureReferenceNode('season_skeleton', {
         label: 'Скелет сезона',
@@ -3770,6 +4039,7 @@ export const useNodeManagement = (
         inputValue: DEFAULT_SEASON_SKELETON,
         systemPrompt: CHAPTER_MATERIAL_SYSTEM_PROMPT,
         parentId: chapterKnowledgeId,
+        hiddenOnCanvas: true,
       });
       ensureReferenceNode('chapter_material', {
         label: 'Материал главы',
@@ -3781,9 +4051,10 @@ export const useNodeManagement = (
         systemPrompt: SCENARIO_SYSTEM_PROMPT,
         parentId: seasonSkeletonId,
         sceneCount: 8,
+        hiddenOnCanvas: true,
       });
 
-      showNotice('success', 'Конвейер базы готов: PDF → зерно истории → база главы → скелет сезона → материал главы → сценарий.');
+      showNotice('success', 'Основной маршрут готов: PDF → зерно истории → планировщик → ноды глав → материал и сценарий каждой главы.');
       return nextNodes;
     });
   }, [setNodes, showNotice]);
@@ -3861,12 +4132,12 @@ export const useNodeManagement = (
         ?? masterTimeline?.metadata?.timelineAssetPipeline;
       const inheritedAssetProvider = existing?.[1].metadata?.timelineAssetImageProvider
         ?? masterTimeline?.metadata?.timelineAssetImageProvider
-        ?? 'comfy_openai_gpt_image_2_low';
+        ?? 'openai_direct_gpt_image_2_low';
       const inheritedInsertPipeline = existing?.[1].metadata?.timelineSystemInsertPipeline
         ?? masterTimeline?.metadata?.timelineSystemInsertPipeline;
       const inheritedInsertProvider = existing?.[1].metadata?.timelineSystemInsertImageProvider
         ?? masterTimeline?.metadata?.timelineSystemInsertImageProvider
-        ?? 'comfy_openai_gpt_image_2_low';
+        ?? 'openai_direct_gpt_image_2_low';
       const existingMasterValue = existing?.[1].metadata?.isTimelineMaster;
       const isTimelineMaster = typeof existingMasterValue === 'boolean'
         ? existingMasterValue
@@ -4146,6 +4417,7 @@ export const useNodeManagement = (
         metadata: {
           ...plannerNode.metadata,
           sourceKind: 'chapter_planner',
+          chapterPlanValid: true,
           plannedChapterCount: document.chapters.length,
           plannedAt: new Date().toISOString(),
         },
@@ -4156,6 +4428,11 @@ export const useNodeManagement = (
         inputValue: result,
         error: errorMessage(error),
         statusMessage: undefined,
+        metadata: {
+          ...plannerNode.metadata,
+          sourceKind: 'chapter_planner',
+          chapterPlanValid: false,
+        },
       });
       showNotice('error', errorMessage(error));
     }
@@ -4208,11 +4485,13 @@ export const useNodeManagement = (
         });
         nextNodes[plannerNodeId] = {
           ...currentPlanner,
+          inputValue: JSON.stringify(document, null, 2),
           error: undefined,
           statusMessage: `Создано/обновлено нод глав: ${document.chapters.length}.`,
           metadata: {
             ...currentPlanner.metadata,
             sourceKind: 'chapter_planner',
+            chapterPlanValid: true,
             plannedChapterCount: document.chapters.length,
             chapterNodesCreatedAt: new Date().toISOString(),
           },
@@ -4221,7 +4500,15 @@ export const useNodeManagement = (
       });
       showNotice('success', `Ноды глав созданы: ${document.chapters.length}.`);
     } catch (error) {
-      updateNode(plannerNodeId, { error: errorMessage(error), statusMessage: undefined });
+      updateNode(plannerNodeId, {
+        error: errorMessage(error),
+        statusMessage: undefined,
+        metadata: {
+          ...plannerNode.metadata,
+          sourceKind: 'chapter_planner',
+          chapterPlanValid: false,
+        },
+      });
       showNotice('error', errorMessage(error));
     }
   }, [setNodes, showNotice, updateNode]);
@@ -5069,7 +5356,9 @@ export const useNodeManagement = (
     );
     const findDetail = (label: string) => details.find((node) => node.label === label)?.inputValue || 'Не задано';
     const sceneDescription = sceneNode.sceneText || sceneNode.inputValue || outputNode.inputValue;
-    const useGptImage = providerOverride === 'comfy_openai_gpt_image_2_low';
+    const useDirectGptImage = providerOverride === 'openai_direct_gpt_image_2_low';
+    const useComfyGptImage = providerOverride === 'comfy_openai_gpt_image_2_low';
+    const useGptImage = useDirectGptImage || useComfyGptImage;
     const sceneLocationPipeline = pipelineOverride ?? getNodeImagePipeline(sceneNode, 'z_image_turbo');
     const promptModel = modelOverride || sceneNode.selectedModel || outputNode.selectedModel || MISTRAL_MODELS[0];
     const prompt = [
@@ -5119,7 +5408,11 @@ export const useNodeManagement = (
       updateNode(sceneNodeId, {
         isLoading: false,
         isLoadingImage: true,
-        loadingProvider: useGptImage ? 'comfy_openai_image' : imageGenerationSettings.provider,
+        loadingProvider: useDirectGptImage
+          ? 'openai_image'
+          : useComfyGptImage
+            ? 'comfy_openai_image'
+            : imageGenerationSettings.provider,
         assetPrompt: preparedLocationPrompt,
         metadata: {
           ...nodesRef.current[sceneNodeId]?.metadata,
@@ -5138,21 +5431,27 @@ export const useNodeManagement = (
             : 'Основной рендер генерирует фон этой сцены без персонажей...',
       });
 
-      const imageUrl = useGptImage
-        ? await generateComfyOpenAiGptImage2LowImage(
+      const imageUrl = useDirectGptImage
+        ? await generateOpenAiGptImage2LowImage(
+          preparedLocationPrompt,
+          'location_asset',
+          controller.signal,
+        )
+        : useComfyGptImage
+          ? await generateComfyOpenAiGptImage2LowImage(
           preparedLocationPrompt,
           'location_asset',
           imageGenerationSettings,
           controller.signal,
           { reuseCompleted: true },
         )
-        : await generateImage(
-          preparedLocationPrompt,
-          sceneLocationPipeline,
-          imageGenerationSettings,
-          'scene_location',
-          controller.signal,
-        );
+          : await generateImage(
+            preparedLocationPrompt,
+            sceneLocationPipeline,
+            imageGenerationSettings,
+            'scene_location',
+            controller.signal,
+          );
       upsertImageNode(
         sceneNodeId,
         imageUrl,
@@ -5161,7 +5460,13 @@ export const useNodeManagement = (
         0,
         preparedLocationPrompt,
         styledPromptContext,
-        { imageProvider: useGptImage ? 'comfy_openai_gpt_image_2_low' : imageGenerationSettings.provider },
+        {
+          imageProvider: useDirectGptImage
+            ? 'openai_direct_gpt_image_2_low'
+            : useComfyGptImage
+              ? 'comfy_openai_gpt_image_2_low'
+              : imageGenerationSettings.provider,
+        },
       );
       showNotice('success', `Локация для «${sceneNode.label}» создана.`);
     } catch (error) {
@@ -5516,7 +5821,9 @@ export const useNodeManagement = (
     });
     await new Promise((resolve) => window.setTimeout(resolve, 40));
 
-    const useGptImage = provider === 'comfy_openai_gpt_image_2_low';
+    const useDirectGptImage = provider === 'openai_direct_gpt_image_2_low';
+    const useComfyGptImage = provider === 'comfy_openai_gpt_image_2_low';
+    const useGptImage = useDirectGptImage || useComfyGptImage;
     if (!useGptImage) await unloadLmStudioBeforeComfyRender(sceneNodeId, signal);
 
     for (let index = 0; index < preparedAssets.length; index += 1) {
@@ -5530,26 +5837,36 @@ export const useNodeManagement = (
 
       updateNode(preparedAsset.nodeId, {
         isLoadingImage: true,
-        loadingProvider: useGptImage ? 'comfy_openai_image' : imageGenerationSettings.provider,
+        loadingProvider: useDirectGptImage
+          ? 'openai_image'
+          : useComfyGptImage
+            ? 'comfy_openai_image'
+            : imageGenerationSettings.provider,
         pollinationsApiError: undefined,
         statusMessage: `Автодобор создаёт нового персонажа ${index + 1}/${preparedAssets.length}: ${preparedAsset.tag}`,
       });
       const styledPrompt = appendProjectVisualStyleToImagePrompt(preparedAsset.prompt, nodesRef.current);
-      const imageUrl = useGptImage
-        ? await generateComfyOpenAiGptImage2LowImage(
+      const imageUrl = useDirectGptImage
+        ? await generateOpenAiGptImage2LowImage(
+          styledPrompt,
+          'character_asset',
+          signal,
+        )
+        : useComfyGptImage
+          ? await generateComfyOpenAiGptImage2LowImage(
           styledPrompt,
           'character_asset',
           imageGenerationSettings,
           signal,
           { reuseCompleted: true },
         )
-        : await generateImage(
-          styledPrompt,
-          pipeline,
-          imageGenerationSettings,
-          'character_asset',
-          signal,
-        );
+          : await generateImage(
+            styledPrompt,
+            pipeline,
+            imageGenerationSettings,
+            'character_asset',
+            signal,
+          );
 
       setNodes((previousNodes) => {
         const currentAsset = previousNodes[preparedAsset.nodeId];
@@ -5568,7 +5885,11 @@ export const useNodeManagement = (
             metadata: {
               ...currentAsset.metadata,
               imagePipeline: pipeline,
-              imageProvider: useGptImage ? 'comfy_openai_gpt_image_2_low' : imageGenerationSettings.provider,
+              imageProvider: useDirectGptImage
+                ? 'openai_direct_gpt_image_2_low'
+                : useComfyGptImage
+                  ? 'comfy_openai_gpt_image_2_low'
+                  : imageGenerationSettings.provider,
               referencePrompt: styledPrompt,
               referenceContext: sceneDescription,
             },
@@ -5617,19 +5938,37 @@ export const useNodeManagement = (
     const detailAssetProvider = savedDetailAssetProvider === 'comfy_nano_banana_2_lite' && !isSystemInserts
       ? 'inherit'
       : savedDetailAssetProvider;
-    const useGptImage = detailAssetProvider === 'comfy_openai_gpt_image_2_low';
+    const useDirectGptImage = detailAssetProvider === 'openai_direct_gpt_image_2_low';
+    const useComfyGptImage = detailAssetProvider === 'comfy_openai_gpt_image_2_low';
+    const useGptImage = useDirectGptImage || useComfyGptImage;
     const useNanoBanana = detailAssetProvider === 'comfy_nano_banana_2_lite';
     const usesCloudRenderer = useGptImage || useNanoBanana;
-    const imageLoadingProvider = useGptImage
-      ? 'comfy_openai_image' as const
+    const imageLoadingProvider = useDirectGptImage
+      ? 'openai_image' as const
+      : useComfyGptImage
+        ? 'comfy_openai_image' as const
       : useNanoBanana
         ? 'comfy_nano_banana' as const
         : imageGenerationSettings.provider;
-    const imageProviderMetadata = useGptImage
-      ? 'comfy_openai_gpt_image_2_low'
+    const imageProviderMetadata = useDirectGptImage
+      ? 'openai_direct_gpt_image_2_low'
+      : useComfyGptImage
+        ? 'comfy_openai_gpt_image_2_low'
       : useNanoBanana
         ? 'comfy_nano_banana_2_lite'
         : imageGenerationSettings.provider;
+    const generateGptImage2Low = (
+      imagePrompt: string,
+      promptKind: Extract<ImagePromptKind, 'character_asset' | 'location_asset' | 'system_insert'>,
+    ) => useDirectGptImage
+      ? generateOpenAiGptImage2LowImage(imagePrompt, promptKind, controller.signal)
+      : generateComfyOpenAiGptImage2LowImage(
+        imagePrompt,
+        promptKind,
+        imageGenerationSettings,
+        controller.signal,
+        { reuseCompleted: true },
+      );
     const detailImagePipeline = pipelineOverride ?? getDetailImagePipeline(detailNode);
 
     try {
@@ -5729,13 +6068,7 @@ export const useNodeManagement = (
             statusMessage: `Генерируем референс ${index + 1}/${preparedAssets.length}: ${preparedAsset.name}`,
           });
           const imageUrl = useGptImage
-            ? await generateComfyOpenAiGptImage2LowImage(
-              preparedAsset.prompt,
-              'character_asset',
-              imageGenerationSettings,
-              controller.signal,
-              { reuseCompleted: true },
-            )
+            ? await generateGptImage2Low(preparedAsset.prompt, 'character_asset')
             : await generateImage(
               preparedAsset.prompt,
               detailImagePipeline,
@@ -5852,13 +6185,7 @@ export const useNodeManagement = (
           const imageUrl = useNanoBanana
             ? await generateComfyNanoBanana2LiteImage(preparedAsset.prompt, imageGenerationSettings, controller.signal)
             : useGptImage
-              ? await generateComfyOpenAiGptImage2LowImage(
-                preparedAsset.prompt,
-                'system_insert',
-                imageGenerationSettings,
-                controller.signal,
-                { reuseCompleted: true },
-              )
+              ? await generateGptImage2Low(preparedAsset.prompt, 'system_insert')
               : await generateImage(
                 preparedAsset.prompt,
                 detailImagePipeline,
@@ -5989,13 +6316,7 @@ export const useNodeManagement = (
           statusMessage: `Генерируем локацию ${index + 1}/${preparedAssets.length}: ${preparedAsset.name}`,
         });
         const imageUrl = useGptImage
-          ? await generateComfyOpenAiGptImage2LowImage(
-            preparedAsset.prompt,
-            'location_asset',
-            imageGenerationSettings,
-            controller.signal,
-            { reuseCompleted: true },
-          )
+          ? await generateGptImage2Low(preparedAsset.prompt, 'location_asset')
           : await generateImage(
             preparedAsset.prompt,
             detailImagePipeline,
@@ -6545,6 +6866,34 @@ export const useNodeManagement = (
     };
   }, [narrationSettings]);
 
+  const generateSelectedNarrationAudio = useCallback(async (
+    text: string,
+    seed: number,
+    context: { previousText?: string; nextText?: string },
+    signal: AbortSignal,
+    onQueuePhase: (phase: 'queued' | 'running') => void,
+  ) => {
+    if (narrationSettings.provider === 'elevenlabs') {
+      return generateComfyElevenLabsAudio(
+        text,
+        narrationSettings,
+        imageGenerationSettings,
+        context,
+        signal,
+        onQueuePhase,
+      );
+    }
+    return generateComfyOmniVoiceAudio(
+      text,
+      narrationSettings,
+      imageGenerationSettings,
+      await getOmniVoiceReferenceInput(),
+      seed,
+      signal,
+      onQueuePhase,
+    );
+  }, [getOmniVoiceReferenceInput, imageGenerationSettings, narrationSettings]);
+
   const handleGenerateOmniVoiceNarration = useCallback(async (detailNodeId: string, seedOverride?: number) => {
     const detailNode = nodesRef.current[detailNodeId];
     const rawText = detailNode?.inputValue?.trim();
@@ -6554,10 +6903,7 @@ export const useNodeManagement = (
       return;
     }
 
-    const text = applyPronunciationDictionary(
-      cleanupBrowserSpeechText(rawText),
-      narrationSettings.pronunciationDictionary,
-    );
+    const text = prepareNarrationText(cleanupBrowserSpeechText(rawText), narrationSettings);
     if (!text) {
       updateNode(detailNodeId, { error: 'После очистки не осталось текста для озвучки.' });
       return;
@@ -6567,7 +6913,10 @@ export const useNodeManagement = (
     if (activeRequests.current.has(requestId)) return;
     const controller = new AbortController();
     activeRequests.current.set(requestId, controller);
-    const effectiveSeed = seedOverride ?? narrationSettings.seed;
+    const effectiveSeed = narrationSettings.provider === 'elevenlabs'
+      ? narrationSettings.elevenLabs.seed
+      : seedOverride ?? narrationSettings.seed;
+    const providerLabel = narrationSettings.provider === 'elevenlabs' ? 'ElevenLabs' : 'OmniVoice';
 
     try {
       updateNode(detailNodeId, {
@@ -6575,24 +6924,24 @@ export const useNodeManagement = (
         loadingProvider: 'comfyui',
         error: undefined,
         pollinationsApiError: undefined,
-        statusMessage: narrationSettings.mode === 'clone'
+        statusMessage: narrationSettings.provider === 'elevenlabs'
+          ? 'Отправляем ElevenLabs в очередь ComfyUI...'
+          : narrationSettings.mode === 'clone'
           ? 'Отправляем Voice Clone в очередь ComfyUI...'
           : 'Отправляем OmniVoice в очередь ComfyUI...',
       });
 
-      const audioUrl = await generateComfyOmniVoiceAudio(
+      const audioUrl = await generateSelectedNarrationAudio(
         text,
-        narrationSettings,
-        imageGenerationSettings,
-        await getOmniVoiceReferenceInput(),
         effectiveSeed,
+        {},
         controller.signal,
         (phase) => {
           if (!activeRequests.current.has(requestId)) return;
           updateNode(detailNodeId, {
             statusMessage: phase === 'running'
-              ? 'OmniVoice выполняет озвучку в ComfyUI...'
-              : 'OmniVoice ждёт очередь: ComfyUI заканчивает предыдущую задачу...',
+              ? `${providerLabel} выполняет озвучку в ComfyUI...`
+              : `${providerLabel} ждёт очередь: ComfyUI заканчивает предыдущую задачу...`,
           });
         },
       );
@@ -6608,10 +6957,10 @@ export const useNodeManagement = (
             audioUrl,
             isLoadingAudio: false,
             loadingProvider: undefined,
-            statusMessage: 'OmniVoice озвучка готова.',
+            statusMessage: `${providerLabel} озвучка готова.`,
             metadata: {
               ...currentNode.metadata,
-              ttsProvider: 'omnivoice',
+              ttsProvider: narrationSettings.provider,
               voiceInstruct: narrationSettings.voiceInstruct,
               ttsMode: narrationSettings.mode,
               ttsModel: narrationSettings.model,
@@ -6622,10 +6971,10 @@ export const useNodeManagement = (
           },
         };
       });
-      showNotice('success', 'OmniVoice озвучка готова.');
+      showNotice('success', `${providerLabel} озвучка готова.`);
     } catch (error) {
       if (isAbortError(error)) {
-        showNotice('info', 'OmniVoice озвучка отменена.');
+        showNotice('info', `${providerLabel} озвучка отменена.`);
       } else {
         const message = errorMessage(error);
         updateNode(detailNodeId, { error: message });
@@ -6639,7 +6988,7 @@ export const useNodeManagement = (
         statusMessage: undefined,
       });
     }
-  }, [getOmniVoiceReferenceInput, imageGenerationSettings, narrationSettings, setNodes, showNotice, updateNode]);
+  }, [generateSelectedNarrationAudio, narrationSettings, setNodes, showNotice, updateNode]);
 
   const handleGenerateSceneOmniVoiceNarration = useCallback(async (sceneNodeId: string, seedOverride?: number) => {
     const currentNodes = nodesRef.current;
@@ -6651,44 +7000,52 @@ export const useNodeManagement = (
       updateNode(sceneNodeId, { pollinationsApiError: 'Не найден закадровый текст для этой сцены. Сначала создайте или подготовьте ноду «Закадр».' });
       return;
     }
-    const text = applyPronunciationDictionary(
-      narrationText,
-      narrationSettings.pronunciationDictionary,
-    );
+    const text = prepareNarrationText(narrationText, narrationSettings);
+    const narrationContext = getSceneNarrationContext(currentNodes, sceneNodeId);
 
     const requestId = `tts-scene:${sceneNodeId}`;
     if (activeRequests.current.has(requestId)) return;
     const controller = new AbortController();
     activeRequests.current.set(requestId, controller);
     setNodeActiveOperation(sceneNodeId, 'scene_tts');
-    const effectiveSeed = seedOverride ?? narrationSettings.seed;
-    const ttsGenerationSignature = getSceneTtsGenerationSignature(narrationText, narrationSettings, effectiveSeed);
+    const effectiveSeed = narrationSettings.provider === 'elevenlabs'
+      ? narrationSettings.elevenLabs.seed
+      : seedOverride ?? narrationSettings.seed;
+    const providerLabel = narrationSettings.provider === 'elevenlabs' ? 'ElevenLabs' : 'OmniVoice';
+    const ttsGenerationSignature = getSceneTtsGenerationSignature(
+      narrationText,
+      narrationSettings,
+      effectiveSeed,
+      narrationContext,
+    );
 
     try {
       updateNode(sceneNodeId, {
         isLoadingAudio: true,
         loadingProvider: 'comfyui',
         pollinationsApiError: undefined,
-        statusMessage: narrationSettings.mode === 'clone'
+        statusMessage: narrationSettings.provider === 'elevenlabs'
+          ? 'Отправляем чистовую ElevenLabs-озвучку сцены в очередь ComfyUI...'
+          : narrationSettings.mode === 'clone'
           ? 'Отправляем Voice Clone сцены в очередь ComfyUI...'
           : 'Отправляем OmniVoice сцены в очередь ComfyUI...',
       });
 
-      const audioUrl = await generateComfyOmniVoiceAudio(
+      const audioUrl = await generateSelectedNarrationAudio(
         text,
-        narrationSettings,
-        imageGenerationSettings,
-        await getOmniVoiceReferenceInput(),
         effectiveSeed,
+        narrationContext,
         controller.signal,
         (phase) => {
           if (!activeRequests.current.has(requestId)) return;
           updateNode(sceneNodeId, {
             statusMessage: phase === 'running'
-              ? narrationSettings.mode === 'clone'
+              ? narrationSettings.provider === 'elevenlabs'
+                ? 'ElevenLabs создаёт чистовую озвучку этой сцены...'
+                : narrationSettings.mode === 'clone'
                 ? 'OmniVoice озвучивает сцену голосом из референса...'
                 : 'OmniVoice озвучивает эту сцену голосом проекта...'
-              : 'OmniVoice ждёт очередь: ComfyUI заканчивает предыдущий рендер...',
+              : `${providerLabel} ждёт очередь: ComfyUI заканчивает предыдущий рендер...`,
           });
         },
       );
@@ -6716,11 +7073,18 @@ export const useNodeManagement = (
             statusMessage: 'Озвучка сцены готова. Старый клип сброшен.',
             metadata: {
               ...metadataWithoutStaleVideo,
-              ttsProvider: 'omnivoice',
+              ttsProvider: narrationSettings.provider,
               voiceInstruct: narrationSettings.voiceInstruct,
               ttsMode: narrationSettings.mode,
               ttsModel: narrationSettings.model,
               ttsQuality: narrationSettings.quality,
+              ttsSpeed: narrationSettings.provider === 'omnivoice'
+                ? narrationSettings.speed
+                : narrationSettings.elevenLabs.speed,
+              elevenLabsVoiceId: narrationSettings.elevenLabs.voiceId,
+              elevenLabsModel: narrationSettings.elevenLabs.model,
+              elevenLabsSpeed: narrationSettings.elevenLabs.speed,
+              elevenLabsDictionaryVersion: narrationSettings.elevenLabs.pronunciationDictionaryVersionId,
               ttsSeed: effectiveSeed,
               ttsGenerationSignature,
               sceneNarrationText: narrationText,
@@ -6747,7 +7111,7 @@ export const useNodeManagement = (
         statusMessage: undefined,
       });
     }
-  }, [getOmniVoiceReferenceInput, imageGenerationSettings, narrationSettings, setNodeActiveOperation, setNodes, showNotice, updateNode]);
+  }, [generateSelectedNarrationAudio, narrationSettings, setNodeActiveOperation, setNodes, showNotice, updateNode]);
 
   const handleGenerateAlternateOmniVoiceNarration = useCallback(async (detailNodeId: string) => {
     const nextSeed = getNextNarrationSeed(narrationSettings.seed);
@@ -6760,6 +7124,92 @@ export const useNodeManagement = (
     onNarrationSeedChange(nextSeed);
     await handleGenerateSceneOmniVoiceNarration(sceneNodeId, nextSeed);
   }, [handleGenerateSceneOmniVoiceNarration, narrationSettings.seed, onNarrationSeedChange]);
+
+  const handleGenerateTimelineFinalNarration = useCallback(async (timelineNodeId: string) => {
+    const timelineNode = nodesRef.current[timelineNodeId];
+    if (!timelineNode || timelineNode.nodeType !== 'chapter_timeline') return;
+    if (narrationSettings.provider !== 'elevenlabs') {
+      const message = 'Для чистовой озвучки выберите провайдер «ElevenLabs Direct API» в верхних настройках озвучки.';
+      updateNode(timelineNodeId, { pollinationsApiError: message });
+      showNotice('info', message);
+      return;
+    }
+    if (!narrationSettings.elevenLabs.voiceId.trim()) {
+      const message = 'Укажите ElevenLabs voice_id перед чистовой озвучкой.';
+      updateNode(timelineNodeId, { pollinationsApiError: message });
+      showNotice('error', message);
+      return;
+    }
+    const requestId = `timeline-final-tts:${timelineNodeId}`;
+    if (activeRequests.current.has(requestId)) return;
+
+    const sceneEntries = getTimelineSceneEntries(nodesRef.current, timelineNodeId);
+    const pendingScenes = sceneEntries.flatMap(([sceneId, scene]) => {
+      const text = resolveSceneNarrationText(nodesRef.current, scene);
+      if (!text) return [];
+      const context = getSceneNarrationContext(nodesRef.current, sceneId);
+      const signature = getSceneTtsGenerationSignature(text, narrationSettings, undefined, context);
+      return scene.audioUrl && scene.metadata?.ttsGenerationSignature === signature
+        ? []
+        : [{ sceneId, label: scene.label, text, signature }];
+    });
+    if (pendingScenes.length === 0) {
+      showNotice('success', 'Чистовая ElevenLabs-озвучка уже актуальна. Платных запросов не требуется.');
+      return;
+    }
+    const characterCount = pendingScenes.reduce(
+      (total, scene) => total + prepareNarrationText(scene.text, narrationSettings).length,
+      0,
+    );
+    const estimatedCost = estimateElevenLabsCostUsd(characterCount, narrationSettings.elevenLabs.model);
+    const confirmed = window.confirm(
+      `Чистовая озвучка ElevenLabs: ${characterCount.toLocaleString('ru-RU')} символов, `
+      + `примерно $${estimatedCost.toFixed(2)}.\n\n`
+      + `Будут обработаны ${pendingScenes.length} сцен. Картинки не изменятся; аудио и клипы будут обновляться по очереди. Продолжить?`,
+    );
+    if (!confirmed) return;
+
+    const controller = new AbortController();
+    activeRequests.current.set(requestId, controller);
+    try {
+      updateNode(timelineNodeId, {
+        isLoadingAudio: true,
+        loadingProvider: 'comfyui',
+        pollinationsApiError: undefined,
+      });
+      for (let index = 0; index < pendingScenes.length; index += 1) {
+        if (controller.signal.aborted) break;
+        const pendingScene = pendingScenes[index];
+        updateNode(timelineNodeId, {
+          statusMessage: `Чистовая озвучка ${index + 1}/${pendingScenes.length}: ${pendingScene.label}`,
+        });
+        await handleGenerateSceneOmniVoiceNarration(pendingScene.sceneId);
+        await new Promise((resolve) => window.setTimeout(resolve, 40));
+        if (controller.signal.aborted) break;
+        const latestScene = nodesRef.current[pendingScene.sceneId];
+        if (!latestScene?.audioUrl || latestScene.metadata?.ttsGenerationSignature !== pendingScene.signature) {
+          const message = latestScene?.pollinationsApiError
+            || `ElevenLabs не вернул чистовую озвучку для «${pendingScene.label}». Уже готовые сцены сохранены.`;
+          updateNode(timelineNodeId, { pollinationsApiError: message });
+          showNotice('error', message);
+          return;
+        }
+      }
+      if (!controller.signal.aborted) {
+        updateNode(timelineNodeId, {
+          statusMessage: 'Чистовая ElevenLabs-озвучка готова. Пересоберите клипы главы.',
+        });
+        showNotice('success', 'Чистовая озвучка готова. Изображения не менялись; клипы с обновлённым звуком помечены для пересборки.');
+      }
+    } finally {
+      activeRequests.current.delete(requestId);
+      updateNode(timelineNodeId, {
+        isLoadingAudio: false,
+        loadingProvider: undefined,
+        statusMessage: undefined,
+      });
+    }
+  }, [handleGenerateSceneOmniVoiceNarration, narrationSettings, showNotice, updateNode]);
 
   const handleGenerateSceneShotGrid = useCallback(async (sceneNodeId: string) => {
     const currentNodes = nodesRef.current;
@@ -7499,6 +7949,10 @@ export const useNodeManagement = (
     const currentNodes = nodesRef.current;
     const timelineNode = currentNodes[timelineNodeId];
     if (!timelineNode || timelineNode.nodeType !== 'chapter_timeline' || timelineNode.isLoadingImage) return;
+    const useComfyGptImage = timelineNode.metadata?.timelineAssetImageProvider === 'comfy_openai_gpt_image_2_low';
+    const backdropImageProvider = useComfyGptImage
+      ? 'comfy_openai_gpt_image_2_low'
+      : 'openai_direct_gpt_image_2_low';
 
     const sourceScenarioId = typeof timelineNode.metadata?.sourceScenarioId === 'string'
       ? timelineNode.metadata.sourceScenarioId
@@ -7600,7 +8054,7 @@ export const useNodeManagement = (
 
       updateNode(timelineNodeId, {
         assetPrompt: preparedBackdropPrompt,
-        loadingProvider: 'comfy_openai_image',
+        loadingProvider: useComfyGptImage ? 'comfy_openai_image' : 'openai_image',
         metadata: {
           ...nodesRef.current[timelineNodeId]?.metadata,
           preparedChapterBackdropPrompt: preparedBackdropPrompt,
@@ -7609,13 +8063,19 @@ export const useNodeManagement = (
         statusMessage: 'Генерируем тёмный фон главы через GPT Image 2 Low API...',
       });
 
-      const imageUrl = await generateComfyOpenAiGptImage2LowImage(
-        preparedBackdropPrompt,
-        'chapter_backdrop',
-        imageGenerationSettings,
-        controller.signal,
-        { reuseCompleted: true },
-      );
+      const imageUrl = useComfyGptImage
+        ? await generateComfyOpenAiGptImage2LowImage(
+          preparedBackdropPrompt,
+          'chapter_backdrop',
+          imageGenerationSettings,
+          controller.signal,
+          { reuseCompleted: true },
+        )
+        : await generateOpenAiGptImage2LowImage(
+          preparedBackdropPrompt,
+          'chapter_backdrop',
+          controller.signal,
+        );
 
       upsertImageNode(
         timelineNodeId,
@@ -7627,7 +8087,7 @@ export const useNodeManagement = (
         promptContext,
         {
           imagePipeline: 'gpt_image_2_low',
-          imageProvider: 'comfy_openai_gpt_image_2_low',
+          imageProvider: backdropImageProvider,
           chapterBackdropGeneratedAt: new Date().toISOString(),
         },
       );
@@ -7695,7 +8155,9 @@ export const useNodeManagement = (
     const timelineAssetImageProvider: DetailAssetImageProvider =
       timelineNode.metadata?.timelineAssetImageProvider === 'inherit'
         ? 'inherit'
-        : 'comfy_openai_gpt_image_2_low';
+        : timelineNode.metadata?.timelineAssetImageProvider === 'comfy_openai_gpt_image_2_low'
+          ? 'comfy_openai_gpt_image_2_low'
+          : 'openai_direct_gpt_image_2_low';
     const timelineSystemInsertPipeline: ImagePipeline =
       timelineNode.metadata?.timelineSystemInsertPipeline === 'sdxl'
       || timelineNode.metadata?.timelineSystemInsertPipeline === 'z_image_turbo'
@@ -7705,7 +8167,9 @@ export const useNodeManagement = (
     const timelineSystemInsertImageProvider: DetailAssetImageProvider =
       timelineNode.metadata?.timelineSystemInsertImageProvider === 'inherit'
         ? 'inherit'
-        : 'comfy_openai_gpt_image_2_low';
+        : timelineNode.metadata?.timelineSystemInsertImageProvider === 'comfy_openai_gpt_image_2_low'
+          ? 'comfy_openai_gpt_image_2_low'
+          : 'openai_direct_gpt_image_2_low';
 
     const requestId = `timeline-missing:${timelineNodeId}`;
     if (activeRequests.current.has(requestId)) {
@@ -8234,6 +8698,39 @@ export const useNodeManagement = (
       }
       if (isCancelled()) return false;
 
+      if (narrationSettings.provider === 'elevenlabs') {
+        const pendingNarration = sceneEntries.flatMap(([sceneId, scene]) => {
+          const text = resolveSceneNarrationText(nodesRef.current, scene);
+          if (!text) return [];
+          const signature = getSceneTtsGenerationSignature(
+            text,
+            narrationSettings,
+            undefined,
+            getSceneNarrationContext(nodesRef.current, sceneId),
+          );
+          return scene.audioUrl && scene.metadata?.ttsGenerationSignature === signature
+            ? []
+            : [text];
+        });
+        if (pendingNarration.length > 0) {
+          const characterCount = pendingNarration.reduce(
+            (total, text) => total + prepareNarrationText(text, narrationSettings).length,
+            0,
+          );
+          const estimatedCost = estimateElevenLabsCostUsd(characterCount, narrationSettings.elevenLabs.model);
+          const confirmed = window.confirm(
+            `В полном конвейере нужна чистовая ElevenLabs-озвучка: ${characterCount.toLocaleString('ru-RU')} символов, `
+            + `примерно $${estimatedCost.toFixed(2)}.\n\nПродолжить платную часть? Уже готовые сцены повторно не отправятся.`,
+          );
+          if (!confirmed) {
+            updateNode(timelineNodeId, {
+              pollinationsApiError: 'Платная чистовая озвучка отменена. Черновые аудио и готовые изображения сохранены.',
+            });
+            return false;
+          }
+        }
+      }
+
       const heroesNode = findScopedDetail('Герои');
       const pendingCharacterDescriptions = heroesNode?.inputValue
         ? getNewCharacterDescriptions(heroesNode.inputValue, nodesRef.current)
@@ -8243,7 +8740,7 @@ export const useNodeManagement = (
         if (heroesNodeId) {
           syncDetailRenderer(heroesNodeId, timelineAssetPipeline, timelineAssetImageProvider);
           updateNode(timelineNodeId, {
-            statusMessage: timelineAssetImageProvider === 'comfy_openai_gpt_image_2_low'
+            statusMessage: timelineAssetImageProvider !== 'inherit'
               ? 'Генерируем недостающие ассеты персонажей через GPT Image 2 API...'
               : 'Генерируем недостающие ассеты персонажей через реестр...',
           });
@@ -8281,7 +8778,7 @@ export const useNodeManagement = (
       ) {
         syncDetailRenderer(locationsNodeId, timelineAssetPipeline, timelineAssetImageProvider);
         updateNode(timelineNodeId, {
-          statusMessage: timelineAssetImageProvider === 'comfy_openai_gpt_image_2_low'
+          statusMessage: timelineAssetImageProvider !== 'inherit'
             ? 'Генерируем общий набор локаций главы через GPT Image 2 API...'
             : 'Генерируем общий набор локаций главы...',
         });
@@ -8316,7 +8813,7 @@ export const useNodeManagement = (
       ) {
         syncDetailRenderer(systemInsertsNodeId, timelineSystemInsertPipeline, timelineSystemInsertImageProvider);
         updateNode(timelineNodeId, {
-          statusMessage: timelineSystemInsertImageProvider === 'comfy_openai_gpt_image_2_low'
+          statusMessage: timelineSystemInsertImageProvider !== 'inherit'
             ? 'Генерируем системные вставки главы через GPT Image 2 API...'
             : 'Генерируем системные вставки главы локально...',
         });
@@ -8386,7 +8883,12 @@ export const useNodeManagement = (
         }
         const narrationText = resolveSceneNarrationText(nodesRef.current, sceneWithLocation);
         const currentTtsSignature = narrationText
-          ? getSceneTtsGenerationSignature(narrationText, narrationSettings)
+          ? getSceneTtsGenerationSignature(
+            narrationText,
+            narrationSettings,
+            undefined,
+            getSceneNarrationContext(nodesRef.current, sceneId),
+          )
           : '';
         const storedTtsSignature = typeof sceneWithLocation.metadata?.ttsGenerationSignature === 'string'
           ? sceneWithLocation.metadata.ttsGenerationSignature
@@ -9118,21 +9620,29 @@ export const useNodeManagement = (
     const assetKind = getAssetKind(node);
     const promptKind = getImagePromptKind(node);
     const detailSourceNode = node.parentId ? nodesRef.current[node.parentId] : undefined;
-    const savedDetailAssetProvider = isCloudDetailPromptKind(promptKind)
-      ? getDetailAssetImageProvider(detailSourceNode)
-      : 'inherit';
+    const storedImageProvider = node.metadata?.imageProvider;
+    const savedDetailAssetProvider: DetailAssetImageProvider = storedImageProvider === 'openai_direct_gpt_image_2_low'
+      || storedImageProvider === 'comfy_openai_gpt_image_2_low'
+      || storedImageProvider === 'comfy_nano_banana_2_lite'
+      ? storedImageProvider
+      : isCloudDetailPromptKind(promptKind)
+        ? getDetailAssetImageProvider(detailSourceNode)
+        : 'inherit';
     const detailAssetProvider = savedDetailAssetProvider === 'comfy_nano_banana_2_lite' && promptKind !== 'system_insert'
       ? 'inherit'
       : savedDetailAssetProvider;
-    const useGptImage = detailAssetProvider === 'comfy_openai_gpt_image_2_low';
+    const useDirectGptImage = detailAssetProvider === 'openai_direct_gpt_image_2_low';
+    const useComfyGptImage = detailAssetProvider === 'comfy_openai_gpt_image_2_low';
     const useNanoBanana = detailAssetProvider === 'comfy_nano_banana_2_lite';
     const useNanoBananaThumbnail = assetKind === 'video_thumbnail'
       && getNodeImagePipeline(node) === 'nano_banana_2_lite_compose';
 
     updateNode(nodeId, {
       isLoadingImage: true,
-      loadingProvider: useGptImage
-        ? 'comfy_openai_image'
+      loadingProvider: useDirectGptImage
+        ? 'openai_image'
+        : useComfyGptImage
+          ? 'comfy_openai_image'
         : useNanoBanana || useNanoBananaThumbnail
           ? 'comfy_nano_banana'
           : imageGenerationSettings.provider,
@@ -9157,8 +9667,15 @@ export const useNodeManagement = (
       let imageUrl: string;
       if (useNanoBanana || useNanoBananaThumbnail) {
         imageUrl = await generateComfyNanoBanana2LiteImage(styledPrompt, imageGenerationSettings, controller.signal);
-      } else if (useGptImage && isCloudDetailPromptKind(promptKind)) {
-        imageUrl = await generateComfyOpenAiGptImage2LowImage(styledPrompt, promptKind, imageGenerationSettings, controller.signal);
+      } else if (useDirectGptImage && isCloudDetailPromptKind(promptKind)) {
+        imageUrl = await generateOpenAiGptImage2LowImage(styledPrompt, promptKind, controller.signal);
+      } else if (useComfyGptImage && isCloudDetailPromptKind(promptKind)) {
+        imageUrl = await generateComfyOpenAiGptImage2LowImage(
+          styledPrompt,
+          promptKind,
+          imageGenerationSettings,
+          controller.signal,
+        );
       } else if (assetKind === 'scene_flux2_frame') {
         const backgroundNodeId = typeof node.metadata?.backgroundNodeId === 'string' ? node.metadata.backgroundNodeId : '';
         const characterReferenceNodeIds = typeof node.metadata?.characterReferenceNodeIds === 'string'
@@ -9216,8 +9733,10 @@ export const useNodeManagement = (
             statusMessage: undefined,
             metadata: {
               ...currentNode.metadata,
-              imageProvider: useGptImage
-                ? 'comfy_openai_gpt_image_2_low'
+              imageProvider: useDirectGptImage
+                ? 'openai_direct_gpt_image_2_low'
+                : useComfyGptImage
+                  ? 'comfy_openai_gpt_image_2_low'
                 : useNanoBanana
                   ? 'comfy_nano_banana_2_lite'
                   : imageGenerationSettings.provider,
@@ -9290,6 +9809,10 @@ export const useNodeManagement = (
     activeRequests.current.get(`scene-video:${nodeId}`)?.abort();
     activeRequests.current.get(`chapter-backdrop:${nodeId}`)?.abort();
     activeRequests.current.get(`timeline-missing:${nodeId}`)?.abort();
+    activeRequests.current.get(`timeline-final-tts:${nodeId}`)?.abort();
+    getTimelineSceneEntries(nodesRef.current, nodeId).forEach(([sceneId]) => {
+      activeRequests.current.get(`tts-scene:${sceneId}`)?.abort();
+    });
     activeRequests.current.get(`complete-chapter:${nodeId}`)?.abort();
     activeRequests.current.get(`chapter-scene-clips:${nodeId}`)?.abort();
     activeRequests.current.get(`chapter-video:${nodeId}`)?.abort();
@@ -9377,6 +9900,7 @@ export const useNodeManagement = (
     handleGenerateAlternateOmniVoiceNarration,
     handleGenerateSceneOmniVoiceNarration,
     handleGenerateAlternateSceneOmniVoiceNarration,
+    handleGenerateTimelineFinalNarration,
     handleGenerateSceneShotGrid,
     handleBuildSceneVideoClip,
     handleGenerateChapterBackdrop,

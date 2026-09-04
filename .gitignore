@@ -17,6 +17,8 @@ dist-ssr
 start_canva_story_local_config.bat
 start_canva_story_workstation.bat
 *.zip
+__pycache__/
+*.pyc
 
 # Editor directories and files
 .vscode/*

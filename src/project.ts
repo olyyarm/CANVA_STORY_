@@ -4,6 +4,8 @@ import {
   DEFAULT_CHAPTER_PLANNER,
   DEFAULT_CHAPTER_TOPIC,
   DEFAULT_FANTASY_STYLE_BIBLE,
+  LEGACY_DEFAULT_FANTASY_STYLE_BIBLE,
+  MAGICAL_ECONOMY_REQUIREMENT,
   DEFAULT_FORMAT_BIBLE,
   DEFAULT_KNOWLEDGE_BASE,
   DEFAULT_PDF_SOURCE,
@@ -325,30 +327,74 @@ const ensureManagedPromptSnippetNodes = (nodes: NodesState): NodesState => {
     node.nodeType === 'script_detail'
     && node.metadata?.sourceKind === 'system_prompt_snippet'
     && node.metadata?.promptSnippetKey === 'isekai_prolog');
-  if (hasIsekaiSnippet) return nodes;
-
   const parentId = nodes.formatBibleNode ? 'formatBibleNode' : undefined;
   const anchor = parentId ? nodes[parentId] : Object.values(nodes)[0];
+  let nextNodes = nodes;
+  if (!hasIsekaiSnippet) {
+    nextNodes = {
+      ...nextNodes,
+      systemPromptSnippetIsekaiNode: {
+        nodeType: 'script_detail',
+        x: (anchor?.x ?? 40) + 470,
+        y: (anchor?.y ?? 40) + 340,
+        label: 'Системное правило · исекай-пролог',
+        width: 460,
+        height: 420,
+        isGenerated: true,
+        level: 0,
+        parentId,
+        inputValue: ISEKAI_PROLOG_REQUIREMENT,
+        statusMessage: 'Подключено к: зерно, планировщик и материал глав.',
+        metadata: {
+          sourceKind: 'system_prompt_snippet',
+          promptSnippetKey: 'isekai_prolog',
+          appliesTo: 'pdf_source,chapter_topic,chapter_planner,chapter_plan,chapter_material',
+          enabled: true,
+        },
+      },
+    };
+  }
+
+  const hasMagicEconomySnippet = Object.values(nextNodes).some((node) =>
+    node.nodeType === 'script_detail'
+    && node.metadata?.sourceKind === 'system_prompt_snippet'
+    && node.metadata?.promptSnippetKey === 'magical_economy');
+  if (hasMagicEconomySnippet) return nextNodes;
   return {
-    ...nodes,
-    systemPromptSnippetIsekaiNode: {
+    ...nextNodes,
+    systemPromptSnippetMagicEconomyNode: {
       nodeType: 'script_detail',
-      x: (anchor?.x ?? 40) + 470,
+      x: (anchor?.x ?? 40) + 960,
       y: (anchor?.y ?? 40) + 340,
-      label: 'Системное правило · исекай-пролог',
-      width: 460,
-      height: 420,
+      label: 'Системное правило · магическая экономика',
+      width: 500,
+      height: 560,
       isGenerated: true,
       level: 0,
       parentId,
-      inputValue: ISEKAI_PROLOG_REQUIREMENT,
-      statusMessage: 'Подключено к: зерно, планировщик и материал глав.',
+      inputValue: MAGICAL_ECONOMY_REQUIREMENT,
+      statusMessage: 'Подключено к: мир, планы, материалы, сцены и память глав.',
       metadata: {
         sourceKind: 'system_prompt_snippet',
-        promptSnippetKey: 'isekai_prolog',
-        appliesTo: 'pdf_source,chapter_topic,chapter_planner,chapter_plan,chapter_material',
+        promptSnippetKey: 'magical_economy',
+        appliesTo: 'chapter_topic,chapter_planner,chapter_knowledge,season_skeleton,chapter_material,scenario,brief_revision,story_structure_edit,chapter_facts,chapter_summary,season_memory_update,story_expansion_planner,story_expansion_scene_writer',
         enabled: true,
       },
+    },
+  };
+};
+
+const refreshLegacyFantasyStyleBible = (nodes: NodesState): NodesState => {
+  const entry = Object.entries(nodes).find(([, node]) =>
+    node.nodeType === 'script_detail'
+    && node.metadata?.sourceKind === 'fantasy_style_bible');
+  if (!entry || entry[1].inputValue?.trim() !== LEGACY_DEFAULT_FANTASY_STYLE_BIBLE.trim()) return nodes;
+  return {
+    ...nodes,
+    [entry[0]]: {
+      ...entry[1],
+      inputValue: DEFAULT_FANTASY_STYLE_BIBLE,
+      statusMessage: 'Обновлено: живое фэнтези, самоцветная палитра и видимая магическая инфраструктура.',
     },
   };
 };
@@ -452,6 +498,25 @@ export const createStarterNodes = (): NodesState => ({
       enabled: true,
     },
   },
+  systemPromptSnippetMagicEconomyNode: {
+    nodeType: 'script_detail',
+    x: 2300,
+    y: 40,
+    label: 'Системное правило · магическая экономика',
+    width: 500,
+    height: 560,
+    isGenerated: true,
+    level: 0,
+    parentId: 'formatBibleNode',
+    inputValue: MAGICAL_ECONOMY_REQUIREMENT,
+    statusMessage: 'Подключено к: мир, планы, материалы, сцены и память глав.',
+    metadata: {
+      sourceKind: 'system_prompt_snippet',
+      promptSnippetKey: 'magical_economy',
+      appliesTo: 'chapter_topic,chapter_planner,chapter_knowledge,season_skeleton,chapter_material,scenario,brief_revision,story_structure_edit,chapter_facts,chapter_summary,season_memory_update,story_expansion_planner,story_expansion_scene_writer',
+      enabled: true,
+    },
+  },
   seasonMemoryNode: {
     nodeType: 'script_detail',
     x: 480,
@@ -516,12 +581,13 @@ export const createStarterNodes = (): NodesState => ({
     selectedModel: MISTRAL_MODELS[0],
     metadata: {
       sourceKind: 'chapter_knowledge',
+      hiddenOnCanvas: true,
     },
   },
   chapterPlannerNode: {
     nodeType: 'script_detail',
     x: 1820,
-    y: 830,
+    y: 370,
     label: 'Планировщик глав',
     width: 460,
     height: 380,
@@ -551,6 +617,7 @@ export const createStarterNodes = (): NodesState => ({
     sceneCount: 8,
     metadata: {
       sourceKind: 'chapter_material',
+      hiddenOnCanvas: true,
     },
   },
   seasonSkeletonNode: {
@@ -569,6 +636,7 @@ export const createStarterNodes = (): NodesState => ({
     sceneCount: 8,
     metadata: {
       sourceKind: 'season_skeleton',
+      hiddenOnCanvas: true,
     },
   },
 });
@@ -666,6 +734,52 @@ const repairLegacyChapterMaterialBranches = (nodes: NodesState): NodesState => {
   return changed ? nextNodes : nodes;
 };
 
+const simplifyChapterPlanningCanvas = (nodes: NodesState): NodesState => {
+  const plannerEntry = Object.entries(nodes).find(([, node]) =>
+    node.nodeType === 'script_detail'
+    && node.metadata?.sourceKind === 'chapter_planner');
+  if (!plannerEntry) return nodes;
+
+  let changed = false;
+  const nextNodes = { ...nodes };
+  const [plannerId, plannerNode] = plannerEntry;
+  const legacyKnowledgeEntry = Object.entries(nodes).find(([, node]) =>
+    node.nodeType === 'script_detail'
+    && node.metadata?.sourceKind === 'chapter_knowledge');
+
+  Object.entries(nodes).forEach(([nodeId, node]) => {
+    const sourceKind = node.metadata?.sourceKind;
+    const parentKind = node.parentId ? nodes[node.parentId]?.metadata?.sourceKind : undefined;
+    const isLegacyPlanningNode = sourceKind === 'chapter_knowledge'
+      || sourceKind === 'season_skeleton'
+      || (sourceKind === 'chapter_material' && parentKind === 'season_skeleton');
+    if (!isLegacyPlanningNode || node.metadata?.hiddenOnCanvas === true) return;
+    changed = true;
+    nextNodes[nodeId] = {
+      ...node,
+      metadata: {
+        ...node.metadata,
+        hiddenOnCanvas: true,
+      },
+    };
+  });
+
+  const legacyKnowledge = legacyKnowledgeEntry?.[1];
+  const usesOldForkLayout = legacyKnowledge
+    && Math.abs(plannerNode.x - legacyKnowledge.x) <= 40
+    && plannerNode.y >= legacyKnowledge.y + 300;
+  if (usesOldForkLayout) {
+    changed = true;
+    nextNodes[plannerId] = {
+      ...plannerNode,
+      x: legacyKnowledge.x,
+      y: legacyKnowledge.y,
+    };
+  }
+
+  return changed ? nextNodes : nodes;
+};
+
 const sanitizeViewport = (value: unknown): ViewportState => {
   if (!isRecord(value)) return { x: 48, y: 48, zoom: 1 };
   return {
@@ -734,7 +848,9 @@ export const parseProjectJson = (json: string): ProjectDocument => {
     title: value.title.slice(0, 120) || 'Импортированный проект',
     createdAt: typeof value.createdAt === 'string' ? value.createdAt : new Date().toISOString(),
     updatedAt: new Date().toISOString(),
-    nodes: ensureManagedPromptSnippetNodes(repairLegacyChapterMaterialBranches(sanitizeNodes(value.nodes))),
+    nodes: simplifyChapterPlanningCanvas(ensureManagedPromptSnippetNodes(refreshLegacyFantasyStyleBible(
+      repairLegacyChapterMaterialBranches(sanitizeNodes(value.nodes)),
+    ))),
     viewport: sanitizeViewport(value.viewport),
     extensions: sanitizeProjectExtensions(value.extensions),
   };

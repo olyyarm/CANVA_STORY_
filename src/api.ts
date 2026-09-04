@@ -14,6 +14,11 @@ export const COMFY_GEMINI_DEFAULT_MODEL = 'Gemini 3.5 Flash';
 export const COMFY_GEMINI_DEFAULT_THINKING_LEVEL = 'MEDIUM';
 export const COMFY_GEMINI_DEFAULT_MAX_OUTPUT_TOKENS = 32768;
 export const COMFY_GEMINI_ECONOMY_MODEL = 'Gemini 3.1 Flash-Lite';
+export const OPENAI_LUNA_MODEL = 'gpt-5.6-luna';
+export const OPENAI_LUNA_DEFAULT_REASONING_EFFORT = 'medium';
+export const OPENAI_LUNA_DEFAULT_MAX_OUTPUT_TOKENS = 32768;
+export const OPENAI_LOCAL_PROXY_DEFAULT_ENDPOINT = 'http://127.0.0.1:4317/openai/responses';
+export const OPENAI_LOCAL_IMAGE_PROXY_DEFAULT_ENDPOINT = 'http://127.0.0.1:4317/openai/images/generations';
 const FLUX2_DIFFUSION_MODEL = 'flux2_dev_fp8mixed.safetensors';
 const FLUX2_TEXT_ENCODER = 'mistral_3_small_flux2_fp8.safetensors';
 const FLUX2_VAE = 'flux2-vae.safetensors';
@@ -37,10 +42,15 @@ const COMFY_GEMINI_TEXT_TIMEOUT_MS = 45 * 60 * 1000;
 const WIDE_FRAME_WIDTH = 1344;
 const WIDE_FRAME_HEIGHT = 768;
 
-export type GenerationMode = 'mock' | 'mistral' | 'lmstudio' | 'comfygemini';
+export type GenerationMode = 'mock' | 'mistral' | 'lmstudio' | 'comfygemini' | 'openai';
+export type OpenAiReasoningEffort = 'none' | 'low' | 'medium' | 'high' | 'xhigh' | 'max';
 export type TextCostProfile = 'economy' | 'balanced' | 'quality';
 export type ImageProvider = 'pollinations' | 'comfyui';
-export type DetailAssetImageProvider = 'inherit' | 'comfy_openai_gpt_image_2_low' | 'comfy_nano_banana_2_lite';
+export type DetailAssetImageProvider =
+  | 'inherit'
+  | 'openai_direct_gpt_image_2_low'
+  | 'comfy_openai_gpt_image_2_low'
+  | 'comfy_nano_banana_2_lite';
 
 export interface GenerationSettings {
   mode: GenerationMode;
@@ -54,6 +64,8 @@ export interface GenerationSettings {
   comfyGeminiThinkingLevel: string;
   comfyGeminiMaxOutputTokens: number;
   comfyGeminiApiKey: string;
+  openAiReasoningEffort: OpenAiReasoningEffort;
+  openAiMaxOutputTokens: number;
 }
 
 export interface ImageGenerationSettings {
@@ -86,6 +98,8 @@ export const getDefaultGenerationSettings = (): GenerationSettings => ({
   comfyGeminiThinkingLevel: COMFY_GEMINI_DEFAULT_THINKING_LEVEL,
   comfyGeminiMaxOutputTokens: COMFY_GEMINI_DEFAULT_MAX_OUTPUT_TOKENS,
   comfyGeminiApiKey: import.meta.env.VITE_COMFY_ORG_API_KEY?.trim() ?? '',
+  openAiReasoningEffort: OPENAI_LUNA_DEFAULT_REASONING_EFFORT,
+  openAiMaxOutputTokens: OPENAI_LUNA_DEFAULT_MAX_OUTPUT_TOKENS,
 });
 
 export const getDefaultImageGenerationSettings = (): ImageGenerationSettings => ({
@@ -199,7 +213,9 @@ const getProfileOutputTokenLimit = (request: GenerationRequest) => {
   ) return 12288;
   if (
     request.operation === 'chapter_planner'
-    || request.operation === 'chapter_knowledge'
+  ) return 32768;
+  if (
+    request.operation === 'chapter_knowledge'
     || request.operation === 'chapter_topic'
     || request.operation === 'season_skeleton'
   ) return 8192;
@@ -334,6 +350,62 @@ const callLmStudioAPI = async (
   return normalized;
 };
 
+interface OpenAiLocalProxyResponse {
+  text?: string;
+  model?: string;
+  error?: string;
+}
+
+const getOpenAiLocalProxyEndpoint = () => (
+  import.meta.env.VITE_OPENAI_PROXY_ENDPOINT?.trim() || OPENAI_LOCAL_PROXY_DEFAULT_ENDPOINT
+).replace(/\/+$/u, '');
+
+const callOpenAiLunaAPI = async (
+  request: GenerationRequest,
+  settings: GenerationSettings,
+  signal?: AbortSignal,
+): Promise<string> => {
+  let response: Response;
+  try {
+    response = await fetch(getOpenAiLocalProxyEndpoint(), {
+      method: 'POST',
+      signal,
+      headers: {
+        Accept: 'application/json',
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        model: OPENAI_LUNA_MODEL,
+        systemPrompt: request.systemPrompt,
+        prompt: request.prompt,
+        reasoningEffort: settings.openAiReasoningEffort,
+        maxOutputTokens: settings.openAiMaxOutputTokens,
+      }),
+    });
+  } catch (error) {
+    if (error instanceof DOMException && error.name === 'AbortError') throw error;
+    throw new Error(
+      'Локальный сервер CANVA STORY для OpenAI недоступен. Запустите проект через start_canva_story_full_stack.bat и попробуйте снова.',
+    );
+  }
+
+  if (!response.ok) {
+    let details = response.statusText;
+    try {
+      const payload = await response.json() as OpenAiLocalProxyResponse;
+      details = payload.error?.trim() || details;
+    } catch {
+      // The HTTP status remains useful when the local server returned no JSON.
+    }
+    throw new Error(`OpenAI Luna вернула ошибку ${response.status}${details ? `: ${details}` : ''}`);
+  }
+
+  const payload = await response.json() as OpenAiLocalProxyResponse;
+  const text = payload.text?.trim() ?? '';
+  if (!text) throw new Error('OpenAI Luna вернула ответ без текста.');
+  return text;
+};
+
 const operationRoleAliases: Record<string, string[]> = {
   scenario: ['scenario', 'writer', 'draft', 'chapter'],
   editor: ['editor', 'edit', 'revision', 'narration_edit', 'story_structure_edit', 'brief_revision'],
@@ -393,6 +465,7 @@ export const generateText = (
   if (settings.mode === 'mock') return createMockCompletion(request, signal).then((value) => value ?? '');
   if (settings.mode === 'lmstudio') return callLmStudioAPI(request, settings, signal);
   if (settings.mode === 'comfygemini') return callComfyGeminiTextAPI(request, settings, signal);
+  if (settings.mode === 'openai') return callOpenAiLunaAPI(request, settings, signal);
   return callMistralAPI(request, signal);
 };
 
@@ -1328,7 +1401,7 @@ const getComfyOmniVoiceCommonInputs = (settings: NarrationSettings, seed: number
   steps: getOmniVoiceSteps(settings.quality),
   guidance_scale: 2,
   t_shift: 0.1,
-  speed: 0.9,
+  speed: settings.speed,
   duration: 0,
   device: 'auto',
   dtype: settings.model === 'OmniVoice' ? 'fp32' : 'bf16',
@@ -1493,6 +1566,121 @@ export const generateComfyOmniVoiceAudio = async (
     }
     if (error instanceof TypeError) {
       throw new Error(`Не удалось подключиться к ComfyUI по адресу ${baseUrl}. Проверьте ComfyUI, OmniVoice-ноды и CORS.`);
+    }
+    throw error;
+  }
+};
+
+export interface ElevenLabsNarrationContext {
+  previousText?: string;
+  nextText?: string;
+}
+
+const buildComfyElevenLabsWorkflow = (
+  text: string,
+  settings: NarrationSettings,
+  context: ElevenLabsNarrationContext,
+) => {
+  const elevenLabs = settings.elevenLabs;
+  const supportsPronunciationLocator = elevenLabs.model === 'eleven_v3'
+    || elevenLabs.model === 'eleven_flash_v2_5';
+  return {
+    '1': {
+      class_type: 'CanvaStoryElevenLabsTTS',
+      inputs: {
+        text,
+        voice_id: elevenLabs.voiceId.trim(),
+        model_id: elevenLabs.model,
+        speed: elevenLabs.speed,
+        stability: elevenLabs.stability,
+        similarity_boost: elevenLabs.similarityBoost,
+        style: elevenLabs.style,
+        use_speaker_boost: elevenLabs.useSpeakerBoost,
+        apply_text_normalization: elevenLabs.applyTextNormalization,
+        language_code: elevenLabs.languageCode.trim(),
+        seed: elevenLabs.seed,
+        output_format: elevenLabs.outputFormat,
+        previous_text: context.previousText?.trim() ?? '',
+        next_text: context.nextText?.trim() ?? '',
+        pronunciation_dictionary_id: supportsPronunciationLocator
+          ? elevenLabs.pronunciationDictionaryId.trim()
+          : '',
+        pronunciation_dictionary_version_id: supportsPronunciationLocator
+          ? elevenLabs.pronunciationDictionaryVersionId.trim()
+          : '',
+      },
+    },
+    '2': {
+      class_type: 'PreviewAudio',
+      inputs: {
+        audio: ['1', 0],
+      },
+    },
+  };
+};
+
+export const generateComfyElevenLabsAudio = async (
+  text: string,
+  narrationSettings: NarrationSettings,
+  settings: ImageGenerationSettings,
+  context: ElevenLabsNarrationContext = {},
+  signal?: AbortSignal,
+  onQueuePhase?: (phase: 'queued' | 'running') => void,
+) => {
+  const baseUrl = getComfyBaseUrl(settings.comfyEndpoint);
+  let promptId: string | null = null;
+  try {
+    if (!narrationSettings.elevenLabs.voiceId.trim()) {
+      throw new Error('Укажите voice_id из библиотеки ElevenLabs перед чистовой озвучкой.');
+    }
+    const workflow = buildComfyElevenLabsWorkflow(text, narrationSettings, context);
+    const clientId = typeof crypto.randomUUID === 'function'
+      ? crypto.randomUUID()
+      : `canva-story-elevenlabs-${Date.now()}`;
+    const promptResponse = await fetch(`${baseUrl}/prompt`, getComfyFetchOptions({
+      method: 'POST',
+      signal,
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(createComfyPromptPayload(clientId, workflow, settings)),
+    }));
+    if (!promptResponse.ok) {
+      throw new Error(getComfyError(
+        'ComfyUI не принял CANVA STORY ElevenLabs workflow',
+        promptResponse,
+        await readResponseDetails(promptResponse),
+      ));
+    }
+    const promptData: ComfyPromptResponse = await promptResponse.json();
+    if (!promptData.prompt_id) throw new Error('ComfyUI не вернул prompt_id для ElevenLabs workflow.');
+    promptId = promptData.prompt_id;
+    onQueuePhase?.('queued');
+
+    const audio = await waitForComfyAudio(baseUrl, promptId, COMFY_TTS_TIMEOUT_MS, signal, onQueuePhase);
+    if (!audio) {
+      await cancelComfyPrompt(baseUrl, promptId);
+      throw new Error('ElevenLabs не вернул аудио за 45 минут. Задача снята с очереди ComfyUI.');
+    }
+    const params = new URLSearchParams({
+      filename: audio.filename,
+      subfolder: audio.subfolder ?? '',
+      type: audio.type ?? 'temp',
+    });
+    const viewResponse = await fetch(`${baseUrl}/view?${params.toString()}`, getComfyFetchOptions({ signal }));
+    if (!viewResponse.ok) {
+      throw new Error(getComfyError(
+        'ComfyUI не отдал готовое ElevenLabs аудио',
+        viewResponse,
+        await readResponseDetails(viewResponse),
+      ));
+    }
+    return URL.createObjectURL(await viewResponse.blob());
+  } catch (error) {
+    if (error instanceof DOMException && error.name === 'AbortError') {
+      if (promptId) await cancelComfyPrompt(baseUrl, promptId);
+      throw error;
+    }
+    if (error instanceof TypeError) {
+      throw new Error(`Не удалось подключиться к ComfyUI по адресу ${baseUrl}. Проверьте ComfyUI, собственную ElevenLabs-ноду и CORS.`);
     }
     throw error;
   }
@@ -2582,6 +2770,56 @@ export const generateComfyNanoBanana2LiteShotGrid = async (
     }
     if (error instanceof TypeError) {
       throw new Error(`Не удалось подключиться к ComfyUI по адресу ${baseUrl}. Проверьте ComfyUI, CORS и Comfy.org API key.`);
+    }
+    throw error;
+  }
+};
+
+export const generateOpenAiGptImage2LowImage = async (
+  prompt: string,
+  promptKind: Extract<ImagePromptKind, 'character_asset' | 'location_asset' | 'system_insert' | 'chapter_backdrop'>,
+  signal?: AbortSignal,
+) => {
+  const endpoint = import.meta.env.VITE_OPENAI_IMAGE_PROXY_ENDPOINT?.trim()
+    || OPENAI_LOCAL_IMAGE_PROXY_DEFAULT_ENDPOINT;
+  try {
+    const response = await fetch(endpoint, {
+      method: 'POST',
+      signal,
+      headers: {
+        Accept: 'image/png, application/json',
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        prompt,
+        promptKind,
+        quality: 'low',
+      }),
+    });
+    if (!response.ok) {
+      const raw = await response.text();
+      let payload: unknown = {};
+      try {
+        payload = raw ? JSON.parse(raw) : {};
+      } catch {
+        payload = { error: raw };
+      }
+      throw new Error(getErrorMessage(payload) || `OpenAI GPT Image 2 вернул HTTP ${response.status}.`);
+    }
+
+    const contentType = response.headers.get('content-type') || '';
+    if (!contentType.toLowerCase().startsWith('image/')) {
+      throw new Error('Локальный OpenAI-шлюз завершил запрос, но не вернул изображение.');
+    }
+    const blob = await response.blob();
+    if (blob.size === 0) throw new Error('OpenAI GPT Image 2 вернул пустое изображение.');
+    return URL.createObjectURL(blob);
+  } catch (error) {
+    if (error instanceof DOMException && error.name === 'AbortError') throw error;
+    if (error instanceof TypeError) {
+      throw new Error(
+        'Не удалось подключиться к локальному OpenAI-шлюзу на порту 4317. Запустите CANVA STORY полным батником.',
+      );
     }
     throw error;
   }

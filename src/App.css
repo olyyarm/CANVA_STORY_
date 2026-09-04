@@ -198,6 +198,12 @@
   background: rgba(109, 155, 208, 0.08);
 }
 
+.mode-badge--openai {
+  color: #8bd6bd;
+  border-color: rgba(98, 202, 167, 0.35);
+  background: rgba(98, 202, 167, 0.08);
+}
+
 .mode-badge--image-pollinations {
   color: #d8aa79;
   border-color: rgba(216, 139, 71, 0.32);
@@ -220,6 +226,10 @@
 
 .generation-controls--gemini {
   grid-template-columns: 130px 140px minmax(180px, 1fr) minmax(150px, 190px) 90px 100px;
+}
+
+.generation-controls--openai {
+  grid-template-columns: 180px minmax(170px, 1fr) 100px 100px;
 }
 
 .generation-select,
@@ -555,6 +565,40 @@
   line-height: 1.35;
 }
 
+.narration-checkbox-field {
+  display: flex !important;
+  grid-template-columns: auto 1fr;
+  align-items: center;
+  align-self: end;
+  min-height: 30px;
+}
+
+.narration-checkbox-field input {
+  width: auto;
+  height: auto;
+}
+
+.narration-test-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 2px 9px 7px;
+}
+
+.narration-test-row button {
+  min-height: 30px;
+  padding: 0 10px;
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  color: var(--text-muted);
+  background: #232931;
+}
+
+.narration-test-row audio {
+  width: min(330px, 100%);
+  height: 30px;
+}
+
 .generation-toggle {
   display: inline-flex;
   height: 28px;
@@ -585,6 +629,10 @@
   text-align: center;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.generation-warning--info {
+  color: #8fc9b8;
 }
 
 .project-actions {

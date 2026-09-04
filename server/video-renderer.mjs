@@ -10,6 +10,26 @@ import { randomUUID } from 'node:crypto';
 const HOST = process.env.CANVA_VIDEO_RENDER_HOST || '127.0.0.1';
 const PORT = Number(process.env.CANVA_VIDEO_RENDER_PORT || 4317);
 const FFMPEG_PATH = process.env.FFMPEG_PATH || 'ffmpeg';
+const OPENAI_API_ENDPOINT = 'https://api.openai.com/v1/responses';
+const OPENAI_IMAGE_API_ENDPOINT = 'https://api.openai.com/v1/images/generations';
+const OPENAI_LUNA_MODEL = 'gpt-5.6-luna';
+const OPENAI_IMAGE_MODEL = 'gpt-image-2';
+const OPENAI_REQUEST_TIMEOUT_MS = 45 * 60 * 1000;
+const OPENAI_IMAGE_REQUEST_TIMEOUT_MS = 15 * 60 * 1000;
+const OPENAI_DEFAULT_MAX_OUTPUT_TOKENS = 32768;
+const OPENAI_REASONING_EFFORTS = new Set(['none', 'low', 'medium', 'high', 'xhigh', 'max']);
+const OPENAI_IMAGE_PROMPT_KINDS = new Set([
+  'character_asset',
+  'location_asset',
+  'system_insert',
+  'chapter_backdrop',
+]);
+const configuredOpenAiOrigins = new Set(
+  String(process.env.CANVA_OPENAI_ALLOWED_ORIGINS || '')
+    .split(',')
+    .map((value) => value.trim().replace(/\/+$/u, ''))
+    .filter(Boolean),
+);
 const JOB_TTL_MS = 60 * 60 * 1000;
 const MAX_JSON_BYTES = 1024 * 1024;
 const jobsRoot = join(tmpdir(), 'canva-story-video-renderer');
@@ -28,6 +48,34 @@ const sendJson = (response, statusCode, payload) => {
   response.end(JSON.stringify(payload));
 };
 
+const isAllowedOpenAiOrigin = (origin) => {
+  if (!origin) return true;
+  const normalized = origin.replace(/\/+$/u, '');
+  if (/^https?:\/\/(?:localhost|127\.0\.0\.1|\[::1\])(?::\d+)?$/iu.test(normalized)) return true;
+  if (normalized === 'https://olyyarm.github.io') return true;
+  return configuredOpenAiOrigins.has(normalized);
+};
+
+const setOpenAiCors = (request, response) => {
+  const origin = request.headers.origin;
+  if (origin && isAllowedOpenAiOrigin(origin)) {
+    response.setHeader('Access-Control-Allow-Origin', origin);
+    response.setHeader('Vary', 'Origin');
+  }
+  response.setHeader('Access-Control-Allow-Headers', 'Content-Type');
+  response.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
+  response.setHeader('Access-Control-Expose-Headers', 'Content-Length, Content-Type, X-OpenAI-Image-Model, X-OpenAI-Image-Size');
+};
+
+const sendOpenAiJson = (request, response, statusCode, payload) => {
+  setOpenAiCors(request, response);
+  response.writeHead(statusCode, {
+    'Content-Type': 'application/json; charset=utf-8',
+    'Cache-Control': 'no-store',
+  });
+  response.end(JSON.stringify(payload));
+};
+
 const readJson = async (request) => {
   const chunks = [];
   let size = 0;
@@ -38,6 +86,209 @@ const readJson = async (request) => {
   }
   if (chunks.length === 0) return {};
   return JSON.parse(Buffer.concat(chunks).toString('utf8'));
+};
+
+const getOpenAiOutputText = (payload) => {
+  if (typeof payload?.output_text === 'string' && payload.output_text.trim()) {
+    return payload.output_text.trim();
+  }
+  if (!Array.isArray(payload?.output)) return '';
+  return payload.output
+    .flatMap((item) => Array.isArray(item?.content) ? item.content : [])
+    .map((item) => typeof item?.text === 'string' ? item.text : '')
+    .filter(Boolean)
+    .join('')
+    .trim();
+};
+
+const getOpenAiErrorMessage = (status, payload) => {
+  const apiMessage = typeof payload?.error?.message === 'string' ? payload.error.message.trim() : '';
+  const apiCode = typeof payload?.error?.code === 'string' ? payload.error.code : '';
+  if (status === 401) {
+    return 'OPENAI_API_KEY не принят. Проверьте ключ в start_canva_story_local_config.bat и перезапустите полный стек.';
+  }
+  if (status === 429 && apiCode === 'insufficient_quota') {
+    return 'На OpenAI API закончился доступный баланс или не активирован API-биллинг.';
+  }
+  if (status === 429) {
+    return `OpenAI временно ограничил частоту запросов${apiMessage ? `: ${apiMessage}` : '.'}`;
+  }
+  return apiMessage || `OpenAI API вернул HTTP ${status}.`;
+};
+
+const requestOpenAiLuna = async (requestPayload, clientRequest) => {
+  const apiKey = String(process.env.OPENAI_API_KEY || '').trim();
+  if (!apiKey) {
+    const error = new Error(
+      'OPENAI_API_KEY не настроен. Добавьте ключ в start_canva_story_local_config.bat и полностью перезапустите CANVA STORY.',
+    );
+    error.statusCode = 503;
+    throw error;
+  }
+
+  const systemPrompt = typeof requestPayload.systemPrompt === 'string'
+    ? requestPayload.systemPrompt.trim()
+    : '';
+  const prompt = typeof requestPayload.prompt === 'string' ? requestPayload.prompt.trim() : '';
+  if (!prompt) {
+    const error = new Error('Пустой запрос к Luna не отправлен.');
+    error.statusCode = 400;
+    throw error;
+  }
+
+  const reasoningEffort = OPENAI_REASONING_EFFORTS.has(requestPayload.reasoningEffort)
+    ? requestPayload.reasoningEffort
+    : 'medium';
+  const requestedOutputTokens = Number(requestPayload.maxOutputTokens);
+  const maxOutputTokens = Number.isFinite(requestedOutputTokens)
+    ? Math.min(128000, Math.max(1024, Math.floor(requestedOutputTokens)))
+    : OPENAI_DEFAULT_MAX_OUTPUT_TOKENS;
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), OPENAI_REQUEST_TIMEOUT_MS);
+  const abortUpstream = () => controller.abort();
+  clientRequest.once('aborted', abortUpstream);
+
+  try {
+    const upstream = await fetch(OPENAI_API_ENDPOINT, {
+      method: 'POST',
+      signal: controller.signal,
+      headers: {
+        Accept: 'application/json',
+        Authorization: `Bearer ${apiKey}`,
+        'Content-Type': 'application/json',
+        'X-Client-Request-Id': randomUUID(),
+      },
+      body: JSON.stringify({
+        model: OPENAI_LUNA_MODEL,
+        ...(systemPrompt ? { instructions: systemPrompt } : {}),
+        input: prompt,
+        reasoning: { effort: reasoningEffort },
+        max_output_tokens: maxOutputTokens,
+        store: false,
+      }),
+    });
+    const raw = await upstream.text();
+    let payload = {};
+    if (raw) {
+      try {
+        payload = JSON.parse(raw);
+      } catch {
+        payload = {};
+      }
+    }
+    if (!upstream.ok) {
+      const error = new Error(getOpenAiErrorMessage(upstream.status, payload));
+      error.statusCode = upstream.status;
+      throw error;
+    }
+    const text = getOpenAiOutputText(payload);
+    if (!text) {
+      const error = new Error('OpenAI Luna завершила запрос, но не вернула текст.');
+      error.statusCode = 502;
+      throw error;
+    }
+    return {
+      text,
+      model: typeof payload.model === 'string' ? payload.model : OPENAI_LUNA_MODEL,
+      usage: payload.usage,
+    };
+  } catch (error) {
+    if (error?.name === 'AbortError') {
+      const timeoutError = new Error('Запрос к OpenAI Luna превысил 45 минут или был отменён.');
+      timeoutError.statusCode = 504;
+      throw timeoutError;
+    }
+    throw error;
+  } finally {
+    clearTimeout(timeoutId);
+    clientRequest.off('aborted', abortUpstream);
+  }
+};
+
+const requestOpenAiImage = async (requestPayload, clientRequest) => {
+  const apiKey = String(process.env.OPENAI_API_KEY || '').trim();
+  if (!apiKey) {
+    const error = new Error(
+      'OPENAI_API_KEY не настроен. Добавьте ключ в start_canva_story_local_config.bat и полностью перезапустите CANVA STORY.',
+    );
+    error.statusCode = 503;
+    throw error;
+  }
+
+  const prompt = typeof requestPayload.prompt === 'string' ? requestPayload.prompt.trim() : '';
+  if (!prompt) {
+    const error = new Error('Пустой запрос к GPT Image 2 не отправлен.');
+    error.statusCode = 400;
+    throw error;
+  }
+  const promptKind = OPENAI_IMAGE_PROMPT_KINDS.has(requestPayload.promptKind)
+    ? requestPayload.promptKind
+    : 'location_asset';
+  const size = promptKind === 'character_asset' ? '1152x2048' : '2048x1152';
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), OPENAI_IMAGE_REQUEST_TIMEOUT_MS);
+  const abortUpstream = () => controller.abort();
+  clientRequest.once('aborted', abortUpstream);
+
+  try {
+    const upstream = await fetch(OPENAI_IMAGE_API_ENDPOINT, {
+      method: 'POST',
+      signal: controller.signal,
+      headers: {
+        Accept: 'application/json',
+        Authorization: `Bearer ${apiKey}`,
+        'Content-Type': 'application/json',
+        'X-Client-Request-Id': randomUUID(),
+      },
+      body: JSON.stringify({
+        model: OPENAI_IMAGE_MODEL,
+        prompt,
+        size,
+        quality: 'low',
+        output_format: 'png',
+        n: 1,
+      }),
+    });
+    const raw = await upstream.text();
+    let payload = {};
+    if (raw) {
+      try {
+        payload = JSON.parse(raw);
+      } catch {
+        payload = {};
+      }
+    }
+    if (!upstream.ok) {
+      const error = new Error(getOpenAiErrorMessage(upstream.status, payload));
+      error.statusCode = upstream.status;
+      throw error;
+    }
+    const base64Image = typeof payload?.data?.[0]?.b64_json === 'string'
+      ? payload.data[0].b64_json
+      : '';
+    if (!base64Image) {
+      const error = new Error('OpenAI GPT Image 2 завершил запрос, но не вернул изображение.');
+      error.statusCode = 502;
+      throw error;
+    }
+    const image = Buffer.from(base64Image, 'base64');
+    if (image.length === 0) {
+      const error = new Error('OpenAI GPT Image 2 вернул пустое изображение.');
+      error.statusCode = 502;
+      throw error;
+    }
+    return { image, model: OPENAI_IMAGE_MODEL, size };
+  } catch (error) {
+    if (error?.name === 'AbortError') {
+      const timeoutError = new Error('Запрос к OpenAI GPT Image 2 превысил 15 минут или был отменён.');
+      timeoutError.statusCode = 504;
+      throw timeoutError;
+    }
+    throw error;
+  } finally {
+    clearTimeout(timeoutId);
+    clientRequest.off('aborted', abortUpstream);
+  }
 };
 
 const runProcess = (command, args, options = {}) => new Promise((resolvePromise, rejectPromise) => {
@@ -305,13 +556,72 @@ await mkdir(jobsRoot, { recursive: true });
 
 const server = createServer(async (request, response) => {
   try {
+    const url = new URL(request.url || '/', `http://${HOST}:${PORT}`);
+    if (url.pathname.startsWith('/openai')) {
+      const origin = request.headers.origin;
+      if (!isAllowedOpenAiOrigin(origin)) {
+        response.writeHead(403, { 'Content-Type': 'application/json; charset=utf-8' });
+        response.end(JSON.stringify({ error: 'Этот сайт не может использовать локальный OpenAI API CANVA STORY.' }));
+        return;
+      }
+      if (request.method === 'OPTIONS') {
+        setOpenAiCors(request, response);
+        response.writeHead(204);
+        response.end();
+        return;
+      }
+      if (request.method === 'GET' && url.pathname === '/openai/health') {
+        sendOpenAiJson(request, response, 200, {
+          ok: true,
+          configured: Boolean(String(process.env.OPENAI_API_KEY || '').trim()),
+          model: OPENAI_LUNA_MODEL,
+          imageModel: OPENAI_IMAGE_MODEL,
+        });
+        return;
+      }
+      if (request.method === 'POST' && url.pathname === '/openai/responses') {
+        try {
+          const payload = await readJson(request);
+          const result = await requestOpenAiLuna(payload, request);
+          sendOpenAiJson(request, response, 200, result);
+        } catch (error) {
+          const statusCode = Number.isInteger(error?.statusCode) ? error.statusCode : 500;
+          sendOpenAiJson(request, response, statusCode, {
+            error: error instanceof Error ? error.message : String(error),
+          });
+        }
+        return;
+      }
+      if (request.method === 'POST' && url.pathname === '/openai/images/generations') {
+        try {
+          const payload = await readJson(request);
+          const result = await requestOpenAiImage(payload, request);
+          setOpenAiCors(request, response);
+          response.writeHead(200, {
+            'Content-Type': 'image/png',
+            'Content-Length': result.image.length,
+            'Cache-Control': 'no-store',
+            'X-OpenAI-Image-Model': result.model,
+            'X-OpenAI-Image-Size': result.size,
+          });
+          response.end(result.image);
+        } catch (error) {
+          const statusCode = Number.isInteger(error?.statusCode) ? error.statusCode : 500;
+          sendOpenAiJson(request, response, statusCode, {
+            error: error instanceof Error ? error.message : String(error),
+          });
+        }
+        return;
+      }
+      sendOpenAiJson(request, response, 404, { error: 'Маршрут OpenAI не найден.' });
+      return;
+    }
     if (request.method === 'OPTIONS') {
       setCors(response);
       response.writeHead(204);
       response.end();
       return;
     }
-    const url = new URL(request.url || '/', `http://${HOST}:${PORT}`);
     if (request.method === 'GET' && url.pathname === '/health') {
       const health = await checkBinaries();
       sendJson(response, health.ok ? 200 : 503, health);

@@ -1,6 +1,10 @@
 import {
   AssetReference,
+  ElevenLabsModel,
+  ElevenLabsOutputFormat,
+  ElevenLabsTextNormalization,
   NarrationSettings,
+  NarrationProvider,
   OmniVoiceModel,
   OmniVoiceMode,
   OmniVoiceQuality,
@@ -9,6 +13,27 @@ import {
 export const OMNIVOICE_DEFAULT_VOICE_INSTRUCT =
   'male, middle-aged, very low pitch';
 export const OMNIVOICE_MAX_SEED = 2_147_483_647;
+export const ELEVENLABS_MAX_SEED = 4_294_967_295;
+
+export const ELEVENLABS_MODEL_OPTIONS: Array<{
+  value: ElevenLabsModel;
+  label: string;
+  usdPerThousandCharacters: number;
+}> = [
+  { value: 'eleven_multilingual_v2', label: 'Multilingual v2 · стабильная длинная речь', usdPerThousandCharacters: 0.10 },
+  { value: 'eleven_v3', label: 'Eleven v3 · максимальная выразительность', usdPerThousandCharacters: 0.10 },
+  { value: 'eleven_flash_v2_5', label: 'Flash v2.5 · экономный режим', usdPerThousandCharacters: 0.05 },
+];
+
+export const ELEVENLABS_OUTPUT_FORMAT_OPTIONS: Array<{
+  value: ElevenLabsOutputFormat;
+  label: string;
+}> = [
+  { value: 'mp3_44100_128', label: 'MP3 · 44.1 кГц · 128 кбит/с' },
+  { value: 'mp3_22050_32', label: 'MP3 · 22.05 кГц · 32 кбит/с' },
+  { value: 'mp3_44100_192', label: 'MP3 · 44.1 кГц · 192 кбит/с (может требовать Creator)' },
+  { value: 'pcm_44100', label: 'PCM/WAV · 44.1 кГц (может требовать Pro)' },
+];
 
 export const OMNIVOICE_NARRATOR_PRESETS = [
   {
@@ -106,6 +131,26 @@ const isOmniVoiceModel = (value: unknown): value is OmniVoiceModel =>
 const isOmniVoiceQuality = (value: unknown): value is OmniVoiceQuality =>
   value === 'fast' || value === 'balanced' || value === 'quality';
 
+const isNarrationProvider = (value: unknown): value is NarrationProvider =>
+  value === 'omnivoice' || value === 'elevenlabs';
+
+const isElevenLabsModel = (value: unknown): value is ElevenLabsModel =>
+  value === 'eleven_multilingual_v2' || value === 'eleven_v3' || value === 'eleven_flash_v2_5';
+
+const isElevenLabsTextNormalization = (value: unknown): value is ElevenLabsTextNormalization =>
+  value === 'auto' || value === 'on' || value === 'off';
+
+const isElevenLabsOutputFormat = (value: unknown): value is ElevenLabsOutputFormat =>
+  value === 'mp3_22050_32'
+  || value === 'mp3_44100_128'
+  || value === 'mp3_44100_192'
+  || value === 'pcm_44100';
+
+const clampNumber = (value: unknown, fallback: number, min: number, max: number) =>
+  typeof value === 'number' && Number.isFinite(value)
+    ? Math.min(max, Math.max(min, value))
+    : fallback;
+
 const createSeed = () => {
   if (typeof crypto !== 'undefined' && typeof crypto.getRandomValues === 'function') {
     const values = new Uint32Array(1);
@@ -148,12 +193,29 @@ export const getRandomOmniVoiceNarratorPreset = (currentValue: string) => {
 };
 
 export const createDefaultNarrationSettings = (): NarrationSettings => ({
+  provider: 'omnivoice',
   mode: 'design',
   model: 'OmniVoice-bf16',
   quality: 'fast',
+  speed: 0.9,
   seed: createSeed(),
   voiceInstruct: OMNIVOICE_DEFAULT_VOICE_INSTRUCT,
   pronunciationDictionary: '',
+  elevenLabs: {
+    voiceId: '',
+    model: 'eleven_multilingual_v2',
+    speed: 0.9,
+    stability: 0.5,
+    similarityBoost: 0.75,
+    style: 0,
+    useSpeakerBoost: true,
+    applyTextNormalization: 'auto',
+    languageCode: 'ru',
+    seed: createSeed(),
+    outputFormat: 'mp3_44100_128',
+    pronunciationDictionaryId: '',
+    pronunciationDictionaryVersionId: '',
+  },
 });
 
 const escapeRegExp = (value: string) => value.replace(/[.*+?^${}()|[\]\\]/gu, '\\$&');
@@ -213,10 +275,14 @@ export const sanitizeNarrationSettings = (
     && !OMNIVOICE_LEGACY_NARRATOR_INSTRUCTS.has(normalizedVoiceInstruct)
     ? normalizedVoiceInstruct
     : fallback.voiceInstruct;
+  const elevenLabsData = isRecord(data.elevenLabs) ? data.elevenLabs : {};
+  const elevenLabsFallback = fallback.elevenLabs;
   return {
+    provider: isNarrationProvider(data.provider) ? data.provider : fallback.provider,
     mode: isOmniVoiceMode(data.mode) ? data.mode : fallback.mode,
     model: isOmniVoiceModel(data.model) ? data.model : fallback.model,
     quality: isOmniVoiceQuality(data.quality) ? data.quality : fallback.quality,
+    speed: clampNumber(data.speed, fallback.speed, 0.5, 2),
     seed,
     voiceInstruct,
     pronunciationDictionary: typeof data.pronunciationDictionary === 'string'
@@ -229,8 +295,53 @@ export const sanitizeNarrationSettings = (
     ...(typeof data.referenceText === 'string' && data.referenceText.trim()
       ? { referenceText: data.referenceText.trim().slice(0, 4_000) }
       : {}),
+    elevenLabs: {
+      voiceId: typeof elevenLabsData.voiceId === 'string'
+        ? elevenLabsData.voiceId.trim().slice(0, 160)
+        : elevenLabsFallback.voiceId,
+      model: isElevenLabsModel(elevenLabsData.model)
+        ? elevenLabsData.model
+        : elevenLabsFallback.model,
+      speed: clampNumber(elevenLabsData.speed, elevenLabsFallback.speed, 0.7, 1.2),
+      stability: clampNumber(elevenLabsData.stability, elevenLabsFallback.stability, 0, 1),
+      similarityBoost: clampNumber(elevenLabsData.similarityBoost, elevenLabsFallback.similarityBoost, 0, 1),
+      style: clampNumber(elevenLabsData.style, elevenLabsFallback.style, 0, 1),
+      useSpeakerBoost: typeof elevenLabsData.useSpeakerBoost === 'boolean'
+        ? elevenLabsData.useSpeakerBoost
+        : elevenLabsFallback.useSpeakerBoost,
+      applyTextNormalization: isElevenLabsTextNormalization(elevenLabsData.applyTextNormalization)
+        ? elevenLabsData.applyTextNormalization
+        : elevenLabsFallback.applyTextNormalization,
+      languageCode: typeof elevenLabsData.languageCode === 'string'
+        ? elevenLabsData.languageCode.trim().toLowerCase().slice(0, 12)
+        : elevenLabsFallback.languageCode,
+      seed: Math.floor(clampNumber(elevenLabsData.seed, elevenLabsFallback.seed, 0, ELEVENLABS_MAX_SEED)),
+      outputFormat: isElevenLabsOutputFormat(elevenLabsData.outputFormat)
+        ? elevenLabsData.outputFormat
+        : elevenLabsFallback.outputFormat,
+      pronunciationDictionaryId: typeof elevenLabsData.pronunciationDictionaryId === 'string'
+        ? elevenLabsData.pronunciationDictionaryId.trim().slice(0, 180)
+        : elevenLabsFallback.pronunciationDictionaryId,
+      pronunciationDictionaryVersionId: typeof elevenLabsData.pronunciationDictionaryVersionId === 'string'
+        ? elevenLabsData.pronunciationDictionaryVersionId.trim().slice(0, 180)
+        : elevenLabsFallback.pronunciationDictionaryVersionId,
+    },
   };
 };
+
+export const prepareNarrationText = (text: string, settings: NarrationSettings) => {
+  const cleaned = text.trim().normalize('NFC');
+  if (settings.provider === 'omnivoice' || settings.elevenLabs.model === 'eleven_multilingual_v2') {
+    return applyPronunciationDictionary(cleaned, settings.pronunciationDictionary);
+  }
+  return cleaned;
+};
+
+export const getElevenLabsUsdPerThousandCharacters = (model: ElevenLabsModel) =>
+  ELEVENLABS_MODEL_OPTIONS.find((option) => option.value === model)?.usdPerThousandCharacters ?? 0.10;
+
+export const estimateElevenLabsCostUsd = (characterCount: number, model: ElevenLabsModel) =>
+  (Math.max(0, characterCount) / 1_000) * getElevenLabsUsdPerThousandCharacters(model);
 
 export const getOmniVoiceSteps = (quality: OmniVoiceQuality) =>
   OMNIVOICE_QUALITY_OPTIONS.find((option) => option.value === quality)?.steps ?? 32;

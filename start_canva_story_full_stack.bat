@@ -46,6 +46,8 @@ echo   COMFY_ROOT=%COMFY_ROOT%
 echo   FFMPEG_PATH=%FFMPEG_PATH%
 echo   JS_PACKAGE_MANAGER=%JS_PACKAGE_MANAGER%
 echo   JS_DEV_COMMAND=%JS_DEV_COMMAND%
+if defined ELEVENLABS_API_KEY (echo   ELEVENLABS_API_KEY=configured) else (echo   ELEVENLABS_API_KEY=not configured)
+if defined OPENAI_API_KEY (echo   OPENAI_API_KEY=configured) else (echo   OPENAI_API_KEY=not configured)
 echo.
 
 echo [1/4] Preparing LM Studio server with CORS...
@@ -89,6 +91,20 @@ if not exist "%COMFY_PY%" (
   exit /b 1
 )
 
+set "CANVA_ELEVENLABS_NODE_SOURCE=%~dp0comfyui_custom_nodes\CANVA_STORY_ElevenLabs_TTS"
+set "CANVA_ELEVENLABS_NODE_TARGET=%COMFY_ROOT%\ComfyUI\custom_nodes\CANVA_STORY_ElevenLabs_TTS"
+if exist "%CANVA_ELEVENLABS_NODE_SOURCE%\nodes.py" (
+  if not exist "%CANVA_ELEVENLABS_NODE_TARGET%" mkdir "%CANVA_ELEVENLABS_NODE_TARGET%"
+  xcopy "%CANVA_ELEVENLABS_NODE_SOURCE%\*" "%CANVA_ELEVENLABS_NODE_TARGET%\" /E /I /Y >nul
+  if errorlevel 1 (
+    echo Could not install the CANVA STORY ElevenLabs node into ComfyUI:
+    echo   %CANVA_ELEVENLABS_NODE_TARGET%
+    pause
+    exit /b 1
+  )
+  echo CANVA STORY ElevenLabs node is installed.
+)
+
 powershell -NoProfile -ExecutionPolicy Bypass -Command "$listener = Get-NetTCPConnection -LocalPort %COMFY_PORT% -State Listen -ErrorAction SilentlyContinue; if (-not $listener) { exit 0 }; try { $response = Invoke-WebRequest -Uri 'http://127.0.0.1:%COMFY_PORT%/system_stats' -Headers @{ Origin = 'https://olyyarm.github.io' } -UseBasicParsing -TimeoutSec 5; if ($response.Headers['Access-Control-Allow-Origin']) { exit 2 } } catch {}; exit 1"
 if errorlevel 2 (
   echo ComfyUI is already running with CORS.
@@ -119,14 +135,14 @@ echo.
 :video_renderer_start
 echo.
 echo [3/4] Preparing local FFmpeg renderer...
-powershell -NoProfile -ExecutionPolicy Bypass -Command "$listener = Get-NetTCPConnection -LocalPort %CANVA_VIDEO_RENDER_PORT% -State Listen -ErrorAction SilentlyContinue; if (-not $listener) { exit 0 }; try { $response = Invoke-WebRequest -Uri 'http://127.0.0.1:%CANVA_VIDEO_RENDER_PORT%/health' -UseBasicParsing -TimeoutSec 5; if ($response.StatusCode -eq 200) { exit 2 } } catch {}; exit 1"
+powershell -NoProfile -ExecutionPolicy Bypass -Command "$listener = Get-NetTCPConnection -LocalPort %CANVA_VIDEO_RENDER_PORT% -State Listen -ErrorAction SilentlyContinue; if (-not $listener) { exit 0 }; try { $response = Invoke-WebRequest -Uri 'http://127.0.0.1:%CANVA_VIDEO_RENDER_PORT%/health' -UseBasicParsing -TimeoutSec 5; $openai = Invoke-WebRequest -Uri 'http://127.0.0.1:%CANVA_VIDEO_RENDER_PORT%/openai/health' -UseBasicParsing -TimeoutSec 5; if ($response.StatusCode -eq 200 -and $openai.StatusCode -eq 200) { exit 2 } } catch {}; exit 1"
 if errorlevel 2 (
   echo FFmpeg renderer is already running.
   goto canva_story_start
 )
 if errorlevel 1 (
-  echo Port %CANVA_VIDEO_RENDER_PORT% is busy, but it is not the CANVA STORY FFmpeg renderer.
-  echo Close the process using this port, then run this file again.
+  echo Port %CANVA_VIDEO_RENDER_PORT% is busy, but the running CANVA STORY service is missing or outdated.
+  echo Close the old FFmpeg renderer window/process, then run this file again.
   pause
   exit /b 1
 )
